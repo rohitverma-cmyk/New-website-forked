@@ -1,0 +1,153 @@
+{
+  "brand_identity": {
+    "name": "Locofast",
+    "persona": "The Modern Atelier",
+    "tone": "Precision, Tactile, Industrial-Luxury, Trustworthy",
+    "theme_mode": "light",
+    "core_philosophy": "Fabric is the hero. The UI is the gallery."
+  },
+  "typography": {
+    "primary_font": "Manrope",
+    "secondary_font": "Playfair Display",
+    "mono_font": "JetBrains Mono",
+    "weights": {
+      "light": 300,
+      "regular": 400,
+      "medium": 500,
+      "bold": 700
+    },
+    "usage": {
+      "headings": "Playfair Display, font-serif, tracking-tight, text-neutral-900",
+      "subheadings": "Manrope, font-sans, tracking-wide, uppercase, text-neutral-500, text-xs",
+      "body": "Manrope, font-sans, text-neutral-600, leading-relaxed",
+      "technical_data": "JetBrains Mono, font-mono, text-neutral-700"
+    }
+  },
+  "colors": {
+    "palette": {
+      "primary": "#1A1A1A",
+      "secondary": "#F4F4F5",
+      "accent": "#D4B483",
+      "background": "#FFFFFF",
+      "surface": "#FAFAFA",
+      "border": "#E4E4E7",
+      "success": "#10B981",
+      "error": "#EF4444",
+      "warning": "#F59E0B"
+    },
+    "usage_rules": {
+      "text_primary": "#1A1A1A",
+      "text_secondary": "#52525B",
+      "text_tertiary": "#A1A1AA",
+      "interactive_hover": "#D4B483",
+      "border_default": "#E4E4E7",
+      "border_active": "#1A1A1A"
+    }
+  },
+  "layout_strategies": {
+    "container": "max-w-[1600px] mx-auto px-4 md:px-8 lg:px-12",
+    "grid_system": {
+      "catalog": "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-6 gap-y-12",
+      "dashboard": "grid grid-cols-12 gap-6"
+    },
+    "spacing": {
+      "section_gap": "py-24 lg:py-32",
+      "element_gap": "gap-6"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-neutral-900 text-white rounded-sm px-8 py-3 text-sm tracking-widest uppercase hover:bg-neutral-800 transition-all duration-300",
+      "secondary": "bg-transparent border border-neutral-200 text-neutral-900 rounded-sm px-8 py-3 text-sm tracking-widest uppercase hover:border-neutral-900 transition-all duration-300",
+      "ghost": "text-neutral-500 hover:text-neutral-900 text-sm font-medium transition-colors"
+    },
+    "cards": {
+      "product": "group relative flex flex-col gap-4 bg-transparent",
+      "product_image_wrapper": "aspect-[3/4] overflow-hidden bg-neutral-100 relative",
+      "dashboard_stat": "p-6 bg-white border border-neutral-100 shadow-sm"
+    },
+    "inputs": {
+      "default": "rounded-sm border-neutral-200 focus:border-neutral-900 focus:ring-0 bg-transparent placeholder:text-neutral-400 font-sans"
+    }
+  },
+  "visual_enhancers": {
+    "shadows": {
+      "soft": "shadow-[0_2px_8px_rgba(0,0,0,0.04)]",
+      "floating": "shadow-[0_8px_32px_rgba(0,0,0,0.08)]"
+    },
+    "borders": {
+      "hairline": "border-[0.5px] border-neutral-200"
+    },
+    "textures": {
+      "noise": "bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 mix-blend-overlay"
+    }
+  },
+  "motion": {
+    "default_transition": "all 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
+    "hover_lift": "hover:-translate-y-1 transition-transform duration-300",
+    "image_zoom": "group-hover:scale-105 transition-transform duration-700 ease-out"
+  },
+  "accessibility": {
+    "contrast_check": "Ensure #52525B text is not used on #E4E4E7 backgrounds for long text.",
+    "focus_states": "focus:ring-2 focus:ring-neutral-900 focus:ring-offset-2",
+    "aria_labels": "Mandatory for all icon-only buttons"
+  },
+  "media_assets": {
+    "images": [
+      {
+        "category": "hero_background",
+        "url": "https://images.unsplash.com/photo-1753162660841-a04b2d522343",
+        "alt": "Design team collaborating in studio",
+        "usage": "Homepage Hero Section - Overlay with dark gradient"
+      },
+      {
+        "category": "about_process",
+        "url": "https://images.unsplash.com/photo-1753162658542-dd053c2b5196",
+        "alt": "Fashion designer sketching",
+        "usage": "About Us / How It Works - Process Step"
+      },
+      {
+        "category": "fabric_texture_1",
+        "url": "https://images.unsplash.com/photo-1560258632-fb994fd2bd44",
+        "alt": "Woven fabric close up",
+        "usage": "Texture overlay or feature card"
+      },
+      {
+        "category": "fabric_texture_2",
+        "url": "https://images.unsplash.com/photo-1647699926980-b7d360761521",
+        "alt": "Wool texture close up",
+        "usage": "Texture overlay or feature card"
+      }
+    ],
+    "icons": {
+      "library": "phosphor-icons/react",
+      "style": "light",
+      "usage": "Use thin, refined icons to match the elegant typography"
+    }
+  },
+  "tech_stack_specifics": {
+    "frontend_framework": "React",
+    "styling": "Tailwind CSS",
+    "components_lib": "shadcn/ui",
+    "charts": "recharts",
+    "animations": "framer-motion",
+    "backend": "FastAPI"
+  },
+  "instructions_to_main_agent": [
+    "DO NOT use generic gradients. Use solid colors or subtle noise textures.",
+    "Ensure the 'Catalog' page uses a 'Masonry' or 'Clean Grid' layout with infinite scroll or pagination.",
+    "The 'Fabric Detail' page must split the screen: 50% Image (Left), 50% Details (Right).",
+    "Admin Dashboard should be dense but legible. Use 'Inter' or 'Manrope' for tables.",
+    "All prices and sensitive data must be mocked if not provided.",
+    "Use 'sonner' for all toast notifications.",
+    "Implement a 'Request Sample' flow that feels like adding to a cart but for B2B inquiry."
+  ],
+  "UNIVERSAL_GUIDELINES": [
+    "Dark colors look good when used independently without gradients.",
+    "Don't make generic centered layouts.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Every interaction needs micro-animations.",
+    "Use 2-3x more spacing than feels comfortable.",
+    "Missing categories (especially sponsor logos) = main agent will use placeholder text which is FORBIDDEN"
+  ]
+}

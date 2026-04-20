@@ -1,0 +1,100 @@
+{
+  "summary": "Comprehensive regression testing for refactored fabric_router.py, article_router.py, fabric_utils.py extraction from server.py. All 37 backend tests passed. Fixed HeroSearchCard bug (was passing category name instead of ID). Frontend tests verified HeroSearchCard, Admin Denim form, and fabric detail page.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "fixed": [
+      {
+        "component": "HeroSearchCard.js",
+        "issue": "Was passing category NAME (e.g., 'Cotton Fabrics') instead of category ID (e.g., 'cat-cotton') to /fabrics page, causing 0 results",
+        "fix": "Changed search() function to look up category ID from name before setting URL param"
+      }
+    ]
+  },
+  "passed_tests": [
+    "GET /api/fabrics - default listing returns fabrics with all required fields",
+    "GET /api/fabrics - pagination (page, limit) works",
+    "GET /api/fabrics?category_id=cat-cotton - category filter works",
+    "GET /api/fabrics?search=cotton - search filter works",
+    "GET /api/fabrics?min_price=100&max_price=500 - price range filter works",
+    "GET /api/fabrics?min_gsm=150&max_gsm=250 - GSM range filter works",
+    "GET /api/fabrics?composition=cotton - composition filter works",
+    "GET /api/fabrics?bookable_only=true - bookable filter works",
+    "GET /api/fabrics?sample_available=true - sample available filter works",
+    "GET /api/fabrics?enquiry_only=true - enquiry only filter works",
+    "GET /api/fabrics?color=indigo - color filter works",
+    "GET /api/fabrics?min_weight_oz=4&max_weight_oz=10 - ounce range filter works",
+    "GET /api/fabrics/count - returns correct total",
+    "GET /api/fabrics/count matches listing length for same filters",
+    "GET /api/fabrics/filter-options - returns colors, patterns, widths, compositions, has_denim",
+    "GET /api/fabrics/{id} - lookup by UUID works",
+    "GET /api/fabrics/{slug} - lookup by SEO slug works",
+    "GET /api/fabrics/{invalid} - returns 404",
+    "GET /api/fabrics/{id}/other-sellers - returns [] for fabrics without article_id",
+    "POST /api/fabrics - requires admin auth (401/403 without token)",
+    "POST/PUT/DELETE /api/fabrics - full CRUD cycle works with admin auth",
+    "POST /api/fabrics/bulk-assign-seller - requires seller_id (400 without)",
+    "POST /api/fabrics/reassign-seller - works with valid fabric_ids and seller_id",
+    "GET /api/articles - returns list with seller_name enrichment",
+    "GET /api/articles/{id} - returns article detail with seller_name",
+    "GET /api/articles/{id}/variants - returns fabric variants",
+    "POST/PUT/DELETE /api/articles - full CRUD cycle works with admin auth",
+    "POST /api/enquiries - public endpoint creates enquiry",
+    "GET /api/enquiries - requires admin auth",
+    "GET /api/enquiries - returns list with admin auth",
+    "PUT /api/enquiries/{id}/status - updates status with admin auth",
+    "GET /api/categories - returns categories with live fabric_count via $group",
+    "GET /api/collections - returns list",
+    "GET /api/collections/{id}/fabrics - returns normalized fabrics with seller enrichment",
+    "POST /api/migrate/blended - dry run returns status=noop (Blended category deleted)",
+    "POST /api/migrate/slugs - works",
+    "Booking priority sort - bookable fabrics appear before enquiry-only"
+  ],
+  "frontend_tests_passed": [
+    "HomePage renders HeroSearchCard component",
+    "HeroSearchCard shows 7 category pills with live counts (Cotton=155, Polyester=16, Denim=13, etc.)",
+    "Categories with <20 SKUs show COMING SOON badge",
+    "HeroSearchCard Search button navigates to /fabrics with correct query string (category ID)",
+    "/fabrics page loads and shows fabric cards with seller name, MOQ, price, dispatch info",
+    "/fabrics/{slug} detail page loads correctly with SEO slug URL",
+    "Fabric detail page shows color variants and delivery timeline",
+    "Admin Fabrics page loads",
+    "Admin Add Fabric modal opens",
+    "Denim category selection shows Weave Type dropdown with 7 options",
+    "Denim category shows 8 denim-specific color options",
+    "Auto-generate button produces correct name format: 'Cotton Polyester Lycra, 3/1 RHT, 10oz, Color: Indigo x White'"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_refactor_session_v31.py",
+    "/app/test_reports/pytest/pytest_refactor_v31.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Refactoring is complete - fabric_router.py (659 lines), article_router.py (225 lines), fabric_utils.py (148 lines) extracted from server.py",
+    "server.py reduced from 2304 to 1040 lines",
+    "All routers properly initialized with set_db() pattern",
+    "collection_router.set_db(db, normalize_fn=fabric_utils.normalize_fabric) correctly passes normalize function",
+    "Booking priority sort preserved in fabric_router.py aggregation pipeline",
+    "Ounce range filter uses $regexFind + $convert pipeline stages correctly",
+    "Slug lookup with fallback to ID prefix works correctly"
+  ],
+  "updated_files": [
+    "/app/frontend/src/components/HeroSearchCard.js"
+  ],
+  "success_rate": {
+    "backend": "100% (37/37 tests passed, 1 skipped)",
+    "frontend": "100% (all UI tests passed)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123"
+  },
+  "seed_data_creation": "None - used existing data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Large refactor complete (~1300 LOC moved from server.py to fabric_router.py, article_router.py, fabric_utils.py). All fabric/article/enquiry/collection/category endpoints tested and working. Fixed HeroSearchCard bug where category name was passed instead of ID. Admin Denim form with weave/color dropdowns and auto-generate name working correctly."
+}

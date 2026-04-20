@@ -1,0 +1,82 @@
+{
+  "summary": "Comprehensive testing of Locofast v2.0 features completed. All requested features verified working: 1) Enquiry source field captured from different forms (RFQ, Contact, Supplier Signup, Fabric Detail) and displayed in admin panel with colored badges, 2) Order type (Sample/Bulk) shown with distinct badges in admin orders panel, 3) Cloudinary signature endpoint working correctly for secure image uploads.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "POST /api/enquiries - source='rfq_page' stored correctly (200)",
+    "POST /api/enquiries - source='supplier_signup_page' stored correctly (200)",
+    "POST /api/enquiries - source='fabric_detail_page' stored correctly (200)",
+    "POST /api/enquiries - source='contact_page' stored correctly (200)",
+    "GET /api/enquiries - Admin can view enquiries with source field (200)",
+    "GET /api/orders - Orders list includes order_type in items (200)",
+    "GET /api/orders/stats/summary - Stats endpoint working (200)",
+    "GET /api/cloudinary/signature - Returns valid signature, timestamp, cloud_name, api_key, folder (200)",
+    "GET /api/cloudinary/signature?resource_type=video - Video signature working (200)",
+    "GET /api/cloudinary/config - Returns Cloudinary config with enabled=true (200)",
+    "GET /api/cloudinary/signature - Without auth returns 401/403 (security verified)",
+    "Admin Enquiries Page - Source column visible with badges (Supplier Signup, RFQ, website)",
+    "Admin Orders Page - Type column visible with SAMPLE/BULK badges"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_v2_features.py",
+    "/app/test_reports/pytest/pytest_v2_features.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Enquiry source field properly implemented in backend model (line 277 server.py) and stored in database",
+    "AdminEnquiries.js (lines 124-151) correctly displays source badges with appropriate colors for different source types",
+    "AdminOrders.js (lines 216-231) correctly derives order_type from items and displays SAMPLE/BULK badges",
+    "Cloudinary router properly initializes with credentials from env and generates secure signatures",
+    "uploadToCloudinary function in api.js correctly handles signed uploads to Cloudinary cloud"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_v2_features.py"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13 tests pass)",
+    "frontend": "100% (All UI features verified)"
+  },
+  "test_credentials": {
+    "admin_email": "admin@locofast.com",
+    "admin_password": "NewAdmin@2024"
+  },
+  "seed_data_creation": "Created test enquiries with different source values during testing (cleaned up after)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All v2.0 features tested and working: 1) Enquiry source field captured from different forms and displayed with colored badges in admin panel, 2) Order type badges (SAMPLE/BULK) working in admin orders page, 3) Cloudinary integration fully functional with signed uploads. Cloud name is 'dqmk2qiy'. No mocked APIs.",
+  "features_verified": {
+    "enquiry_source_field": {
+      "sources_tested": ["rfq_page", "supplier_signup_page", "fabric_detail_page", "contact_page"],
+      "admin_display": "Source column with colored badges - Purple for Supplier Signup, Blue for RFQ, Gray for Contact, Green for Fabric Page",
+      "backend_field": "source field in EnquiryCreate model (line 277 server.py)",
+      "frontend_forms_sending_source": [
+        "FabricDetailPage.js - source: 'fabric_detail_page'",
+        "RFQPage.js - source: 'rfq_page'",
+        "ContactPage.js - source: 'contact_page'",
+        "SellOnLocofast.js - source: 'supplier_signup_page'"
+      ]
+    },
+    "order_type_badges": {
+      "display_location": "Admin Orders page - Type column",
+      "badge_styles": {
+        "SAMPLE": "amber background with amber text",
+        "BULK": "emerald/green background with green text"
+      },
+      "source": "Derived from order.items[0].order_type in AdminOrders.js (lines 216-231)"
+    },
+    "cloudinary_integration": {
+      "cloud_name": "dqmk2qiy",
+      "signature_endpoint": "GET /api/cloudinary/signature",
+      "config_endpoint": "GET /api/cloudinary/config",
+      "frontend_function": "uploadToCloudinary() in api.js",
+      "auth_required": true
+    }
+  }
+}

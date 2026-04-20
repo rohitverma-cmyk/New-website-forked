@@ -1,0 +1,10 @@
+name = "locofast-prerender"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# Update these with your Cloudflare account details:
+# account_id = "YOUR_ACCOUNT_ID"
+
+# Route: attach to your production domain
+# [env.production]
+# route = { pattern = "locofast.com/*", zone_id = "YOUR_ZONE_ID" }

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Locofast — Home with Hero Search (mock)</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;color:#0f172a;background:#fff}
+  .nav{position:sticky;top:0;z-index:30;background:#fff;border-bottom:1px solid #e5e7eb;padding:14px 32px;display:flex;align-items:center;justify-content:space-between}
+  .nav .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px}
+  .nav .brand .logo{width:30px;height:30px;border-radius:8px;background:#2563EB;display:grid;place-items:center;color:#fff;font-weight:700}
+  .nav .links{display:flex;gap:26px;font-size:14px;color:#475569}
+  .nav .links a{text-decoration:none;color:inherit}
+  .nav .right{display:flex;gap:10px;align-items:center}
+  .btn{padding:9px 16px;border-radius:8px;font-size:14px;font-weight:500;border:none;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+  .btn-ghost{background:transparent;color:#0f172a}
+  .btn-primary{background:#2563EB;color:#fff}
+
+  /* HERO ------------------------------------------------- */
+  .hero{position:relative;min-height:92vh;display:flex;align-items:center;padding:80px 0;
+        background:linear-gradient(135deg,#1e3a8a 0%,#2563EB 50%,#3b82f6 100%);overflow:hidden}
+  .hero::before,.hero::after{content:'';position:absolute;border-radius:50%;filter:blur(120px);background:#fff;opacity:.08}
+  .hero::before{top:80px;left:40px;width:360px;height:360px}
+  .hero::after{bottom:80px;right:40px;width:480px;height:480px}
+  .hero-inner{position:relative;width:100%;max-width:1200px;margin:0 auto;padding:0 32px;text-align:center}
+  .trust-pill{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.1);backdrop-filter:blur(8px);color:rgba(255,255,255,.9);padding:8px 16px;border-radius:999px;font-size:13px;margin-bottom:28px}
+  .trust-pill .spark{width:14px;height:14px;background:#fff;clip-path:polygon(50% 0,61% 38%,100% 50%,61% 62%,50% 100%,39% 62%,0 50%,39% 38%)}
+  h1{color:#fff;font-size:56px;line-height:1.08;letter-spacing:-1.5px;font-weight:600;margin-bottom:20px;max-width:900px;margin-left:auto;margin-right:auto}
+  .sub{color:rgba(255,255,255,.8);font-size:18px;line-height:1.6;margin-bottom:36px;max-width:660px;margin-left:auto;margin-right:auto}
+
+  /* SEARCH CARD ------------------------------------------ */
+  .search-card{max-width:920px;margin:0 auto;background:rgba(255,255,255,.06);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.14);border-radius:20px;padding:14px;box-shadow:0 18px 60px rgba(0,0,0,.24)}
+  .cats{display:flex;gap:6px;flex-wrap:wrap;padding:6px 6px 12px;border-bottom:1px solid rgba(255,255,255,.1)}
+  .cat{position:relative;display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:10px;font-size:13px;font-weight:500;color:rgba(255,255,255,.82);cursor:pointer;transition:.18s;border:1px solid transparent}
+  .cat:hover{background:rgba(255,255,255,.06)}
+  .cat.active{background:#fff;color:#0f172a;border-color:#fff}
+  .cat .sw{width:10px;height:10px;border-radius:3px}
+  .cat .count{opacity:.55;font-size:11px;font-weight:500;margin-left:2px}
+  .cat.active .count{opacity:.55;color:#475569}
+  .soon{position:absolute;top:-7px;right:-6px;background:#F97316;color:#fff;font-size:9.5px;font-weight:700;letter-spacing:.4px;padding:2px 6px;border-radius:999px;text-transform:uppercase;line-height:1;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,.22);border:1.5px solid rgba(255,255,255,.92)}
+  .cat.is-soon{opacity:.78}
+  .cat.is-soon:not(.active){background:rgba(255,255,255,.03)}
+  .row{display:grid;grid-template-columns:1.1fr 1.1fr 1fr 1fr auto;gap:10px;padding:12px 6px 6px}
+  .field{display:flex;flex-direction:column;gap:4px;padding:10px 14px;background:rgba(255,255,255,.06);border-radius:12px;border:1px solid rgba(255,255,255,.1);text-align:left}
+  .field .lbl{font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:rgba(255,255,255,.55);font-weight:600}
+  .field .val{font-size:14px;color:#fff;font-weight:500;display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .field .val .chev{opacity:.5}
+  .cta{background:#F97316;color:#fff;border-radius:12px;padding:0 26px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:600;font-size:15px;cursor:pointer;border:none;transition:.18s}
+  .cta:hover{background:#ea6a0e;transform:translateY(-1px)}
+  .pop{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:12px 8px 4px;color:rgba(255,255,255,.55);font-size:12px}
+  .pop .chip{padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.08);color:rgba(255,255,255,.85);cursor:pointer;border:1px solid rgba(255,255,255,.1)}
+  .pop .chip:hover{background:rgba(255,255,255,.14)}
+
+  /* TRUST BADGES ----------------------------------------- */
+  .badges{display:flex;flex-wrap:wrap;justify-content:center;gap:36px;margin-top:64px;padding-top:32px;border-top:1px solid rgba(255,255,255,.1);max-width:900px;margin-left:auto;margin-right:auto}
+  .badge{display:inline-flex;align-items:center;gap:10px;color:rgba(255,255,255,.82);font-size:13px;font-weight:500}
+  .badge .dot{width:8px;height:8px;border-radius:50%;background:#60a5fa}
+
+  /* label / banner --------------------------------------- */
+  .mock-flag{position:fixed;top:12px;right:12px;background:#0f172a;color:#fff;font-size:11px;padding:6px 12px;border-radius:999px;z-index:99;letter-spacing:.4px}
+
+  /* MOBILE ----------------------------------------------- */
+  @media (max-width:860px){
+    h1{font-size:36px}
+    .sub{font-size:16px}
+    .row{grid-template-columns:1fr 1fr;grid-auto-rows:min-content}
+    .cta{grid-column:1/-1;padding:16px}
+    .cats{justify-content:center}
+  }
+</style>
+</head>
+<body>
+  <div class="mock-flag">Mock · HeroSearchCard only — rest of page unchanged</div>
+
+  <!-- existing navbar kept -->
+  <nav class="nav">
+    <img src="https://customer-assets.emergentagent.com/job_locofast-cms/artifacts/xkuf449w_Locofast%20-%20Medium.svg" alt="Locofast" style="height:32px;width:auto"/>
+    <div class="links">
+      <a>Fabrics</a><a>Collections</a><a>How it works</a><a>Blog</a><a>Sell on Locofast</a><a>Contact</a>
+    </div>
+    <div class="right">
+      <a class="btn btn-ghost">Login</a>
+      <a class="btn btn-primary">Request Quote</a>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <div class="hero-inner">
+      <!-- existing trust pill -->
+      <div class="trust-pill"><span class="spark"></span>Trusted by 500+ Brands &amp; Manufacturers across India &amp; the globe</div>
+
+      <!-- existing H1 + sub -->
+      <h1>Buy Fabrics from India's Largest B2B Textile Platform</h1>
+      <p class="sub">Connect directly with 500+ verified seller partners. Transparent pricing, clear MOQs, secure payments.</p>
+
+      <!-- 🟢 NEW: HeroSearchCard (replaces the two CTA buttons) -->
+      <div class="search-card">
+        <div class="cats">
+          <div class="cat active"><span class="sw" style="background:#d6c9a0"></span>Cotton <span class="count">128</span></div>
+          <div class="cat"><span class="sw" style="background:#a8957a"></span>Blended <span class="count">32</span></div>
+          <div class="cat is-soon"><span class="soon">Coming soon</span><span class="sw" style="background:#1e3a8a"></span>Denim <span class="count">13</span></div>
+          <div class="cat is-soon"><span class="soon">Coming soon</span><span class="sw" style="background:#3f6d6b"></span>Polyester <span class="count">11</span></div>
+          <div class="cat is-soon"><span class="soon">Coming soon</span><span class="sw" style="background:#b399d4"></span>Viscose <span class="count">4</span></div>
+          <div class="cat is-soon"><span class="soon">Coming soon</span><span class="sw" style="background:#cfd6e1"></span>Knits <span class="count">2</span></div>
+          <div class="cat is-soon"><span class="soon">Coming soon</span><span class="sw" style="background:#6aa463"></span>Sustainable <span class="count">2</span></div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <span class="lbl">Fabric Type</span>
+            <span class="val">Search in cotton… <span class="chev">▾</span></span>
+          </div>
+          <div class="field">
+            <span class="lbl">Composition</span>
+            <span class="val">Any composition <span class="chev">▾</span></span>
+          </div>
+          <div class="field">
+            <span class="lbl">Weight · GSM</span>
+            <span class="val">Any weight <span class="chev">▾</span></span>
+          </div>
+          <div class="field">
+            <span class="lbl">Price ₹/m</span>
+            <span class="val">₹100 – ₹400 <span class="chev">▾</span></span>
+          </div>
+          <button class="cta">🔎 Search</button>
+        </div>
+
+        <div class="pop">
+          <span>Popular:</span>
+          <span class="chip">Raw selvedge</span>
+          <span class="chip">8oz stretch</span>
+          <span class="chip">Organic cotton</span>
+          <span class="chip">Recycled denim</span>
+        </div>
+      </div>
+
+      <!-- existing trust badges kept -->
+      <div class="badges">
+        <div class="badge"><span class="dot"></span>500+ Seller Partners</div>
+        <div class="badge"><span class="dot"></span>Verified Suppliers</div>
+        <div class="badge"><span class="dot"></span>Money Safety Guarantee</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- existing below-hero sections remain (Who we serve, Value prop, Collections, Blog, Trust, CTA) — not shown here because they don't change -->
+  <div style="padding:48px 32px;text-align:center;color:#475569;font-size:13px;background:#f8fafc;border-top:1px solid #e5e7eb">
+    ↓ Existing home sections below this line — <b>unchanged</b> (Who we serve, Value prop, Collections rail, Blog, Trust, CTA bands)
+  </div>
+</body>
+</html>

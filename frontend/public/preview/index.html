@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Locofast v2 — Design Preview</title>
+  <style>
+    :root {
+      --ink: #0b1730;
+      --blue: #12307f;
+      --accent: #2453cc;
+      --cream: #f7f4ec;
+      --muted: #6b7280;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      background: var(--cream);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    .topbar {
+      position: sticky; top: 0; z-index: 10;
+      background: var(--blue);
+      color: #fff;
+      padding: 14px 28px;
+      display: flex; align-items: center; justify-content: space-between;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -0.2px; }
+    .brand .logo {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: var(--accent);
+      display: grid; place-items: center; color: #fff; font-weight: 700;
+    }
+    .badge { background: rgba(255,255,255,0.14); padding: 3px 10px; border-radius: 99px; font-size: 12px; }
+    .nav { display: flex; gap: 6px; align-items: center; }
+    .nav a {
+      color: #fff; text-decoration: none; font-weight: 500; font-size: 14px;
+      padding: 8px 14px; border-radius: 8px; transition: background 0.18s ease;
+    }
+    .nav a:hover { background: rgba(255,255,255,0.12); }
+    .nav a.active { background: #fff; color: var(--blue); }
+
+    .wrap { padding: 22px; }
+    .hero {
+      background: #fff; border-radius: 16px; padding: 22px 26px;
+      box-shadow: 0 4px 18px rgba(10,20,50,0.06);
+      margin-bottom: 18px;
+    }
+    .hero h1 { font-size: 22px; letter-spacing: -0.3px; margin-bottom: 6px; }
+    .hero p { color: var(--muted); font-size: 14px; }
+
+    .frame {
+      width: 100%;
+      height: calc(100vh - 190px);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+      box-shadow: 0 8px 28px rgba(10,20,50,0.08);
+    }
+    iframe { width: 100%; height: 100%; border: 0; display: block; }
+
+    .footnote {
+      text-align: center; color: var(--muted);
+      font-size: 12px; margin-top: 12px;
+    }
+    .footnote a { color: var(--accent); text-decoration: none; }
+    .footnote a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">L</div>
+      Locofast v2 <span class="badge">design preview</span>
+    </div>
+    <nav class="nav" id="nav">
+      <a href="#home" data-page="home-v2.html" class="active">Home</a>
+      <a href="#listing" data-page="listing-v2.html">Listing</a>
+      <a href="/" target="_blank" rel="noreferrer" style="background:rgba(255,255,255,0.06)">← Back to live site</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <h1 id="title">Home page</h1>
+      <p id="subtitle">Hero, category browser, live fabric rails, 4-step flow, footer.</p>
+    </section>
+    <div class="frame">
+      <iframe id="stage" src="home-v2.html" title="Preview"></iframe>
+    </div>
+    <p class="footnote">
+      Review → approve → we'll convert to React/Tailwind and wire real data.
+      Open standalones: <a href="home-v2.html" target="_blank">home-v2.html</a> ·
+      <a href="listing-v2.html" target="_blank">listing-v2.html</a>
+    </p>
+  </main>
+
+  <script>
+    const stage = document.getElementById('stage');
+    const title = document.getElementById('title');
+    const subtitle = document.getElementById('subtitle');
+    const links = document.querySelectorAll('[data-page]');
+    const copy = {
+      'home-v2.html': {
+        t: 'Home page',
+        s: 'Hero, category browser, live fabric rails, 4-step flow, footer.'
+      },
+      'listing-v2.html': {
+        t: 'Listing page',
+        s: 'Filter rail, sort controls, fabric grid with MOQ/price/chip badges.'
+      }
+    };
+    links.forEach(a => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const page = a.dataset.page;
+        stage.src = page;
+        links.forEach(x => x.classList.remove('active'));
+        a.classList.add('active');
+        const c = copy[page];
+        if (c) { title.textContent = c.t; subtitle.textContent = c.s; }
+        history.replaceState(null, '', a.getAttribute('href'));
+      });
+    });
+    // honour deep link
+    const hash = (location.hash || '').replace('#','');
+    if (hash === 'listing') {
+      document.querySelector('[data-page="listing-v2.html"]').click();
+    }
+  </script>
+</body>
+</html>
