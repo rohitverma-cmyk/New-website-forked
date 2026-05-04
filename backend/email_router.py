@@ -155,7 +155,7 @@ def get_order_confirmation_email(order: dict) -> str:
             <ol style="margin: 0; padding-left: 20px; color: #047857;">
                 <li style="margin-bottom: 8px;">Our team will verify your order and stock availability</li>
                 <li style="margin-bottom: 8px;">You'll receive a confirmation call within 24 hours</li>
-                <li style="margin-bottom: 8px;">Dispatch within the timeline mentioned on the product page</li>
+                <li style="margin-bottom: 8px;"><strong>Samples dispatched in 24–48 hours</strong> and <strong>bulk dispatched in 24–48 hours for packaging &amp; dispatch</strong> (for in-stock items). Manufactured-to-order bulk typically dispatches within ~30 days of confirmation.</li>
                 <li>Tracking details will be shared via SMS/Email</li>
             </ol>
         </div>
@@ -186,11 +186,18 @@ def get_order_received_admin_email(order: dict) -> str:
         order_type = item.get('order_type', 'bulk')
         type_label = 'Sample' if order_type == 'sample' else 'Bulk'
         fabric_url = f"{SITE_URL}/fabrics/{item.get('fabric_id', '')}"
+        _color = item.get('color_name') or ''
+        _color_hex = item.get('color_hex') or '#ccc'
+        _color_chip = (
+            f'<span style="display: inline-flex; align-items: center; gap: 4px; background: #f3f4f6; color: #374151; padding: 2px 6px; border-radius: 10px; font-size: 11px; margin-left: 6px;">'
+            f'<span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: {_color_hex}; border: 1px solid #d1d5db;"></span>{_color}'
+            f'</span>'
+        ) if _color else ''
         
         items_html += f"""
         <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee;">
-                <a href="{fabric_url}" style="color: #2563EB; font-weight: 600; text-decoration: none;">{item.get('fabric_name', 'Fabric')}</a><br>
+                <a href="{fabric_url}" style="color: #2563EB; font-weight: 600; text-decoration: none;">{item.get('fabric_name', 'Fabric')}</a>{_color_chip}<br>
                 <span style="color: #666; font-size: 12px;">Code: {item.get('fabric_code', 'N/A')} | Seller: {item.get('seller_company', 'N/A')}</span>
             </td>
             <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">
@@ -389,19 +396,21 @@ def get_seller_order_notification_email(order: dict, items: list, seller: dict) 
                 <span style="font-size: 20px; font-weight: 700; color: #059669;">₹{total_value:,.2f}</span>
             </div>
             
-            <!-- Commission -->
+            <!-- Commission (only when a rule actually matched — 0% default hides the line) -->
+            {f'''
             <div style="margin-top: 10px; padding: 12px 15px; background: #fef3c7; border-radius: 8px; border: 1px solid #fde68a;">
                 <table style="width: 100%; font-size: 14px;">
                     <tr>
-                        <td style="color: #92400e;">Locofast Commission ({order.get('commission_pct', 5)}%)</td>
-                        <td style="text-align: right; font-weight: 600; color: #92400e;">₹{order.get('commission_amount', total_value * 0.05):,.2f}</td>
+                        <td style="color: #92400e;">Locofast Commission ({order.get('commission_pct', 0)}%)</td>
+                        <td style="text-align: right; font-weight: 600; color: #92400e;">₹{order.get('commission_amount', 0):,.2f}</td>
                     </tr>
                     <tr>
                         <td style="color: #065f46; font-weight: 700; padding-top: 8px;">Your Payout</td>
-                        <td style="text-align: right; font-weight: 700; color: #065f46; font-size: 18px; padding-top: 8px;">₹{order.get('seller_payout', total_value * 0.95):,.2f}</td>
+                        <td style="text-align: right; font-weight: 700; color: #065f46; font-size: 18px; padding-top: 8px;">₹{order.get('seller_payout', total_value - order.get('commission_amount', 0)):,.2f}</td>
                     </tr>
                 </table>
             </div>
+            ''' if (order.get('commission_pct') or 0) > 0 else ''}
         </div>
         
         <!-- Dispatch Info -->
@@ -539,6 +548,15 @@ def get_customer_enquiry_confirmation_email(enquiry: dict) -> str:
                 Thank you for your {type_label} regarding <strong>{enquiry.get('fabric_name', 'our fabric')}</strong>. 
                 Our team has received your request and will get back to you within 24 hours.
             </p>
+
+            <div style="background: #fff7ed; padding: 14px 16px; border-left: 3px solid #fb923c; border-radius: 6px; margin: 0 0 20px 0;">
+                <p style="margin: 0 0 4px 0; font-size: 13px; color: #9a3412;"><strong>Turnaround commitments</strong></p>
+                <p style="margin: 0; font-size: 13px; color: #9a3412;">
+                    • Samples dispatched in 24–48 hours (for in-stock items)<br>
+                    • Bulk dispatched in 24–48 hours for packaging &amp; dispatch (in-stock)<br>
+                    • Manufactured-to-order bulk typically dispatches within ~30 days of confirmation
+                </p>
+            </div>
             
             <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; margin: 20px 0;">
                 <h3 style="margin: 0 0 15px 0; font-size: 14px; color: #64748b; text-transform: uppercase;">Your Request Summary</h3>

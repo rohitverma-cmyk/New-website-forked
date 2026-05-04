@@ -24,12 +24,20 @@ class CategoryCreate(BaseModel):
     slug: str = ""
     description: str = ""
     image_url: str = ""
+    seo_title: Optional[str] = ""
+    seo_meta_description: Optional[str] = ""
+    seo_intro: Optional[str] = ""  # HTML allowed — shown above the fabric grid
+    seo_applications: Optional[str] = ""  # HTML allowed
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
     slug: Optional[str] = None
     description: Optional[str] = None
     image_url: Optional[str] = None
+    seo_title: Optional[str] = None
+    seo_meta_description: Optional[str] = None
+    seo_intro: Optional[str] = None
+    seo_applications: Optional[str] = None
 
 class Category(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -38,6 +46,10 @@ class Category(BaseModel):
     slug: str = ""
     description: str = ""
     image_url: str = ""
+    seo_title: str = ""
+    seo_meta_description: str = ""
+    seo_intro: str = ""
+    seo_applications: str = ""
     fabric_count: int = 0
 
 

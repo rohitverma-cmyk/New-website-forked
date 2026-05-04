@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Mocks — multi-color checkout & spandex %</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:'Inter',-apple-system,sans-serif}
+  body{background:#f1f5f9;min-height:100vh;padding:40px 20px;color:#0f172a}
+  .wrap{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:28px}
+  h2.flag{grid-column:1/-1;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;font-weight:600;margin-bottom:-12px;margin-top:8px}
+  .mock-title{font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin:12px 0 8px;padding-left:4px}
+
+  /* --- Book modal (multi-color) --- */
+  .book-modal{background:#fff;border-radius:14px;padding:24px;box-shadow:0 20px 60px rgba(15,23,42,.1);border:1px solid #e2e8f0}
+  .book-modal h3{font-size:17px;font-weight:600;margin-bottom:2px}
+  .book-modal .sub{font-size:13px;color:#64748b;margin-bottom:18px}
+
+  .section-label{font-size:12px;font-weight:600;color:#334155;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .section-label .step{background:#2563EB;color:#fff;width:18px;height:18px;border-radius:50%;display:inline-grid;place-items:center;font-size:10px;font-weight:700}
+
+  .color-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px}
+  .color-pill{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:10px;cursor:pointer;transition:.16s;background:#fff;text-align:left}
+  .color-pill:hover{border-color:#cbd5e1}
+  .color-pill.active{border-color:#2563EB;background:#eff6ff;box-shadow:0 0 0 4px rgba(37,99,235,.08)}
+  .color-pill.oos{opacity:.55;cursor:not-allowed}
+  .color-pill .sw{width:22px;height:22px;border-radius:50%;border:1.5px solid #fff;box-shadow:0 0 0 1px #e2e8f0;flex-shrink:0}
+  .color-pill .name{font-size:13px;font-weight:600;line-height:1.15}
+  .color-pill .stock{font-size:11px;color:#64748b;margin-top:1px}
+  .color-pill .stock.low{color:#b45309}
+  .color-pill .stock.oos{color:#dc2626}
+  .color-pill .sample-tag{background:#dbeafe;color:#1d4ed8;font-size:9px;font-weight:700;padding:2px 5px;border-radius:4px;margin-left:auto;letter-spacing:.04em}
+
+  .qty-input{width:100%;padding:14px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:18px;font-weight:600;margin-bottom:4px}
+  .qty-hint{font-size:11px;color:#94a3b8;margin-bottom:14px}
+
+  .summary{background:#f8fafc;padding:14px 16px;border-radius:10px;display:flex;justify-content:space-between;font-size:13px;margin-bottom:18px}
+  .summary .lbl{color:#64748b}
+  .summary .val{font-weight:700;color:#047857}
+
+  .btn-row{display:flex;gap:10px}
+  .btn{flex:1;padding:12px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;border:1.5px solid transparent}
+  .btn-secondary{background:#fff;border-color:#e2e8f0;color:#0f172a}
+  .btn-primary{background:#059669;color:#fff}
+  .btn-primary:disabled{opacity:.5}
+
+  /* --- Admin composition (spandex %) --- */
+  .admin-card{background:#fff;border-radius:14px;padding:22px;box-shadow:0 20px 60px rgba(15,23,42,.1);border:1px solid #e2e8f0}
+  .admin-card h3{font-size:15px;font-weight:600;margin-bottom:14px;color:#0f172a;display:flex;align-items:center;justify-content:space-between}
+  .admin-card h3 .pct-total{font-size:11px;color:#047857;font-weight:600;background:#d1fae5;padding:4px 9px;border-radius:999px}
+  .comp-row{display:flex;gap:8px;margin-bottom:8px}
+  .comp-row input{flex:1;padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px}
+  .comp-row input:disabled{background:#fef3c7;color:#92400e}
+  .comp-row select{width:110px;padding:10px 8px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;background:#fff;cursor:pointer;font-weight:600}
+  .comp-row select.spandex{border-color:#f59e0b;background:#fef3c7;color:#92400e}
+  .comp-row .pct-chip{font-size:10px;background:#fff;border:1px solid #f59e0b;color:#92400e;padding:2px 6px;border-radius:6px;position:relative;top:-14px;left:-58px;pointer-events:none}
+  .example-hint{font-size:11px;color:#64748b;margin-top:8px;line-height:1.5}
+  .rule{background:#fff7ed;border-left:3px solid #f59e0b;padding:10px 14px;border-radius:6px;margin-top:12px;font-size:12px;color:#92400e}
+  .rule b{color:#78350f}
+
+  /* Third: sample (qty-only, color already selected) */
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h2 class="flag">Mock 1 · Multi-color Bulk Booking (step-1 color picker → step-2 qty)</h2>
+
+    <!-- LEFT: Bulk modal with color picker -->
+    <div>
+      <div class="mock-title">Book Bulk Now — 5 colors available</div>
+      <div class="book-modal">
+        <h3>Book Bulk Order</h3>
+        <p class="sub">Cotton Polyester Lycra, 3/1 RHT, 10oz</p>
+
+        <div class="section-label"><span class="step">1</span> Pick a color</div>
+        <div class="color-grid">
+          <button class="color-pill active">
+            <span class="sw" style="background:#1e3a8a"></span>
+            <span>
+              <div class="name">Indigo x White</div>
+              <div class="stock">5,800m in stock</div>
+            </span>
+          </button>
+          <button class="color-pill">
+            <span class="sw" style="background:#0f172a"></span>
+            <span>
+              <div class="name">Indigo x Black</div>
+              <div class="stock">2,100m in stock</div>
+            </span>
+          </button>
+          <button class="color-pill">
+            <span class="sw" style="background:#fefce8;border:1.5px solid #e2e8f0"></span>
+            <span>
+              <div class="name">Ecru</div>
+              <div class="stock low">180m left · low</div>
+            </span>
+          </button>
+          <button class="color-pill oos">
+            <span class="sw" style="background:#000"></span>
+            <span>
+              <div class="name">Black x Black</div>
+              <div class="stock oos">Out of stock</div>
+            </span>
+            <span class="sample-tag">Sample only</span>
+          </button>
+          <button class="color-pill">
+            <span class="sw" style="background:#f8fafc;border:1.5px solid #cbd5e1"></span>
+            <span>
+              <div class="name">RFD</div>
+              <div class="stock">1,240m in stock</div>
+            </span>
+          </button>
+          <button class="color-pill">
+            <span class="sw" style="background:linear-gradient(45deg,#1e3a8a 50%, #fef3c7 50%)"></span>
+            <span>
+              <div class="name">IBST</div>
+              <div class="stock">640m in stock</div>
+            </span>
+          </button>
+        </div>
+
+        <div class="section-label"><span class="step">2</span> Quantity (metres)</div>
+        <input class="qty-input" value="500" />
+        <p class="qty-hint">Min MOQ: 500m · Max for Indigo x White: 5,800m</p>
+
+        <div class="summary">
+          <div>
+            <div class="lbl">Indigo x White × 500m @ ₹320/m</div>
+          </div>
+          <div class="val">₹1,60,000</div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-secondary">Cancel</button>
+          <button class="btn btn-primary">Proceed to Checkout</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Sample modal -->
+    <div>
+      <div class="mock-title">Book Sample — color required for accurate shipment</div>
+      <div class="book-modal">
+        <h3>Book Sample</h3>
+        <p class="sub">Cotton Polyester Lycra, 3/1 RHT, 10oz</p>
+
+        <div class="section-label"><span class="step">1</span> Pick a color</div>
+        <div class="color-grid" style="grid-template-columns:1fr 1fr 1fr">
+          <button class="color-pill active" style="padding:8px 10px">
+            <span class="sw" style="background:#1e3a8a;width:18px;height:18px"></span>
+            <span><div class="name" style="font-size:12px">Indigo x White</div></span>
+          </button>
+          <button class="color-pill" style="padding:8px 10px">
+            <span class="sw" style="background:#0f172a;width:18px;height:18px"></span>
+            <span><div class="name" style="font-size:12px">Indigo x Black</div></span>
+          </button>
+          <button class="color-pill" style="padding:8px 10px">
+            <span class="sw" style="background:#fefce8;width:18px;height:18px;border:1.5px solid #e2e8f0"></span>
+            <span><div class="name" style="font-size:12px">Ecru</div></span>
+          </button>
+        </div>
+
+        <div class="section-label"><span class="step">2</span> Sample quantity (m)</div>
+        <div style="display:flex;gap:8px;margin-bottom:14px">
+          <button class="btn btn-secondary" style="padding:10px">1m</button>
+          <button class="btn" style="background:#dbeafe;color:#1d4ed8;border-color:#1d4ed8;padding:10px">2m</button>
+          <button class="btn btn-secondary" style="padding:10px">3m</button>
+          <button class="btn btn-secondary" style="padding:10px">5m</button>
+        </div>
+
+        <div class="summary">
+          <div class="lbl">Indigo x White × 2m @ ₹500</div>
+          <div class="val" style="color:#1d4ed8">₹1,000</div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-secondary">Cancel</button>
+          <button class="btn btn-primary" style="background:#2563EB">Proceed to Checkout</button>
+        </div>
+      </div>
+    </div>
+
+    <h2 class="flag">Mock 2 · Spandex composition %: 0.5 → 20 in 0.5 steps</h2>
+
+    <!-- Admin composition form -->
+    <div style="grid-column:1/-1">
+      <div class="mock-title">Admin → Add Fabric → Composition editor</div>
+      <div class="admin-card" style="max-width:760px">
+        <h3>Composition (up to 3 materials) <span class="pct-total">Total: 100%</span></h3>
+
+        <div class="comp-row">
+          <input value="Cotton" />
+          <select>
+            <option>%</option>
+            <option selected>78%</option>
+          </select>
+        </div>
+        <div class="comp-row">
+          <input value="Polyester" />
+          <select>
+            <option>%</option>
+            <option selected>20%</option>
+          </select>
+        </div>
+        <div class="comp-row">
+          <input value="Spandex" disabled />
+          <select class="spandex">
+            <option>%</option>
+            <option>0.5%</option>
+            <option>1%</option>
+            <option>1.5%</option>
+            <option selected>2%</option>
+            <option>2.5%</option>
+            <option>3%</option>
+            <option>...</option>
+            <option>20%</option>
+          </select>
+        </div>
+
+        <p class="example-hint">E.g., Cotton 78%, Polyester 20%, Spandex 2%</p>
+
+        <div class="rule">
+          <b>Auto-applied rule:</b> When any row's material is <b>Spandex</b>, <b>Elastane</b>, <b>Lycra</b>, or <b>Stretch</b>,
+          its % dropdown switches to <b>0.5% → 20%</b> in 0.5% steps (instead of 1% → 100%).
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

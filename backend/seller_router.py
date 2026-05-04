@@ -227,3 +227,25 @@ async def delete_seller(seller_id: str, admin=Depends(auth_helpers.get_current_a
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail='Seller not found')
     return {'message': 'Seller deleted'}
+
+
+
+@router.post("/migrate/seller-codes")
+async def backfill_seller_codes(admin=Depends(auth_helpers.get_current_admin)):
+    """Ensure every seller has a seller_code. Idempotent — returns how many were backfilled."""
+    sellers_needing = await db.sellers.find(
+        {'$or': [{'seller_code': {'$exists': False}}, {'seller_code': ''}, {'seller_code': None}]},
+        {'_id': 0, 'id': 1, 'name': 1, 'company_name': 1},
+    ).to_list(length=1000)
+
+    backfilled = []
+    for s in sellers_needing:
+        code = await generate_seller_code()
+        await db.sellers.update_one({'id': s['id']}, {'$set': {'seller_code': code}})
+        backfilled.append({'id': s['id'], 'name': s.get('name', ''), 'company_name': s.get('company_name', ''), 'seller_code': code})
+
+    return {
+        'total_sellers': await db.sellers.count_documents({}),
+        'backfilled_count': len(backfilled),
+        'backfilled': backfilled,
+    }

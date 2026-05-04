@@ -1,0 +1,242 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Locofast Brand Colors */
+  --locofast-blue: #2563EB;
+  --locofast-blue-dark: #1D4ED8;
+  --locofast-blue-light: #3B82F6;
+  
+  /* Neutrals */
+  --primary: #1F2937;
+  --secondary: #F3F4F6;
+  --background: #FFFFFF;
+  --surface: #F9FAFB;
+  --border: #E5E7EB;
+  
+  /* Status */
+  --success: #10B981;
+  --error: #EF4444;
+  --warning: #F59E0B;
+  
+  /* Text */
+  --text-primary: #1F2937;
+  --text-secondary: #4B5563;
+  --text-tertiary: #9CA3AF;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--background);
+  color: var(--text-primary);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* Button styles - Locofast Blue */
+.btn-primary {
+  @apply bg-[#2563EB] text-white px-8 py-3 text-sm font-medium hover:bg-[#1D4ED8] transition-all duration-200 rounded;
+}
+
+.btn-secondary {
+  @apply bg-transparent border border-gray-200 text-gray-900 px-8 py-3 text-sm font-medium hover:border-[#2563EB] hover:text-[#2563EB] transition-all duration-200 rounded;
+}
+
+.btn-ghost {
+  @apply text-gray-500 hover:text-[#2563EB] text-sm font-medium transition-colors;
+}
+
+/* Container */
+.container-main {
+  @apply max-w-[1400px] mx-auto px-4 sm:px-6 md:px-8 lg:px-12;
+  width: 100%;
+}
+
+/* Prevent horizontal scroll on mobile */
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+/* Section spacing */
+.section-gap {
+  @apply py-16 lg:py-24;
+}
+
+/* Card hover effects */
+.card-hover {
+  @apply transition-all duration-300 hover:-translate-y-1;
+}
+
+.image-zoom {
+  @apply transition-transform duration-500 ease-out;
+}
+
+.group:hover .image-zoom {
+  @apply scale-105;
+}
+
+/* Subheading style */
+.subheading {
+  @apply font-medium tracking-wide uppercase text-[#2563EB] text-xs;
+}
+
+/* Technical data */
+.tech-data {
+  @apply font-mono text-gray-700 text-sm;
+}
+
+/* Input styles */
+input, textarea, select {
+  @apply border-gray-200 focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] bg-white placeholder:text-gray-400 transition-colors duration-200 rounded;
+}
+
+/* Shadows */
+.shadow-soft {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.shadow-floating {
+  box-shadow: 0 8px 32px rgba(0,0,0,0.08);
+}
+
+/* Animation keyframes */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.5s ease-out forwards;
+}
+
+.animate-slideUp {
+  animation: slideUp 0.6s ease-out forwards;
+}
+
+.animate-slideDown {
+  animation: slideDown 0.4s ease-out forwards;
+}
+
+/* Stagger animations */
+.stagger-1 { animation-delay: 0.1s; }
+.stagger-2 { animation-delay: 0.2s; }
+.stagger-3 { animation-delay: 0.3s; }
+.stagger-4 { animation-delay: 0.4s; }
+
+/* Focus states */
+.focus-ring {
+  @apply focus:ring-2 focus:ring-[#2563EB] focus:ring-offset-2 focus:outline-none;
+}
+
+/* Badge styles */
+.badge {
+  @apply inline-flex items-center px-2.5 py-1 text-xs font-medium rounded;
+}
+
+.badge-available {
+  @apply bg-emerald-50 text-emerald-700;
+}
+
+.badge-request {
+  @apply bg-amber-50 text-amber-700;
+}
+
+.badge-sample {
+  @apply bg-blue-50 text-blue-700;
+}
+
+/* Link styles */
+a {
+  @apply transition-colors duration-200;
+}
+
+/* Selection */
+::selection {
+  background-color: rgba(37, 99, 235, 0.2);
+}
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 220 14% 16%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 14% 16%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 14% 16%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 220 14% 16%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 221 83% 53%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 221 83% 53%;
+    --radius: 0.375rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Hide Emergent badge */
+[class*="emergent"], 
+[id*="emergent"],
+a[href*="emergentagent.com"]:not([href*="customer-assets"]):not([href*="/api/"]),
+div[style*="position: fixed"][style*="bottom"]:has(a[href*="emergent"]) {
+  display: none !important;
+}

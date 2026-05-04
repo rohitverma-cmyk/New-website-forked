@@ -64,6 +64,7 @@ class OrderItem(BaseModel):
     fabric_name: str
     fabric_code: str = ""
     category_name: str = ""
+    pattern: str = ""  # used by category+pattern commission rule
     seller_company: str = ""
     seller_id: str = ""
     quantity: int  # in meters
@@ -72,6 +73,9 @@ class OrderItem(BaseModel):
     image_url: str = ""
     hsn_code: str = ""
     dispatch_timeline: str = ""
+    # Buyer-selected color variant (for multi-color SKUs)
+    color_name: str = ""
+    color_hex: str = ""
 
 class CustomerInfo(BaseModel):
     name: str
@@ -211,9 +215,32 @@ async def create_order(order_data: OrderCreate):
     
     # Calculate commission
     from commission_router import calculate_commission
+    # Enrich each item with the fabric's pattern + category_name from DB so
+    # the category+pattern commission rule can fire even if the cart-side
+    # client didn't pass them. We do this for commission calc only — the
+    # order document itself uses whatever the buyer submitted.
+    items_for_commission = [item.model_dump() for item in order_data.items]
+    fabric_ids = list({i.get("fabric_id") for i in items_for_commission if i.get("fabric_id")})
+    if fabric_ids:
+        fabric_meta = await db.fabrics.find(
+            {"id": {"$in": fabric_ids}},
+            {"_id": 0, "id": 1, "pattern": 1, "category_id": 1},
+        ).to_list(length=len(fabric_ids))
+        meta_map = {f["id"]: f for f in fabric_meta}
+        cat_ids = list({m.get("category_id") for m in fabric_meta if m.get("category_id")})
+        cat_map = {}
+        if cat_ids:
+            cats = await db.categories.find({"id": {"$in": cat_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(length=len(cat_ids))
+            cat_map = {c["id"]: c["name"] for c in cats}
+        for item in items_for_commission:
+            m = meta_map.get(item.get("fabric_id"), {})
+            if not item.get("pattern") and m.get("pattern"):
+                item["pattern"] = m["pattern"]
+            if not item.get("category_name") and m.get("category_id"):
+                item["category_name"] = cat_map.get(m["category_id"], "")
     commission_info = await calculate_commission(
         order_data.model_dump(),
-        [item.model_dump() for item in order_data.items]
+        items_for_commission,
     )
     
     if final_total <= 0:
@@ -715,46 +742,84 @@ async def edit_credit_wallet(email: str, data: dict):
 
 @router.post("/credit/wallets/bulk-upload")
 async def bulk_upload_credit_wallets(data: dict):
-    """Admin: bulk upload credit wallets. Expects { wallets: [{email, name, company, credit_limit, lender}] }"""
+    """Admin: bulk upload credit wallets.
+
+    Body: { wallets: [{email, name, company, credit_limit, lender}], mode: "replace" | "topup" }
+
+    Modes:
+      - "replace" (default): For new rows, create wallet with balance = credit_limit.
+        For existing rows, overwrite credit_limit and reset balance to that limit
+        (this is the legacy behaviour — useful when admin uploads a fresh truth table).
+      - "topup": For new rows, create wallet with balance = credit_limit. For existing
+        rows, ADD the uploaded credit_limit to the existing limit AND balance, preserving
+        any used credit. Useful for monthly top-ups from lenders.
+    """
     wallets = data.get('wallets', [])
+    mode = (data.get('mode') or 'replace').strip().lower()
+    if mode not in ('replace', 'topup'):
+        raise HTTPException(status_code=400, detail="mode must be 'replace' or 'topup'")
     if not wallets:
         raise HTTPException(status_code=400, detail="No wallets provided")
-    
+
     now = datetime.now(timezone.utc).isoformat()
     created = 0
     updated = 0
-    
-    for w in wallets:
-        email = w.get('email', '').strip()
-        if not email:
+    skipped = []  # rows we couldn't ingest, with reason
+
+    for idx, w in enumerate(wallets):
+        email = (w.get('email') or '').strip().lower()
+        if not email or '@' not in email:
+            skipped.append({'row': idx + 1, 'email': email, 'reason': 'invalid email'})
             continue
+        try:
+            limit = float(w.get('credit_limit') or 0)
+        except (TypeError, ValueError):
+            skipped.append({'row': idx + 1, 'email': email, 'reason': 'credit_limit not a number'})
+            continue
+        if limit < 0:
+            skipped.append({'row': idx + 1, 'email': email, 'reason': 'credit_limit must be ≥ 0'})
+            continue
+
         existing = await db.credit_wallets.find_one({'email': email})
         if existing:
+            if mode == 'topup':
+                new_limit = (existing.get('credit_limit') or 0) + limit
+                new_balance = (existing.get('balance') or 0) + limit
+            else:  # replace
+                new_limit = limit
+                new_balance = limit
             await db.credit_wallets.update_one(
                 {'email': email},
                 {'$set': {
-                    'credit_limit': w.get('credit_limit', existing.get('credit_limit', 0)),
-                    'balance': w.get('credit_limit', existing.get('credit_limit', 0)),
-                    'lender': w.get('lender', existing.get('lender', '')),
-                    'name': w.get('name', existing.get('name', '')),
-                    'company': w.get('company', existing.get('company', '')),
-                    'updated_at': now
+                    'credit_limit': new_limit,
+                    'balance': new_balance,
+                    'lender': w.get('lender') or existing.get('lender', ''),
+                    'name': w.get('name') or existing.get('name', ''),
+                    'company': w.get('company') or existing.get('company', ''),
+                    'updated_at': now,
                 }}
             )
             updated += 1
         else:
             await db.credit_wallets.insert_one({
                 'email': email,
-                'name': w.get('name', ''),
-                'company': w.get('company', ''),
-                'credit_limit': w.get('credit_limit', 0),
-                'balance': w.get('credit_limit', 0),
-                'lender': w.get('lender', ''),
-                'updated_at': now
+                'name': w.get('name', '') or '',
+                'company': w.get('company', '') or '',
+                'credit_limit': limit,
+                'balance': limit,
+                'lender': w.get('lender', '') or '',
+                'updated_at': now,
             })
             created += 1
-    
-    return {"success": True, "created": created, "updated": updated, "total": created + updated}
+
+    return {
+        "success": True,
+        "mode": mode,
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "total": created + updated,
+    }
 
 
 
@@ -1017,6 +1082,8 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         description = f"{item.get('fabric_name', 'Fabric')}"
         if item.get('fabric_code'):
             description += f"\nCode: {item.get('fabric_code')}"
+        if item.get('color_name'):
+            description += f"\nColor: {item.get('color_name')}"
         if order_type:
             description += f"\nType: {order_type.title()}"
         
@@ -1063,9 +1130,9 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
     elements.append(Spacer(1, 3*mm))
     
     if has_bulk_items:
-        bulk_note = """<b>Note:</b> Lead time for bulk production items is estimated from the date of order confirmation 
-        and payment. Actual delivery may vary based on production schedules and material availability. 
-        You will receive tracking details once the order is dispatched."""
+        bulk_note = """<b>Dispatch commitments:</b> In-stock bulk orders are packaged &amp; dispatched within 24–48 hours.
+        Manufactured-to-order items typically dispatch within ~30 days of order confirmation &amp; payment.
+        You will receive tracking details once the order leaves our warehouse."""
         elements.append(Paragraph(bulk_note, ParagraphStyle('BulkNote', parent=styles['Normal'], fontSize=7, textColor=colors.HexColor('#b45309'), backColor=colors.HexColor('#fef3c7'), borderPadding=5, leading=9)))
         elements.append(Spacer(1, 3*mm))
     
@@ -1286,8 +1353,10 @@ def generate_pi_pdf(order: dict) -> io.BytesIO:
         amount_usd = round(qty_yards * rate_usd_yard, 2)
         total_usd += amount_usd
 
+        # Build color suffix if present (multi-color SKU selections)
+        _color_suffix = f" | Color: {item.get('color_name')}" if item.get('color_name') else ""
         table_data.append([
-            Paragraph(f"{item.get('fabric_name', '')}<br/><font size='6' color='#64748b'>{item.get('category_name', '')} | {item.get('fabric_code', '')}</font>", small_style),
+            Paragraph(f"{item.get('fabric_name', '')}<br/><font size='6' color='#64748b'>{item.get('category_name', '')} | {item.get('fabric_code', '')}{_color_suffix}</font>", small_style),
             item.get('hsn_code', ''),
             f"{qty_yards:,.2f}",
             f"${rate_usd_yard:,.4f}",

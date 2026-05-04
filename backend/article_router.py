@@ -48,6 +48,7 @@ class Article(BaseModel):
     description: str = ""
     seller_id: str = ""
     seller_name: str = ""
+    seller_code: str = ""
     category_id: str = ""
     category_name: str = ""
     variant_count: int = 0
@@ -77,7 +78,8 @@ async def get_articles(
 
     seller_ids = list({a.get('seller_id', '') for a in articles if a.get('seller_id')})
     sellers = await db.sellers.find({'id': {'$in': seller_ids}}, {'_id': 0}).to_list(100) if seller_ids else []
-    seller_map = {s['id']: s['name'] for s in sellers}
+    seller_name_map = {s['id']: s.get('name', '') for s in sellers}
+    seller_code_map = {s['id']: s.get('seller_code', '') for s in sellers}
 
     cat_ids = list({a.get('category_id', '') for a in articles if a.get('category_id')})
     categories = await db.categories.find({'id': {'$in': cat_ids}}, {'_id': 0}).to_list(100) if cat_ids else []
@@ -88,7 +90,8 @@ async def get_articles(
         variant_counts[aid] = await db.fabrics.count_documents({'article_id': aid})
 
     for article in articles:
-        article['seller_name'] = seller_map.get(article.get('seller_id', ''), '')
+        article['seller_name'] = seller_name_map.get(article.get('seller_id', ''), '')
+        article['seller_code'] = seller_code_map.get(article.get('seller_id', ''), '')
         article['category_name'] = cat_map.get(article.get('category_id', ''), '')
         article['variant_count'] = variant_counts.get(article['id'], 0)
         if 'article_code' not in article:
@@ -105,8 +108,10 @@ async def get_article(article_id: str):
     if article.get('seller_id'):
         seller = await db.sellers.find_one({'id': article['seller_id']}, {'_id': 0})
         article['seller_name'] = seller['name'] if seller else ''
+        article['seller_code'] = seller.get('seller_code', '') if seller else ''
     else:
         article['seller_name'] = ''
+        article['seller_code'] = ''
 
     if article.get('category_id'):
         category = await db.categories.find_one({'id': article['category_id']}, {'_id': 0})
@@ -168,15 +173,18 @@ async def create_article(data: ArticleCreate, admin=Depends(auth_helpers.get_cur
     article_doc.pop('_id', None)
 
     seller_name = ""
+    seller_code = ""
     category_name = ""
     if data.seller_id:
         seller = await db.sellers.find_one({'id': data.seller_id}, {'_id': 0})
         seller_name = seller['name'] if seller else ''
+        seller_code = seller.get('seller_code', '') if seller else ''
     if data.category_id:
         category = await db.categories.find_one({'id': data.category_id}, {'_id': 0})
         category_name = category['name'] if category else ''
 
     article_doc['seller_name'] = seller_name
+    article_doc['seller_code'] = seller_code
     article_doc['category_name'] = category_name
     article_doc['variant_count'] = 0
     return Article(**article_doc)
@@ -197,8 +205,10 @@ async def update_article(article_id: str, data: ArticleUpdate, admin=Depends(aut
     if article.get('seller_id'):
         seller = await db.sellers.find_one({'id': article['seller_id']}, {'_id': 0})
         article['seller_name'] = seller['name'] if seller else ''
+        article['seller_code'] = seller.get('seller_code', '') if seller else ''
     else:
         article['seller_name'] = ''
+        article['seller_code'] = ''
 
     if article.get('category_id'):
         category = await db.categories.find_one({'id': article['category_id']}, {'_id': 0})

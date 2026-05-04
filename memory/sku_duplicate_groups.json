@@ -1,0 +1,1151 @@
+[
+  {
+    "name": "cotton",
+    "seller": "",
+    "count": 8,
+    "rows": [
+      {
+        "id": "e957b6ea",
+        "gsm": 120,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500 MTR",
+        "fabric_code": "LF-Q5KIK"
+      },
+      {
+        "id": "57b231e7",
+        "gsm": 140,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-RLO6Z"
+      },
+      {
+        "id": "07a23f6f",
+        "gsm": 130,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-3XV5W"
+      },
+      {
+        "id": "d0fca5ba",
+        "gsm": 62,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-87ZO4"
+      },
+      {
+        "id": "1e1d482d",
+        "gsm": 108,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-9Y0W6"
+      },
+      {
+        "id": "1b141b43",
+        "gsm": 86,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-FST3G"
+      },
+      {
+        "id": "5694afd9",
+        "gsm": 106,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-JHD2Q"
+      },
+      {
+        "id": "a4fbb186",
+        "gsm": 112,
+        "ounce": "",
+        "width": "56''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-BBVP9"
+      }
+    ]
+  },
+  {
+    "name": "cotton yarn dyed",
+    "seller": "",
+    "count": 8,
+    "rows": [
+      {
+        "id": "c81d27c8",
+        "gsm": 128,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-N96G2"
+      },
+      {
+        "id": "830d7189",
+        "gsm": 132,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-AR54M"
+      },
+      {
+        "id": "3a18cb3a",
+        "gsm": 115,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-JFLW0"
+      },
+      {
+        "id": "63873009",
+        "gsm": 150,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-HVFN3"
+      },
+      {
+        "id": "0032129d",
+        "gsm": 127,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-4ZWPP"
+      },
+      {
+        "id": "8a3a75a8",
+        "gsm": 98,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-E3KS2"
+      },
+      {
+        "id": "62bb779c",
+        "gsm": 113,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-GUUDI"
+      },
+      {
+        "id": "2bbd3362",
+        "gsm": 147,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-5RC6X"
+      }
+    ]
+  },
+  {
+    "name": "cotton poplin",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 4,
+    "rows": [
+      {
+        "id": "7234f935",
+        "gsm": 130,
+        "ounce": null,
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-088GR"
+      },
+      {
+        "id": "b28d8b9c",
+        "gsm": 140,
+        "ounce": null,
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-LWCY1"
+      },
+      {
+        "id": "d7994c0b",
+        "gsm": 136,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-76HPK"
+      },
+      {
+        "id": "8866a5b6",
+        "gsm": 120,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-SVZDY"
+      }
+    ]
+  },
+  {
+    "name": "cotton aop",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 4,
+    "rows": [
+      {
+        "id": "17d3519d",
+        "gsm": 85,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-3DQXH"
+      },
+      {
+        "id": "2eec0c43",
+        "gsm": 70,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-UUYNQ"
+      },
+      {
+        "id": "8e9e2025",
+        "gsm": 73,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-RORO9"
+      },
+      {
+        "id": "3801be45",
+        "gsm": 84,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-MGOXG"
+      }
+    ]
+  },
+  {
+    "name": "cotton poplin aop",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 4,
+    "rows": [
+      {
+        "id": "92bed668",
+        "gsm": 114,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-SLJ1K"
+      },
+      {
+        "id": "2c8d93bb",
+        "gsm": 124,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-IJY9V"
+      },
+      {
+        "id": "78d0aa0e",
+        "gsm": 130,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-NHFHC"
+      },
+      {
+        "id": "7d0c4e20",
+        "gsm": 142,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-B4VJE"
+      }
+    ]
+  },
+  {
+    "name": "cotton stripes",
+    "seller": "",
+    "count": 4,
+    "rows": [
+      {
+        "id": "8928ec44",
+        "gsm": 140,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-1XTD0"
+      },
+      {
+        "id": "1e250d5d",
+        "gsm": 62,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-0PSPE"
+      },
+      {
+        "id": "5431a195",
+        "gsm": 180,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-MXJTW"
+      },
+      {
+        "id": "4a12fd05",
+        "gsm": 106,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-1XNDB"
+      }
+    ]
+  },
+  {
+    "name": "cotton ripstop",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 3,
+    "rows": [
+      {
+        "id": "89dcdf81",
+        "gsm": 205,
+        "ounce": null,
+        "width": "",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500 MTR",
+        "fabric_code": "LF-TLMT8"
+      },
+      {
+        "id": "b5c905e6",
+        "gsm": 185,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": false,
+        "moq": "1500MTR",
+        "fabric_code": "LF-BZKW3"
+      },
+      {
+        "id": "922ea1ef",
+        "gsm": 250,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": false,
+        "moq": "1500MTR",
+        "fabric_code": "LF-LDUAH"
+      }
+    ]
+  },
+  {
+    "name": "polyester single jersey",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 3,
+    "rows": [
+      {
+        "id": "fb946803",
+        "gsm": 165,
+        "ounce": null,
+        "width": "60''(open)",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "150KG",
+        "fabric_code": "LF-LA02D"
+      },
+      {
+        "id": "68747a15",
+        "gsm": 120,
+        "ounce": null,
+        "width": "60''(open)",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "150KG",
+        "fabric_code": "LF-9DQLF"
+      },
+      {
+        "id": "ac48e257",
+        "gsm": 179,
+        "ounce": "",
+        "width": "60''OPEN",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-5QVG6"
+      }
+    ]
+  },
+  {
+    "name": "cotton double cloth",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 3,
+    "rows": [
+      {
+        "id": "00afa171",
+        "gsm": 115,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-6IZQS"
+      },
+      {
+        "id": "c8561831",
+        "gsm": 115,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-47CF5"
+      },
+      {
+        "id": "b3b13af4",
+        "gsm": 120,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-N0A5B"
+      }
+    ]
+  },
+  {
+    "name": "cotton slub aop",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 3,
+    "rows": [
+      {
+        "id": "d2c3b76c",
+        "gsm": 150,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-3XEK0"
+      },
+      {
+        "id": "b04afb21",
+        "gsm": 130,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-3592P"
+      },
+      {
+        "id": "2ebbd41d",
+        "gsm": 110,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-3EYGX"
+      }
+    ]
+  },
+  {
+    "name": "cotton yarn dyed stripes",
+    "seller": "",
+    "count": 3,
+    "rows": [
+      {
+        "id": "1fe5ae5c",
+        "gsm": 62,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-FB9EF"
+      },
+      {
+        "id": "776ab42c",
+        "gsm": 130,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-BB1NP"
+      },
+      {
+        "id": "154d953e",
+        "gsm": 121,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-GWMON"
+      }
+    ]
+  },
+  {
+    "name": "cotton yarn dyed 2/2twill",
+    "seller": "",
+    "count": 3,
+    "rows": [
+      {
+        "id": "3ef61c94",
+        "gsm": 111,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-GZ7J1"
+      },
+      {
+        "id": "e7e20532",
+        "gsm": 147,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-80LER"
+      },
+      {
+        "id": "91e425b0",
+        "gsm": 126,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-E49FE"
+      }
+    ]
+  },
+  {
+    "name": "cotton yarn dyed",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 3,
+    "rows": [
+      {
+        "id": "ce7cdccb",
+        "gsm": 150,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-EA8T3"
+      },
+      {
+        "id": "bde60553",
+        "gsm": 120,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-0A0K8"
+      },
+      {
+        "id": "cc8820cb",
+        "gsm": 75,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-NWQMV"
+      }
+    ]
+  },
+  {
+    "name": "cotton lycra ripstop",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 3,
+    "rows": [
+      {
+        "id": "f5d0528f",
+        "gsm": 182,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": false,
+        "moq": "1500MTR",
+        "fabric_code": "LF-10DSB"
+      },
+      {
+        "id": "1237a4a3",
+        "gsm": 167,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": false,
+        "moq": "1500MTR",
+        "fabric_code": "LF-YESJP"
+      },
+      {
+        "id": "021b83e5",
+        "gsm": 209,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": false,
+        "moq": "1500MTR",
+        "fabric_code": "LF-KN5Y4"
+      }
+    ]
+  },
+  {
+    "name": "cotton 3\\1 twill",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "2a2b6f85",
+        "gsm": 200,
+        "ounce": null,
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-NT7IK"
+      },
+      {
+        "id": "a57d84de",
+        "gsm": 381,
+        "ounce": null,
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-ZRRD1"
+      }
+    ]
+  },
+  {
+    "name": "cotton poplin 40's x 40's",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "8ad86007",
+        "gsm": 127,
+        "ounce": null,
+        "width": "",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-6KZRM"
+      },
+      {
+        "id": "1afc0439",
+        "gsm": 130,
+        "ounce": null,
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-YVE7C"
+      }
+    ]
+  },
+  {
+    "name": "cotton",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "0b581df5",
+        "gsm": 75,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-A8L65"
+      },
+      {
+        "id": "1fa69caf",
+        "gsm": 79,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-EUEFE"
+      }
+    ]
+  },
+  {
+    "name": "cotton dobby aop",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "fffc76f8",
+        "gsm": 120,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-FW5O9"
+      },
+      {
+        "id": "4ed57666",
+        "gsm": 115,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-S34HV"
+      }
+    ]
+  },
+  {
+    "name": "cotton 3/1 twill",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "33757df9",
+        "gsm": 204,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-380U4"
+      },
+      {
+        "id": "702ae7ff",
+        "gsm": 290,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-HHZDP"
+      }
+    ]
+  },
+  {
+    "name": "cotton 3/1twill",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "841a1579",
+        "gsm": 221,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-7WGBQ"
+      },
+      {
+        "id": "9901dbdb",
+        "gsm": 285,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-2NH3B"
+      }
+    ]
+  },
+  {
+    "name": "cotton lycra 3/1 twill",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "ae094801",
+        "gsm": 260,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-Y0YXN"
+      },
+      {
+        "id": "a42edbe6",
+        "gsm": 298,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "",
+        "fabric_code": "LF-WWO2P"
+      }
+    ]
+  },
+  {
+    "name": "cotton dyed",
+    "seller": "",
+    "count": 2,
+    "rows": [
+      {
+        "id": "d4c1b28e",
+        "gsm": 99,
+        "ounce": "",
+        "width": "56''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-DTC7O"
+      },
+      {
+        "id": "5838a39a",
+        "gsm": 105,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-YAVX6"
+      }
+    ]
+  },
+  {
+    "name": "cotton 2/2twill aop",
+    "seller": "",
+    "count": 2,
+    "rows": [
+      {
+        "id": "d8142faf",
+        "gsm": 125,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-9BRQ3"
+      },
+      {
+        "id": "46b3d825",
+        "gsm": 154,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-XSLBD"
+      }
+    ]
+  },
+  {
+    "name": "cotton yarn dyed double cloth",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "19de522d",
+        "gsm": 118,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-1KZAE"
+      },
+      {
+        "id": "10602ebf",
+        "gsm": 118,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-8DZYY"
+      }
+    ]
+  },
+  {
+    "name": "cotton yarn dyed flex",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "a7c6f3a0",
+        "gsm": 125,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "150MTR",
+        "fabric_code": "LF-IRPDM"
+      },
+      {
+        "id": "b74f2945",
+        "gsm": 130,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-6OKZH"
+      }
+    ]
+  },
+  {
+    "name": "viscose",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "43f14526",
+        "gsm": 110,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-9GXR0"
+      },
+      {
+        "id": "ac3ce899",
+        "gsm": 115,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-Q7446"
+      }
+    ]
+  },
+  {
+    "name": "cotton yarn dyed putta dobby",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "c9aba8e4",
+        "gsm": 72,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-4D9SK"
+      },
+      {
+        "id": "b1149e37",
+        "gsm": 80,
+        "ounce": "",
+        "width": "54''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-GLYSJ"
+      }
+    ]
+  },
+  {
+    "name": "cotton 21 wales corduroy",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "b0188c0c",
+        "gsm": 160,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-ACC3L"
+      },
+      {
+        "id": "892a95d8",
+        "gsm": 160,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": null,
+        "moq": "1500MTR",
+        "fabric_code": "LF-ALN6N"
+      }
+    ]
+  },
+  {
+    "name": "cotton poly ripstop",
+    "seller": "Locofast Online Services Private Limited",
+    "count": 2,
+    "rows": [
+      {
+        "id": "0014aa13",
+        "gsm": 138,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": false,
+        "moq": "1500MTR",
+        "fabric_code": "LF-C15IS"
+      },
+      {
+        "id": "2126a962",
+        "gsm": 139,
+        "ounce": "",
+        "width": "58''",
+        "rate": null,
+        "qty": null,
+        "bookable": false,
+        "moq": "1500MTR",
+        "fabric_code": "LF-JK41H"
+      }
+    ]
+  }
+]

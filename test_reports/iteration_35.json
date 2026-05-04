@@ -1,0 +1,62 @@
+{
+  "summary": "Backend-only testing of server.py refactor (v35). All 21 tests passed. Verified: (1) Extracted routers work - migrations_router, sitemap_router, reviews_router, upload_router, (2) GET /api/fabrics returns vendor_count field (all = 1 since article_id empty), (3) dedupe_by_article=true collapses fabrics with shared article_id and picks lowest rate_per_meter, (4) GET /api/fabrics/count?dedupe_by_article=true returns same count as without dedupe (192) since no shared article_ids, (5) GET /api/categories returns Cotton Fabrics with seo_title, seo_intro populated, (6) Admin login and /api/stats work correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed_tests": [
+    "POST /api/auth/login with admin@locofast.com / admin123 returns token",
+    "POST /api/auth/login with wrong password returns 401",
+    "GET /api/stats (auth) returns fabrics=192, categories, sellers counts",
+    "GET /api/stats without auth returns 401/403",
+    "GET /api/sitemap.xml returns valid XML with urlset, loc elements",
+    "GET /api/reviews without auth returns 401/403",
+    "GET /api/reviews (auth) returns list of reviews",
+    "POST /api/migrate/greige without auth returns 401/403",
+    "POST /api/migrate/greige (auth, dry run) returns status=noop (Greige category not present)",
+    "POST /api/migrate/slugs without auth returns 401/403",
+    "POST /api/upload without auth returns 401/403",
+    "POST /api/upload (auth) accepts image and returns /api/uploads/<filename>",
+    "POST /api/upload/video without auth returns 401/403",
+    "POST /api/upload/video (auth) accepts video and returns /api/uploads/<filename>",
+    "GET /api/categories returns Cotton Fabrics with seo_title='Buy Premium Cotton Fabrics Online — Wholesale Prices'",
+    "GET /api/fabrics returns fabrics with vendor_count field (all = 1)",
+    "GET /api/fabrics without dedupe returns all fabrics",
+    "GET /api/fabrics?dedupe_by_article=true returns same count when no shared article_ids",
+    "GET /api/fabrics/count returns 192",
+    "GET /api/fabrics/count?dedupe_by_article=true returns 192 (same as without dedupe)",
+    "Dedupe test: created 2 fabrics with shared article_id, dedupe collapsed to 1 with vendor_count=2, winner has lowest rate_per_meter"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_refactor_v35.py",
+    "/app/test_reports/pytest/pytest_refactor_v35.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py successfully slimmed from 1183 to 633 lines by extracting migrations_router, sitemap_router, reviews_router, upload_router",
+    "All extracted routers properly use auth_helpers.get_current_admin for authentication",
+    "fabric_router.py dedupe_by_article logic correctly picks lowest rate_per_meter as winner and increments vendor_count",
+    "Fabric model has vendor_count: int = 1 default, ensuring all fabrics return this field",
+    "sitemap_router.py generates valid XML with static pages, fabrics, collections, posts, categories, sellers",
+    "upload_router.py correctly validates content-type for images and videos"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_refactor_v35.py"
+  ],
+  "success_rate": {
+    "backend": "100% (21/21 tests passed)",
+    "frontend": "N/A (backend-only testing requested)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123"
+  },
+  "seed_data_creation": "Created 2 test fabrics with shared article_id for dedupe testing, cleaned up after test",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Server.py refactor v35 fully tested. All extracted routers (migrations, sitemap, reviews, upload) work correctly. Dedupe by article_id feature works - collapses fabrics with same article_id into one with vendor_count showing total vendors, winner is lowest rate_per_meter. Current DB has 192 fabrics, all with empty article_id so dedupe count equals non-dedupe count. Cotton Fabrics category has SEO fields populated (seo_title, seo_intro, seo_applications)."
+}

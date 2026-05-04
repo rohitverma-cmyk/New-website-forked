@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Mock — Platform commission flag on vendor fabrics</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:'Inter',-apple-system,sans-serif}
+  body{background:#f1f5f9;min-height:100vh;padding:36px 24px;color:#0f172a}
+  .wrap{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:32px}
+  h2.flag{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;font-weight:700}
+  .subtitle{font-size:13px;color:#64748b;margin-top:-18px}
+  .card{background:#fff;border-radius:14px;box-shadow:0 18px 50px rgba(15,23,42,.08);border:1px solid #e2e8f0;overflow:hidden}
+
+  /* === Inventory list === */
+  .list-head{padding:18px 22px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between}
+  .list-head h3{font-size:16px;font-weight:600}
+  .list-head .btn{background:#059669;color:#fff;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:600;border:none}
+  .tbl{width:100%;font-size:13px;border-collapse:collapse}
+  .tbl thead th{background:#f8fafc;text-align:left;padding:11px 22px;font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:#64748b;border-bottom:1px solid #e2e8f0}
+  .tbl tbody td{padding:14px 22px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
+  .tbl tbody tr:hover{background:#f8fafc}
+  .sku-cell{display:flex;gap:12px;align-items:center}
+  .sku-img{width:42px;height:42px;border-radius:8px;background:#e2e8f0;background-size:cover;flex-shrink:0}
+  .sku-name{font-weight:600;color:#0f172a;line-height:1.3}
+  .sku-code{font-size:11px;color:#94a3b8;letter-spacing:.02em}
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600}
+  .pill.cat{background:#eff6ff;color:#1d4ed8}
+  .pill.price{color:#475569}
+  .pill.status{background:#dcfce7;color:#15803d}
+  .pill.pending{background:#fef3c7;color:#92400e}
+  .comm{display:inline-flex;align-items:center;gap:6px;background:#fff7ed;color:#92400e;border:1px solid #fed7aa;padding:4px 10px;border-radius:999px;font-size:11.5px;font-weight:600;cursor:help}
+  .comm .icon{width:10px;height:10px;border-radius:50%;background:#f97316}
+  .comm small{color:#c2410c;font-weight:500;margin-left:2px}
+  .actions{display:flex;gap:6px}
+  .actions a{color:#64748b;padding:4px;border-radius:4px}
+
+  /* === Modal === */
+  .modal{max-width:760px;width:100%;background:#fff;border-radius:16px;box-shadow:0 25px 70px rgba(15,23,42,.14);border:1px solid #e2e8f0;overflow:hidden}
+  .modal-head{padding:18px 26px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between}
+  .modal-head h3{font-size:17px;font-weight:600}
+  .modal-body{padding:22px 26px}
+  .row-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:18px}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:11px;font-weight:600;color:#64748b;letter-spacing:.05em;text-transform:uppercase}
+  .field input,.field select{padding:10px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;background:#fff}
+  .commission-box{background:linear-gradient(90deg,#fff7ed,#ffedd5);border:1px solid #fdba74;border-radius:12px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:14px}
+  .commission-box .left{display:flex;align-items:center;gap:12px}
+  .commission-box .chip{background:#f97316;color:#fff;font-size:11.5px;padding:4px 12px;border-radius:999px;font-weight:700;letter-spacing:.04em}
+  .commission-box .detail{font-size:12px;color:#9a3412;line-height:1.4}
+  .commission-box .detail b{color:#7c2d12;font-weight:700;font-size:13px;display:block;margin-bottom:2px}
+  .commission-box .right{text-align:right;font-size:12px;color:#64748b}
+  .commission-box .right .payout{font-size:16px;font-weight:700;color:#059669;display:block}
+  .commission-box .right .orig{text-decoration:line-through;color:#94a3b8}
+  .commission-live{font-size:10.5px;color:#10b981;display:flex;align-items:center;gap:4px;font-weight:600;letter-spacing:.04em;margin-top:6px}
+  .commission-live .dot{width:6px;height:6px;border-radius:50%;background:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.16);animation:pulse 1.5s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .small-hint{font-size:11px;color:#64748b;margin-top:10px}
+  .small-hint a{color:#2563EB;text-decoration:none;border-bottom:1px dashed #2563EB}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <h2 class="flag">Mock 1 · Inventory list — "Platform commission" column</h2>
+      <p class="subtitle" style="margin-top:6px">Small amber pill right next to each fabric's status; hover shows the rule that produced it.</p>
+    </div>
+
+    <div class="card">
+      <div class="list-head">
+        <h3>My Inventory — 4 fabrics</h3>
+        <button class="btn">+ Add Fabric</button>
+      </div>
+
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>Fabric</th>
+            <th>Category</th>
+            <th>Price</th>
+            <th>Platform commission</th>
+            <th>Status</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="sku-cell">
+              <div class="sku-img" style="background:linear-gradient(135deg,#1e3a8a,#3b82f6)"></div>
+              <div>
+                <div class="sku-name">Cotton Polyester Lycra, 3/1 RHT, 10oz, Color: Indigo x White</div>
+                <div class="sku-code">LF-DNM-00412 · SKU TVF-001</div>
+              </div>
+            </td>
+            <td><span class="pill cat">Denim</span></td>
+            <td class="pill price">₹320/m</td>
+            <td>
+              <span class="comm" title="Rule: Denim · default · 7%">
+                <span class="icon"></span> Platform commission: 7%
+                <small>· ₹22.40/m</small>
+              </span>
+            </td>
+            <td><span class="pill status">Live</span></td>
+            <td class="actions" style="text-align:right">
+              <a>✏️</a><a>🗑️</a>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="sku-cell">
+              <div class="sku-img" style="background:linear-gradient(135deg,#d6c9a0,#fefce8)"></div>
+              <div>
+                <div class="sku-name">Cotton Spandex, 2/1 Twill, 220 GSM, Color: Natural</div>
+                <div class="sku-code">LF-CTN-00118</div>
+              </div>
+            </td>
+            <td><span class="pill cat">Cotton</span></td>
+            <td class="pill price">₹185/m</td>
+            <td>
+              <span class="comm" title="Rule: Cotton · volume slab &lt; 500m · 5%">
+                <span class="icon"></span> Platform commission: 5%
+                <small>· ₹9.25/m</small>
+              </span>
+            </td>
+            <td><span class="pill status">Live</span></td>
+            <td class="actions" style="text-align:right">
+              <a>✏️</a><a>🗑️</a>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="sku-cell">
+              <div class="sku-img" style="background:linear-gradient(135deg,#065f46,#047857)"></div>
+              <div>
+                <div class="sku-name">Recycled Polyester Herringbone, 180 GSM, Color: Forest</div>
+                <div class="sku-code">LF-SUS-00007</div>
+              </div>
+            </td>
+            <td><span class="pill cat">Sustainable</span></td>
+            <td class="pill price">₹480/m</td>
+            <td>
+              <span class="comm" title="Rule: Sustainable · recycled incentive · 3% (reduced)">
+                <span class="icon" style="background:#10b981"></span> Platform commission: 3%
+                <small>· ₹14.40/m</small>
+              </span>
+            </td>
+            <td><span class="pill pending">Pending</span></td>
+            <td class="actions" style="text-align:right">
+              <a>✏️</a><a>🗑️</a>
+            </td>
+          </tr>
+
+          <tr>
+            <td class="sku-cell">
+              <div class="sku-img" style="background:linear-gradient(135deg,#b399d4,#c7b9e0)"></div>
+              <div>
+                <div class="sku-name">Viscose Poplin, 90 GSM, Color: Ivory</div>
+                <div class="sku-code">LF-VIS-00003</div>
+              </div>
+            </td>
+            <td><span class="pill cat">Viscose</span></td>
+            <td class="pill price">₹140/m</td>
+            <td>
+              <span class="comm" title="Default rule · 5%">
+                <span class="icon"></span> Platform commission: 5%
+                <small>· ₹7.00/m</small>
+              </span>
+            </td>
+            <td><span class="pill pending">Draft</span></td>
+            <td class="actions" style="text-align:right">
+              <a>✏️</a><a>🗑️</a>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div>
+      <h2 class="flag">Mock 2 · Add/Edit fabric modal — live commission hint below the Price field</h2>
+      <p class="subtitle" style="margin-top:6px">Recomputes every time category / price / volume changes.</p>
+    </div>
+
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Add New Fabric</h3>
+        <span style="color:#94a3b8;font-size:14px;cursor:pointer">✕</span>
+      </div>
+      <div class="modal-body">
+        <div class="row-grid">
+          <div class="field">
+            <label>Category *</label>
+            <select><option>Denim</option></select>
+          </div>
+          <div class="field">
+            <label>Price · ₹/m *</label>
+            <input value="320" />
+          </div>
+          <div class="field">
+            <label>MOQ · metres *</label>
+            <input value="500" />
+          </div>
+        </div>
+
+        <div class="commission-box">
+          <div class="left">
+            <span class="chip">7%</span>
+            <div class="detail">
+              <b>Platform commission: 7%</b>
+              Denim · default rule · applies on every sale
+            </div>
+          </div>
+          <div class="right">
+            <span class="orig">₹320/m listing</span>
+            <span class="payout">₹297.60/m</span>
+            <span>your payout after commission</span>
+          </div>
+        </div>
+        <p class="commission-live"><span class="dot"></span>LIVE — updates as you change category or price</p>
+
+        <p class="small-hint">
+          The commission rate depends on your agreement with Locofast — category, volume slab, and
+          vendor-specific overrides are all honoured. Full breakdown per order will appear in your
+          <a>Orders</a> tab. Questions? <a>View commission rules</a>.
+        </p>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

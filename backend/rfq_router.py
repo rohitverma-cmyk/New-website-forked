@@ -1,7 +1,7 @@
 """
 RFQ Router - Handles Request for Quote submissions with category-specific fields
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import datetime, timezone
@@ -112,15 +112,31 @@ def get_quantity_label(category: str, value: str) -> str:
 # ==================== ENDPOINTS ====================
 
 @router.post("/submit", response_model=RFQResponse)
-async def submit_rfq(data: RFQSubmission):
+async def submit_rfq(data: RFQSubmission, request: Request):
     """Submit a new Request for Quote with category-specific details"""
     
     rfq_id = str(uuid.uuid4())
     rfq_number = await generate_rfq_number()
-    
+
+    # If the caller is a logged-in customer, attach their customer_id so the
+    # RFQ shows up in their /account "My Queries" list. Anonymous submissions
+    # (public RFQ form) just leave it blank.
+    customer_id = ""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            import jwt as _jwt
+            JWT_SECRET = os.environ.get("JWT_SECRET", "default-secret")
+            payload = _jwt.decode(auth.split(" ", 1)[1], JWT_SECRET, algorithms=["HS256"])
+            if payload.get("type") == "customer":
+                customer_id = payload.get("customer_id", "") or ""
+        except Exception:
+            customer_id = ""
+
     rfq_doc = {
         'id': rfq_id,
         'rfq_number': rfq_number,
+        'customer_id': customer_id,
         'category': data.category,
         'fabric_requirement_type': data.fabric_requirement_type or "",
         'quantity_meters': data.quantity_meters or "",

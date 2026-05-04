@@ -109,6 +109,17 @@ frontend/node_modules/.cache/default-development/21.pack
 frontend/node_modules/.cache/default-development/25.pack
 -e 
 # Environment and credential files
+# NOTE: .env files must be committed so Emergent's deploy pipeline can
+# auto-update them with production secrets. Do NOT re-add `.env` here.
+credentials.json
+*.pem
+*.key
+.credentials
+frontend/node_modules/.cache/default-development/66.pack
+frontend/node_modules/.cache/default-development/113.pack
+frontend/node_modules/.cache/default-development/14.pack
+-e 
+# Environment and credential files
 .env
 .env.*
 *.env

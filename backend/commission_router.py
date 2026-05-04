@@ -2,11 +2,12 @@
 Commission Router - Manages commission rules and calculations for vendor payouts.
 Commission hierarchy (most specific wins):
   1. Vendor-specific override
-  2. Category-specific rate
-  3. Cart value slab
-  4. Meterage slab
-  5. Order source (inventory vs RFQ)
-  6. Default (5%)
+  2. Category + Pattern (e.g. Cotton + Stripes)
+  3. Category-specific rate
+  4. Cart value slab
+  5. Meterage slab
+  6. Order source (inventory vs RFQ)
+  7. Default (5%)
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -20,7 +21,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/commission", tags=["commission"])
 
 db = None
-DEFAULT_COMMISSION_PCT = 5.0
+# Default commission when no rule matches. 0 means "don't charge anything
+# by default" — admins must set explicit rules in /admin/commission before
+# any commission is applied. Kept as a constant (not editable from UI yet)
+# to avoid silent fee drift; flip here + update the caption in the Admin
+# page if this ever changes.
+DEFAULT_COMMISSION_PCT = 0.0
 
 
 def set_db(database):
@@ -31,11 +37,12 @@ def set_db(database):
 # ==================== MODELS ====================
 
 class CommissionRule(BaseModel):
-    rule_type: str  # vendor, category, cart_value, meterage, source
+    rule_type: str  # vendor, category, category_pattern, cart_value, meterage, source
     vendor_id: Optional[str] = None
     vendor_name: Optional[str] = None
     category_id: Optional[str] = None
     category_name: Optional[str] = None
+    pattern: Optional[str] = None  # used by category_pattern (e.g. "Solid", "Stripes")
     min_value: Optional[float] = None  # For cart_value or meterage slabs
     max_value: Optional[float] = None
     source: Optional[str] = None  # "inventory" or "rfq"
@@ -48,7 +55,7 @@ class CommissionRule(BaseModel):
 async def calculate_commission(order_data: dict, items: list) -> dict:
     """
     Calculate commission % and amount for an order.
-    Priority: vendor-specific > category > cart_value > meterage > source > default
+    Priority: vendor > category+pattern > category > cart_value > meterage > source > default
     """
     if db is None:
         return {"commission_pct": DEFAULT_COMMISSION_PCT, "commission_amount": 0, "rule_applied": "default"}
@@ -57,6 +64,7 @@ async def calculate_commission(order_data: dict, items: list) -> dict:
     total_meters = sum(item.get("quantity", 0) for item in items)
     seller_id = items[0].get("seller_id", "") if items else ""
     category_name = items[0].get("category_name", "") if items else ""
+    pattern = (items[0].get("pattern", "") if items else "") or ""
     is_rfq = order_data.get("source") == "rfq"
 
     rules = await db.commission_rules.find({"is_active": True}, {"_id": 0}).to_list(500)
@@ -67,13 +75,29 @@ async def calculate_commission(order_data: dict, items: list) -> dict:
             pct = r["commission_pct"]
             return {"commission_pct": pct, "commission_amount": round(subtotal * pct / 100, 2), "rule_applied": f"vendor:{r.get('vendor_name', seller_id)}"}
 
-    # 2. Category-specific
+    # 2. Category + Pattern (more specific than plain category — e.g. Cotton + Stripes
+    #    might attract a different rate than generic Cotton).
+    for r in rules:
+        if (
+            r.get("rule_type") == "category_pattern"
+            and r.get("category_name", "").lower() == category_name.lower()
+            and (r.get("pattern", "") or "").lower() == pattern.lower()
+            and category_name and pattern
+        ):
+            pct = r["commission_pct"]
+            return {
+                "commission_pct": pct,
+                "commission_amount": round(subtotal * pct / 100, 2),
+                "rule_applied": f"category_pattern:{category_name}/{pattern}",
+            }
+
+    # 3. Category-specific
     for r in rules:
         if r.get("rule_type") == "category" and r.get("category_name", "").lower() == category_name.lower():
             pct = r["commission_pct"]
             return {"commission_pct": pct, "commission_amount": round(subtotal * pct / 100, 2), "rule_applied": f"category:{category_name}"}
 
-    # 3. Cart value slab
+    # 4. Cart value slab
     cart_rules = sorted([r for r in rules if r.get("rule_type") == "cart_value"], key=lambda x: x.get("min_value", 0))
     for r in cart_rules:
         mn = r.get("min_value", 0) or 0
@@ -82,7 +106,7 @@ async def calculate_commission(order_data: dict, items: list) -> dict:
             pct = r["commission_pct"]
             return {"commission_pct": pct, "commission_amount": round(subtotal * pct / 100, 2), "rule_applied": f"cart_value:{mn}-{mx}"}
 
-    # 4. Meterage slab
+    # 5. Meterage slab
     meter_rules = sorted([r for r in rules if r.get("rule_type") == "meterage"], key=lambda x: x.get("min_value", 0))
     for r in meter_rules:
         mn = r.get("min_value", 0) or 0
@@ -91,14 +115,14 @@ async def calculate_commission(order_data: dict, items: list) -> dict:
             pct = r["commission_pct"]
             return {"commission_pct": pct, "commission_amount": round(subtotal * pct / 100, 2), "rule_applied": f"meterage:{mn}-{mx}m"}
 
-    # 5. Source (inventory vs RFQ)
+    # 6. Source (inventory vs RFQ)
     source_type = "rfq" if is_rfq else "inventory"
     for r in rules:
         if r.get("rule_type") == "source" and r.get("source") == source_type:
             pct = r["commission_pct"]
             return {"commission_pct": pct, "commission_amount": round(subtotal * pct / 100, 2), "rule_applied": f"source:{source_type}"}
 
-    # 6. Default
+    # 7. Default
     pct = DEFAULT_COMMISSION_PCT
     return {"commission_pct": pct, "commission_amount": round(subtotal * pct / 100, 2), "rule_applied": "default"}
 

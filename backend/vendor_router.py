@@ -11,6 +11,18 @@ import jwt
 import bcrypt
 from datetime import datetime, timezone, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
+from composition_utils import canonicalize_composition
+from fabric_router import validate_dispatch_timeline
+
+
+def _canon_comp_or_raw(comp):
+    """Normalize composition on vendor writes; pass through empty/None untouched."""
+    if comp in (None, "", []):
+        return comp
+    try:
+        return canonicalize_composition(comp)
+    except Exception:
+        return comp
 
 router = APIRouter(prefix="/api/vendor", tags=["vendor"])
 
@@ -53,6 +65,7 @@ class FabricCreate(BaseModel):
     gsm: Optional[int] = None
     ounce: str = ""
     width: Optional[str] = ""
+    width_type: Optional[str] = ""  # "Open Width" or "Circular" — for knitted fabrics
     finish: str = ""
     tags: object = ""  # Can be string or list
     images: List[str] = []
@@ -66,6 +79,8 @@ class FabricCreate(BaseModel):
     # Comprehensive fields
     fabric_type: str = "woven"
     pattern: str = "Solid"
+    weave_type: str = ""
+    construction: str = ""
     color: str = ""
     warp_count: str = ""
     weft_count: str = ""
@@ -82,6 +97,8 @@ class FabricCreate(BaseModel):
     sample_delivery_days: str = ""
     bulk_delivery_days: str = ""
     pricing_tiers: List[dict] = []
+    has_multiple_colors: bool = False
+    color_variants: List[dict] = []
 
 class FabricUpdate(BaseModel):
     name: Optional[str] = None
@@ -91,6 +108,7 @@ class FabricUpdate(BaseModel):
     gsm: Optional[int] = None
     ounce: Optional[str] = None
     width: Optional[str] = None
+    width_type: Optional[str] = None
     finish: Optional[str] = None
     tags: Optional[object] = None
     images: Optional[List[str]] = None
@@ -104,6 +122,8 @@ class FabricUpdate(BaseModel):
     # Comprehensive fields
     fabric_type: Optional[str] = None
     pattern: Optional[str] = None
+    weave_type: Optional[str] = None
+    construction: Optional[str] = None
     color: Optional[str] = None
     warp_count: Optional[str] = None
     weft_count: Optional[str] = None
@@ -120,6 +140,8 @@ class FabricUpdate(BaseModel):
     sample_delivery_days: Optional[str] = None
     bulk_delivery_days: Optional[str] = None
     pricing_tiers: Optional[List[dict]] = None
+    has_multiple_colors: Optional[bool] = None
+    color_variants: Optional[List[dict]] = None
 
 # ==================== AUTH HELPERS ====================
 
@@ -231,6 +253,9 @@ async def get_vendor_fabric(fabric_id: str, vendor=Depends(get_current_vendor)):
 @router.post("/fabrics")
 async def create_vendor_fabric(data: FabricCreate, vendor=Depends(get_current_vendor)):
     """Create a new fabric for this vendor"""
+    # Hard-required: dispatch_timeline must match the preset list for stock_type
+    data.dispatch_timeline = validate_dispatch_timeline(data.dispatch_timeline, data.stock_type)
+
     fabric_id = str(uuid.uuid4())
     
     # Get category name
@@ -249,7 +274,7 @@ async def create_vendor_fabric(data: FabricCreate, vendor=Depends(get_current_ve
         'category_id': data.category_id,
         'category_name': category_name,
         'description': data.description,
-        'composition': data.composition,
+        'composition': _canon_comp_or_raw(data.composition),
         'gsm': data.gsm,
         'ounce': data.ounce,
         'width': data.width,
@@ -266,6 +291,8 @@ async def create_vendor_fabric(data: FabricCreate, vendor=Depends(get_current_ve
         'status': 'pending',
         'fabric_type': data.fabric_type,
         'pattern': data.pattern,
+        'weave_type': data.weave_type,
+        'construction': data.construction,
         'color': data.color,
         'warp_count': data.warp_count,
         'weft_count': data.weft_count,
@@ -282,6 +309,9 @@ async def create_vendor_fabric(data: FabricCreate, vendor=Depends(get_current_ve
         'sample_delivery_days': data.sample_delivery_days,
         'bulk_delivery_days': data.bulk_delivery_days,
         'pricing_tiers': data.pricing_tiers,
+        'width_type': data.width_type,
+        'has_multiple_colors': data.has_multiple_colors,
+        'color_variants': data.color_variants,
         'created_at': datetime.now(timezone.utc).isoformat()
     }
     
@@ -303,6 +333,14 @@ async def update_vendor_fabric(fabric_id: str, data: FabricUpdate, vendor=Depend
     
     if not update_data:
         raise HTTPException(status_code=400, detail='No data to update')
+
+    if 'dispatch_timeline' in update_data or 'stock_type' in update_data:
+        effective_stock = update_data.get('stock_type', fabric.get('stock_type', 'ready_stock'))
+        effective_disp = update_data.get('dispatch_timeline', fabric.get('dispatch_timeline', ''))
+        update_data['dispatch_timeline'] = validate_dispatch_timeline(effective_disp, effective_stock)
+
+    if 'composition' in update_data:
+        update_data['composition'] = _canon_comp_or_raw(update_data['composition'])
     
     await db.fabrics.update_one({'id': fabric_id}, {'$set': update_data})
     
@@ -321,20 +359,55 @@ async def delete_vendor_fabric(fabric_id: str, vendor=Depends(get_current_vendor
     return {'success': True, 'message': 'Fabric deleted'}
 
 @router.get("/orders")
-async def get_vendor_orders(vendor=Depends(get_current_vendor)):
-    """Get orders containing this vendor's fabrics"""
-    # Find orders that have items from this vendor's fabrics
+async def get_vendor_orders(
+    source: Optional[str] = None,
+    vendor=Depends(get_current_vendor),
+):
+    """Get orders containing this vendor's fabrics OR orders converted from
+    a quote this vendor submitted (RFQ flow). Optional `?source=inventory|rfq`
+    filter splits the two streams.
+    """
     vendor_fabric_ids = await db.fabrics.distinct('id', {'seller_id': vendor['id']})
-    
-    orders = await db.orders.find(
-        {'items.fabric_id': {'$in': vendor_fabric_ids}},
-        {'_id': 0}
-    ).sort('created_at', -1).to_list(500)
-    
-    # Filter items to only show vendor's fabrics
+    seller_id = vendor['id']
+
+    base_q: dict = {
+        '$or': [
+            {'items.fabric_id': {'$in': vendor_fabric_ids}},
+            {'items.seller_id': seller_id},
+        ]
+    }
+    if source in ("inventory", "rfq"):
+        # `inventory` = orders without a `source` field (legacy) OR explicitly tagged inventory
+        if source == "rfq":
+            base_q['source'] = 'rfq'
+        else:
+            base_q['$or'] = [
+                {'source': {'$exists': False}, '$or': base_q['$or']},
+                {'source': 'inventory', **{'$or': base_q['$or']}},
+            ]
+            # Mongo doesn't allow nested $or like that — simpler rewrite:
+            base_q = {
+                '$and': [
+                    {'$or': [
+                        {'items.fabric_id': {'$in': vendor_fabric_ids}},
+                        {'items.seller_id': seller_id},
+                    ]},
+                    {'$or': [{'source': {'$exists': False}}, {'source': 'inventory'}]},
+                ]
+            }
+
+    orders = await db.orders.find(base_q, {'_id': 0}).sort('created_at', -1).to_list(500)
+
+    # Filter items to only show vendor's fabrics OR vendor's seller_id (rfq path)
     for order in orders:
-        order['items'] = [item for item in order.get('items', []) if item.get('fabric_id') in vendor_fabric_ids]
-    
+        order['items'] = [
+            item for item in order.get('items', [])
+            if item.get('fabric_id') in vendor_fabric_ids or item.get('seller_id') == seller_id
+        ]
+        # Always expose source label so vendor UI can render the chip
+        if not order.get('source'):
+            order['source'] = 'inventory'
+
     return orders
 
 @router.get("/stats")
