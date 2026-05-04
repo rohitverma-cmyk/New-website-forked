@@ -4,6 +4,9 @@
 .idea/
 .vscode/
 
+locofast_fabric_sourcing/
+locofast_fabric_sourcing_api/
+
 # Dependencies
 node_modules/
 /node_modules
