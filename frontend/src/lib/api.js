@@ -149,34 +149,18 @@ export const deleteCollection = (id) => api.delete(`/collections/${id}`);
 // Stats
 export const getStats = () => api.get("/stats");
 
-// Upload - Local storage (legacy fallback)
+// Upload — do not set Content-Type for FormData; browser must send multipart boundary.
 export const uploadImage = (file) => {
   const formData = new FormData();
   formData.append("file", file);
-  
-  // Explicitly get the token and include it
-  const token = localStorage.getItem("locofast_token");
-  
-  return api.post("/upload", formData, {
-    headers: { 
-      "Content-Type": "multipart/form-data",
-      ...(token && { Authorization: `Bearer ${token}` })
-    },
-  });
+  return api.post("/upload", formData);
 };
 
 export const uploadVideo = (file, onProgress) => {
   const formData = new FormData();
   formData.append("file", file);
-  
-  // Explicitly get the token and include it
-  const token = localStorage.getItem("locofast_token");
-  
+
   return api.post("/upload/video", formData, {
-    headers: { 
-      "Content-Type": "multipart/form-data",
-      ...(token && { Authorization: `Bearer ${token}` })
-    },
     timeout: 300000, // 5 min timeout for large files
     onUploadProgress: (progressEvent) => {
       if (onProgress) {
