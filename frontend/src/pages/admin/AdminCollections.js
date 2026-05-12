@@ -3,8 +3,11 @@ import { Plus, Pencil, Trash2, X, Upload, Star, Check, Package } from "lucide-re
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { getCollections, getFabrics, createCollection, updateCollection, deleteCollection, uploadImage } from "../../lib/api";
+import { useConfirm } from "../../components/useConfirm";
 
 const AdminCollections = () => {
+  const confirm = useConfirm();
+
   const [collections, setCollections] = useState([]);
   const [fabrics, setFabrics] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -115,7 +118,7 @@ const AdminCollections = () => {
   };
 
   const handleDelete = async (collection) => {
-    if (!window.confirm(`Delete "${collection.name}"? This will not delete the fabrics.`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${collection.name}"? This will not delete the fabrics.`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteCollection(collection.id);
       toast.success("Collection deleted");

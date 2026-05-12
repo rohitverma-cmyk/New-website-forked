@@ -3,8 +3,11 @@ import { Plus, Pencil, Trash2, X, Tag, Percent, DollarSign, Calendar, Users, Che
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { getCoupons, createCoupon, updateCoupon, deleteCoupon } from "../../lib/api";
+import { useConfirm } from "../../components/useConfirm";
 
 const AdminCoupons = () => {
+  const confirm = useConfirm();
+
   const [coupons, setCoupons] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -111,7 +114,7 @@ const AdminCoupons = () => {
   };
 
   const handleDelete = async (coupon) => {
-    if (!window.confirm(`Delete coupon "${coupon.code}"?`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete coupon "${coupon.code}"?`, tone: "danger", confirmLabel: "Confirm" }))) return;
 
     try {
       await deleteCoupon(coupon.id);

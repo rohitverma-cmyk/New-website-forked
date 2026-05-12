@@ -37,12 +37,42 @@ def _get_customer(request: Request) -> dict:
 
 
 # ==================== HELPERS ====================
+QUANTITY_BUCKET_LABELS = {
+    "1000_5000": "1,000 – 5,000",
+    "5000_20000": "5,000 – 20,000",
+    "20000_50000": "20,000 – 50,000",
+    "50000_plus": "50,000+",
+    "1000_2500": "1,000 – 2,500",
+    "2500_7500": "2,500 – 7,500",
+    "7500_25000": "7,500 – 25,000",
+    "25000_plus": "25,000+",
+    "less_than_200": "< 200",
+    "200_500": "200 – 500",
+    "500_1000": "500 – 1,000",
+    "1000_plus": "1,000+",
+}
+
+
 def _quantity_label(rfq: dict) -> str:
-    if rfq.get("category") == "knits":
-        v = rfq.get("quantity_kg", "")
-        return f"{v} kg" if v else ""
-    v = rfq.get("quantity_meters", "")
-    return f"{v} m" if v else ""
+    """Humanise the stored quantity. Numeric+unit first, then buckets."""
+    qv = rfq.get("quantity_value")
+    qu = (rfq.get("quantity_unit") or "").lower()
+    if qv and qu:
+        try:
+            n = float(qv)
+            n_str = str(int(n)) if n.is_integer() else str(n)
+            return f"{n_str} {qu}"
+        except (TypeError, ValueError):
+            pass
+    cat = (rfq.get("category") or "").lower()
+    is_kg = cat == "knits"
+    raw = rfq.get("quantity_kg", "") if is_kg else rfq.get("quantity_meters", "")
+    if not raw:
+        raw = rfq.get("quantity_meters") or rfq.get("quantity_kg") or ""
+    if not raw:
+        return ""
+    label = QUANTITY_BUCKET_LABELS.get(raw, raw.replace("_", " – "))
+    return f"{label} {'kg' if is_kg else 'm'}"
 
 
 async def _attach_quotes_summary(rfq: dict) -> dict:
@@ -87,7 +117,8 @@ async def list_my_queries(
 
     base = {"customer_id": cust_id}
     if status == "closed":
-        base["status"] = "closed"
+        # Closed bucket includes both manually-closed RFQs and won (order placed) ones
+        base["status"] = {"$in": ["closed", "won", "lost"]}
     rfqs = await db.rfq_submissions.find(base, {"_id": 0}).sort("created_at", -1).to_list(2000)
 
     out: List[dict] = []
@@ -115,9 +146,17 @@ async def get_my_query_detail(rfq_id: str, request: Request):
     )
     if not rfq:
         raise HTTPException(status_code=404, detail="Query not found")
-    quotes = await db.vendor_quotes.find(
-        {"rfq_id": rfq_id, "status": "submitted"}, {"_id": 0}
-    ).sort("price_per_meter", 1).to_list(50)
+    # When the RFQ is still open, show only submitted quotes (so customer
+    # only sees actionable rates). Once won, show every quote (winner first)
+    # so the customer can audit what they accepted.
+    if rfq.get("status") == "won":
+        quotes = await db.vendor_quotes.find(
+            {"rfq_id": rfq_id, "status": {"$in": ["submitted", "won", "lost"]}}, {"_id": 0}
+        ).sort("price_per_meter", 1).to_list(50)
+    else:
+        quotes = await db.vendor_quotes.find(
+            {"rfq_id": rfq_id, "status": "submitted"}, {"_id": 0}
+        ).sort("price_per_meter", 1).to_list(50)
 
     # Stamp Best Price flag on the cheapest quote (rate per unit)
     if quotes:

@@ -4,9 +4,6 @@
 .idea/
 .vscode/
 
-locofast_fabric_sourcing/
-locofast_fabric_sourcing_api/
-
 # Dependencies
 node_modules/
 /node_modules
@@ -118,6 +115,56 @@ credentials.json
 frontend/node_modules/.cache/default-development/66.pack
 frontend/node_modules/.cache/default-development/113.pack
 frontend/node_modules/.cache/default-development/14.pack
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
+frontend/node_modules/.cache/default-development/26.pack
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
+frontend/node_modules/.cache/default-development/24.pack
+frontend/node_modules/.cache/default-development/29.pack
+frontend/node_modules/.cache/default-development/27.pack
+frontend/node_modules/.cache/default-development/64.pack
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
+-e 
+# Environment and credential files
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
 -e 
 # Environment and credential files
 .env

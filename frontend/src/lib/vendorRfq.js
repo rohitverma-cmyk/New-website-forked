@@ -3,8 +3,7 @@
  * Keeping them out of the page components so JSX stays readable.
  */
 export const STATUS_TABS = [
-  { key: "new", label: "All new" },
-  { key: "picked", label: "Picked" },
+  { key: "all", label: "All" },
   { key: "submitted", label: "Submitted" },
   { key: "closed", label: "Closed" },
 ];

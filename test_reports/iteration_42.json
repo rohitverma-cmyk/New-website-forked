@@ -1,0 +1,83 @@
+{
+  "summary": "Phase 45 testing complete - Order Detail & Tracking, +New Query button, and Standalone Factory features all working correctly. All 10 backend tests passed. Frontend UI verified for order detail page, My Queries tab, and Admin Brands standalone factory creation.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase45_order_detail.py",
+    "/app/test_reports/pytest/pytest_phase45.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_phase45_order_detail.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123",
+    "customer_with_orders": "deepak.wadhwa@locofast.com (OTP-based login)",
+    "different_customer": "profile-test@locofast.com (for cross-access tests)",
+    "paid_order_id": "220475e5-fa34-40c5-ae1d-8738781996b1 (ORD-BGFIJQ)",
+    "pending_order_id": "bd026916-78e1-4b83-b6fd-1bad95cd2a2c (ORD-JYDG63)"
+  },
+  "seed_data_creation": "None - used existing test data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 45 features fully tested: (1) Order Detail page at /account/orders/:orderId shows timeline, items, payment summary, shipping info. Pay now CTA visible for pending orders, Download invoice visible for paid orders. (2) My Queries tab has +New Query button that navigates to /rfq?from=account. RFQ submission redirects back to /account?tab=queries. (3) Admin Brands page allows standalone factory creation with '— Standalone (no parent brand) —' option in dropdown.",
+  "features_tested": {
+    "order_detail_page": {
+      "status": "PASS",
+      "tests": [
+        "Order cards clickable and route to /account/orders/<order.id>",
+        "Order number header displayed",
+        "Timeline strip with 5 stages (Payment, Paid, Processing, Shipped, Delivered)",
+        "Items list with fabric details",
+        "Payment summary with subtotal, GST, total",
+        "Shipping snapshot with customer info",
+        "Pay now CTA visible for payment_pending orders",
+        "Download invoice CTA visible for paid orders",
+        "Back to My Orders button works"
+      ]
+    },
+    "my_queries_tab": {
+      "status": "PASS",
+      "tests": [
+        "+New Query button visible with data-testid='customer-queries-new-query-btn'",
+        "Click navigates to /rfq?from=account",
+        "/account?tab=queries opens with My Queries tab pre-selected",
+        "RFQ page sends Authorization header when lf_customer_token is set"
+      ]
+    },
+    "standalone_factory": {
+      "status": "PASS",
+      "tests": [
+        "POST /api/admin/brands with type='factory' AND empty parent_brand_id creates standalone factory",
+        "POST /api/admin/brands with type='factory' AND non-existent parent_brand_id returns 400",
+        "POST /api/admin/brands with type='factory' AND valid parent_brand_id works (regression)",
+        "POST /api/admin/brands with type='brand' ignores parent_brand_id (regression)",
+        "Admin UI shows '— Standalone (no parent brand) —' as default option",
+        "Factory list rows show 'Standalone' label when parent_brand_name is missing"
+      ]
+    },
+    "customer_order_api": {
+      "status": "PASS",
+      "tests": [
+        "GET /api/customer/orders/{order_id} returns order for owner",
+        "GET /api/customer/orders/{order_id} returns 404 for different customer",
+        "GET /api/customer/orders/{order_id} returns 401 without auth",
+        "GET /api/customer/orders/{order_id}/pay-context returns razorpay info for pending order",
+        "pay-context returns 400 'Order is already paid' for paid order",
+        "pay-context returns 404 for different customer"
+      ]
+    }
+  }
+}

@@ -1,18 +1,61 @@
 """
 Email Router - Handles email notifications using Resend
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, List
+from datetime import datetime, timezone
 import os
+import uuid
 import asyncio
 import logging
 import resend
+import auth_helpers
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/email", tags=["email"])
+
+# ==================== EMAIL AUDIT LOG ====================
+async def log_email(
+    *,
+    kind: str,  # e.g. "order_confirmation", "order_admin", "order_seller", "rfq_notification"
+    recipients: List[str],
+    subject: str,
+    html: str = "",
+    status: str = "sent",  # sent | failed | skipped
+    error: Optional[str] = None,
+    order_id: Optional[str] = None,
+    order_number: Optional[str] = None,
+    brand_id: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    rfq_id: Optional[str] = None,
+    meta: Optional[dict] = None,
+):
+    """Persist every email attempt for Admin audit trail. Fire-and-forget safe."""
+    if db is None:
+        return
+    try:
+        doc = {
+            "id": str(uuid.uuid4()),
+            "kind": kind,
+            "recipients": [r for r in (recipients or []) if r],
+            "subject": subject or "",
+            "html": html or "",
+            "status": status,
+            "error": error,
+            "order_id": order_id,
+            "order_number": order_number,
+            "brand_id": brand_id,
+            "customer_id": customer_id,
+            "rfq_id": rfq_id,
+            "meta": meta or {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.email_logs.insert_one(doc)
+    except Exception as e:
+        logger.warning(f"email_logs insert failed: {e}")
 
 # Database reference (set from main server)
 db = None
@@ -26,7 +69,7 @@ def set_db(database):
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 ADMIN_NOTIFICATION_EMAIL = "deepakw0403@gmail.com"
-ORDER_NOTIFICATION_EMAILS = ["mail@locofast.com", "mohit@locofast.com"]
+ORDER_NOTIFICATION_EMAILS = ["mail@locofast.com", "mohit@locofast.com", "ashish.katiyar@locofast.com"]
 SITE_URL = os.environ.get('SITE_URL', 'https://shop.locofast.com')
 
 if RESEND_API_KEY:
@@ -149,6 +192,14 @@ def get_order_confirmation_email(order: dict) -> str:
             </p>
         </div>
         
+        <!-- Invoice CTA -->
+        <div style="background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-top: none; text-align: center;">
+            <a href="{SITE_URL}/api/orders/{order.get('id', '')}/invoice" style="display: inline-block; background: #2563EB; color: #fff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px;">
+                Download Tax Invoice (GST)
+            </a>
+            <p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">A GST-compliant invoice has been generated for this order.</p>
+        </div>
+
         <!-- Next Steps -->
         <div style="background: #ecfdf5; padding: 20px; border: 1px solid #d1fae5; border-radius: 0 0 12px 12px;">
             <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #065f46;">What's Next?</h3>
@@ -584,6 +635,49 @@ def get_customer_enquiry_confirmation_email(enquiry: dict) -> str:
 
 # ==================== EMAIL ENDPOINTS ====================
 
+# ────────── Admin email audit endpoints ──────────
+@router.get("/admin/logs", tags=["email-audit"])
+async def admin_list_email_logs(
+    order_id: Optional[str] = None,
+    order_number: Optional[str] = None,
+    brand_id: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    kind: Optional[str] = None,
+    limit: int = 100,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Return email audit log entries. Filterable by order/brand/customer/kind.
+    Most recent first. Used by the Admin Order Detail view to show the list
+    of emails that were triggered for a given order."""
+    if db is None:
+        return []
+    q: dict = {}
+    if order_id:
+        q["order_id"] = order_id
+    if order_number:
+        q["order_number"] = order_number
+    if brand_id:
+        q["brand_id"] = brand_id
+    if customer_id:
+        q["customer_id"] = customer_id
+    if kind:
+        q["kind"] = kind
+    cursor = db.email_logs.find(q, {"_id": 0}).sort("created_at", -1).limit(max(1, min(int(limit or 100), 500)))
+    return await cursor.to_list(length=limit)
+
+
+@router.get("/admin/logs/{log_id}", tags=["email-audit"])
+async def admin_get_email_log(log_id: str, admin=Depends(auth_helpers.get_current_admin)):
+    """Fetch a single email log entry including the full HTML body — used
+    by the Admin 'View email' modal."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Email logs unavailable")
+    doc = await db.email_logs.find_one({"id": log_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Email log not found")
+    return doc
+
+
 @router.post("/send")
 async def send_email(request: EmailRequest):
     """Send a custom email"""
@@ -917,6 +1011,192 @@ async def send_rfq_notification(rfq: dict):
         return False
 
 
+# ==================== VENDOR FAN-OUT ON NEW RFQ ====================
+async def send_rfq_vendor_fanout(rfq: dict):
+    """Email every vendor whose category_ids match the RFQ category hint.
+
+    For shortfall RFQs, only the vendor holding the 24 h lock is emailed
+    (the top-5 fallback pool is revealed on the portal UI after expiry,
+    not via an email blast, to avoid noise).
+    """
+    if not RESEND_API_KEY:
+        return 0
+    if db is None:
+        return 0
+
+    try:
+        hints = {"cotton": ["cotton"], "viscose": ["viscose"], "denim": ["denim"], "knits": ["polyester"]}.get(
+            (rfq.get("category") or "").lower().strip(), []
+        )
+        if not hints:
+            return 0
+        regex = "|".join(hints)
+        cats = await db.categories.find(
+            {"name": {"$regex": regex, "$options": "i"}}, {"_id": 0, "id": 1}
+        ).to_list(50)
+        cat_ids = [c["id"] for c in cats]
+        if not cat_ids:
+            return 0
+
+        query = {"is_active": True, "category_ids": {"$in": cat_ids}}
+        if rfq.get("vendor_lock_id"):
+            # Shortfall: email only the source vendor during the lock window
+            query = {"is_active": True, "id": rfq.get("vendor_lock_id")}
+
+        vendors = await db.sellers.find(
+            query, {"_id": 0, "contact_email": 1, "company_name": 1, "contact_name": 1}
+        ).to_list(200)
+
+        sent = 0
+        qty_label = (
+            f"{rfq.get('quantity_kg', '')} kg" if rfq.get('category') == 'knits'
+            else f"{rfq.get('quantity_meters', '')} m"
+        )
+        is_shortfall = bool(rfq.get("is_shortfall") or rfq.get("vendor_lock_id"))
+        subject_prefix = "Shortfall RFQ" if is_shortfall else "New RFQ"
+
+        for v in vendors:
+            email = (v.get("contact_email") or "").strip()
+            if not email:
+                continue
+            params = {
+                "from": SENDER_EMAIL,
+                "to": [email],
+                "subject": f"[{subject_prefix}] {rfq.get('rfq_number')} · {rfq.get('category', '').title()} · {qty_label}",
+                "html": _render_vendor_rfq_email(rfq, v),
+            }
+            try:
+                await asyncio.to_thread(resend.Emails.send, params)
+                sent += 1
+            except Exception as e:
+                logger.error(f"Failed to send vendor RFQ email to {email}: {str(e)}")
+        logger.info(f"Vendor RFQ fan-out: {sent}/{len(vendors)} · {rfq.get('rfq_number')}")
+        return sent
+    except Exception as e:
+        logger.error(f"Vendor RFQ fan-out failed: {str(e)}")
+        return 0
+
+
+def _render_vendor_rfq_email(rfq: dict, vendor: dict) -> str:
+    preview_url = os.environ.get("PUBLIC_APP_URL", "").rstrip("/") + f"/vendor/rfqs/{rfq.get('id', '')}"
+    qty_label = (
+        f"{rfq.get('quantity_kg', '')} kg" if rfq.get('category') == 'knits'
+        else f"{rfq.get('quantity_meters', '')} m"
+    )
+    is_shortfall = bool(rfq.get("is_shortfall"))
+    shortfall_html = ""
+    if is_shortfall:
+        shortfall_html = f"""
+        <p style="background:#FEF3C7;border:1px solid #FDE68A;border-radius:8px;padding:12px;color:#92400E;font-size:13px;margin:16px 0;">
+          <strong>Linked to inventory order.</strong> Buyer has already taken
+          {rfq.get('linked_inventory_qty', 0)} m from stock; they need the remaining
+          <strong>{rfq.get('quantity_meters', '')}</strong> m filled via RFQ. First chance to quote
+          goes to you for 24 h.
+        </p>
+        """
+    return f"""
+    <div style="font-family:Inter,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#111827;">
+      <h2 style="margin:0 0 8px;font-size:20px;">New RFQ in your pool</h2>
+      <p style="color:#6B7280;margin:0 0 20px;font-size:13px;">
+        Hi {(vendor.get('contact_name') or vendor.get('company_name') or 'there').split(',')[0]},
+        a buyer has raised an RFQ matching your categories. Submit a quote
+        to compete.
+      </p>
+      {shortfall_html}
+      <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:16px;">
+        <p style="margin:0;font-size:12px;color:#6B7280;">RFQ Number</p>
+        <p style="margin:0 0 12px;font-size:18px;font-weight:700;color:#2563EB;">{rfq.get('rfq_number', '')}</p>
+        <p style="margin:0;font-size:12px;color:#6B7280;">Category</p>
+        <p style="margin:0 0 12px;font-size:14px;"><strong>{(rfq.get('category') or '').title()}</strong>
+          {(' · ' + rfq.get('fabric_requirement_type', '')) if rfq.get('fabric_requirement_type') else ''}</p>
+        <p style="margin:0;font-size:12px;color:#6B7280;">Quantity</p>
+        <p style="margin:0 0 12px;font-size:14px;"><strong>{qty_label}</strong></p>
+        {('<p style="margin:0;font-size:12px;color:#6B7280;">Buyer notes</p><p style="margin:0 0 12px;font-size:13px;color:#374151;white-space:pre-line;">' + (rfq.get('message') or '').strip() + '</p>') if rfq.get('message') else ''}
+      </div>
+      <p style="margin:24px 0 0;text-align:center;">
+        <a href="{preview_url}"
+           style="display:inline-block;background:#2563EB;color:#fff;padding:12px 24px;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">
+          Open RFQ & Submit Quote
+        </a>
+      </p>
+      <p style="color:#9CA3AF;font-size:11px;text-align:center;margin:20px 0 0;">
+        You're receiving this because your vendor categories match this RFQ. Manage preferences in your Locofast vendor portal.
+      </p>
+    </div>
+    """
+
+
+# ==================== CUSTOMER QUOTE RECEIVED ====================
+async def send_quote_received_email(rfq: dict, quote: dict, is_first: bool = True):
+    """Let the buyer know a new/updated quote landed on their RFQ."""
+    if not RESEND_API_KEY:
+        return False
+    if db is None:
+        return False
+    try:
+        customer_id = rfq.get("customer_id")
+        recipient = (rfq.get("email") or "").strip()
+        if customer_id:
+            cust = await db.customers.find_one({"id": customer_id}, {"_id": 0, "email": 1, "name": 1})
+            if cust and cust.get("email"):
+                recipient = cust.get("email")
+        if not recipient:
+            return False
+
+        subject_prefix = "New quote" if is_first else "Quote updated"
+        params = {
+            "from": SENDER_EMAIL,
+            "to": [recipient],
+            "subject": f"[{subject_prefix}] ₹{quote.get('price_per_meter', '')}/m on {rfq.get('rfq_number')} · Locofast",
+            "html": _render_customer_quote_email(rfq, quote, is_first),
+        }
+        await asyncio.to_thread(resend.Emails.send, params)
+        logger.info(f"Quote-received email sent to {recipient} for RFQ {rfq.get('rfq_number')}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send quote-received email: {str(e)}")
+        return False
+
+
+def _render_customer_quote_email(rfq: dict, quote: dict, is_first: bool = True) -> str:
+    preview_url = os.environ.get("PUBLIC_APP_URL", "").rstrip("/") + f"/account/queries/{rfq.get('id', '')}"
+    qty_label = (
+        f"{rfq.get('quantity_kg', '')} kg" if rfq.get('category') == 'knits'
+        else f"{rfq.get('quantity_meters', '')} m"
+    )
+    heading = "You've got a quote" if is_first else "A mill updated their quote"
+    return f"""
+    <div style="font-family:Inter,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#111827;">
+      <h2 style="margin:0 0 8px;font-size:22px;">{heading}</h2>
+      <p style="color:#6B7280;margin:0 0 20px;font-size:13px;">
+        A mill has responded on your query <strong style="color:#2563EB;">{rfq.get('rfq_number')}</strong>.
+        Compare all quotes and pay online to place your order.
+      </p>
+      <div style="background:#F9FAFB;border:1px solid #E5E7EB;border-radius:8px;padding:20px;">
+        <p style="margin:0;font-size:12px;color:#6B7280;">Rate</p>
+        <p style="margin:0 0 12px;font-size:28px;font-weight:700;color:#059669;">
+          ₹ {quote.get('price_per_meter', '')} <span style="font-size:14px;font-weight:500;color:#6B7280;">/ m</span>
+        </p>
+        <p style="margin:0;font-size:12px;color:#6B7280;">Lead time</p>
+        <p style="margin:0 0 12px;font-size:14px;"><strong>{quote.get('lead_days', '')} days</strong>
+          · {('Ex-factory' if quote.get('basis') == 'x-factory' else 'Door-delivered')}</p>
+        <p style="margin:0;font-size:12px;color:#6B7280;">Your RFQ</p>
+        <p style="margin:0 0 4px;font-size:14px;">{(rfq.get('category') or '').title()} · {qty_label}</p>
+        {('<p style="margin:8px 0 0;font-size:13px;color:#6B7280;font-style:italic;">' + (quote.get('notes') or '') + '</p>') if quote.get('notes') else ''}
+      </div>
+      <p style="margin:24px 0 0;text-align:center;">
+        <a href="{preview_url}"
+           style="display:inline-block;background:#2563EB;color:#fff;padding:12px 24px;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">
+          Compare & Proceed to Payment
+        </a>
+      </p>
+      <p style="color:#9CA3AF;font-size:11px;text-align:center;margin:20px 0 0;">
+        Locofast · Supplier details masked until order confirmation.
+      </p>
+    </div>
+    """
+
+
 async def send_rfq_lead_email(lead: dict):
     """Send RFQ lead notification to marketing@locofast.com"""
     if not RESEND_API_KEY:
@@ -997,45 +1277,61 @@ async def send_order_notification_emails(order: dict, order_db=None):
     """
     Auto-send order notification emails after payment confirmation.
     Sends to: 1) Customer  2) mail@locofast.com + mohit@locofast.com  3) Each supplier
+    Every attempt is persisted to `email_logs` for Admin audit trail.
     """
+    order_id = order.get("id")
+    order_number = order.get("order_number", "")
+    order_type_label = (order.get("order_type") or "").lower() or ("sample" if any((i.get("order_type") == "sample") for i in (order.get("items") or [])) else "bulk")
+
     if not RESEND_API_KEY:
         logger.warning("Resend not configured - skipping order notification emails")
+        await log_email(
+            kind=f"order_{order_type_label}_bundle",
+            recipients=[],
+            subject=f"Order {order_number} — notifications skipped",
+            status="skipped",
+            error="RESEND_API_KEY not configured",
+            order_id=order_id, order_number=order_number,
+        )
         return {"customer_sent": False, "admin_sent": False, "sellers_notified": []}
     
     use_db = order_db or db
     results = {"customer_sent": False, "admin_sent": False, "sellers_notified": []}
     
     customer_email = order.get("customer", {}).get("email")
-    order_number = order.get("order_number", "")
+    brand_id = order.get("brand_id")
+    customer_id = order.get("customer_id")
     
     # 1. Send customer confirmation email
     if customer_email:
+        subject = f"Order Confirmed - {order_number} | Locofast"
+        html = get_order_confirmation_email(order)
         try:
-            params = {
-                "from": SENDER_EMAIL,
-                "to": [customer_email],
-                "subject": f"Order Confirmed - {order_number} | Locofast",
-                "html": get_order_confirmation_email(order)
-            }
+            params = {"from": SENDER_EMAIL, "to": [customer_email], "subject": subject, "html": html}
             await asyncio.to_thread(resend.Emails.send, params)
             results["customer_sent"] = True
             logger.info(f"Order confirmation email sent to customer: {customer_email}")
+            await log_email(kind=f"order_{order_type_label}_customer", recipients=[customer_email], subject=subject, html=html, status="sent",
+                            order_id=order_id, order_number=order_number, brand_id=brand_id, customer_id=customer_id)
         except Exception as e:
             logger.error(f"Failed to send customer order email: {str(e)}")
+            await log_email(kind=f"order_{order_type_label}_customer", recipients=[customer_email], subject=subject, html=html, status="failed",
+                            error=str(e), order_id=order_id, order_number=order_number, brand_id=brand_id, customer_id=customer_id)
     
     # 2. Send admin notification to mail@locofast.com AND mohit@locofast.com
+    admin_subject = f"New Order - {order_number} | ₹{order.get('total', 0):,.0f} | Locofast"
+    admin_html = get_order_received_admin_email(order)
     try:
-        admin_params = {
-            "from": SENDER_EMAIL,
-            "to": ORDER_NOTIFICATION_EMAILS,
-            "subject": f"New Order - {order_number} | ₹{order.get('total', 0):,.0f} | Locofast",
-            "html": get_order_received_admin_email(order)
-        }
+        admin_params = {"from": SENDER_EMAIL, "to": ORDER_NOTIFICATION_EMAILS, "subject": admin_subject, "html": admin_html}
         await asyncio.to_thread(resend.Emails.send, admin_params)
         results["admin_sent"] = True
         logger.info(f"Admin order notification sent to {ORDER_NOTIFICATION_EMAILS}")
+        await log_email(kind=f"order_{order_type_label}_admin", recipients=ORDER_NOTIFICATION_EMAILS, subject=admin_subject, html=admin_html, status="sent",
+                        order_id=order_id, order_number=order_number, brand_id=brand_id, customer_id=customer_id)
     except Exception as e:
         logger.error(f"Failed to send admin order notification: {str(e)}")
+        await log_email(kind=f"order_{order_type_label}_admin", recipients=ORDER_NOTIFICATION_EMAILS, subject=admin_subject, html=admin_html, status="failed",
+                        error=str(e), order_id=order_id, order_number=order_number, brand_id=brand_id, customer_id=customer_id)
     
     # 3. Send supplier notification emails (grouped by seller)
     items = order.get("items", [])
@@ -1063,24 +1359,36 @@ async def send_order_notification_emails(order: dict, order_db=None):
             seller = await use_db.sellers.find_one({"id": seller_id}, {"_id": 0})
             if not seller:
                 logger.warning(f"Seller {seller_id} not found in DB — skipping email")
+                await log_email(kind=f"order_{order_type_label}_seller", recipients=[], subject=f"Seller notification — {order_number}", status="skipped",
+                                error=f"seller {seller_id} not found",
+                                order_id=order_id, order_number=order_number, brand_id=brand_id, customer_id=customer_id,
+                                meta={"seller_id": seller_id})
                 continue
             
             seller_email = seller.get("contact_email")
             if not seller_email:
                 logger.warning(f"Seller {seller_id} has no contact_email — skipping")
+                await log_email(kind=f"order_{order_type_label}_seller", recipients=[], subject=f"Seller notification — {order_number}", status="skipped",
+                                error="seller has no contact_email",
+                                order_id=order_id, order_number=order_number, brand_id=brand_id, customer_id=customer_id,
+                                meta={"seller_id": seller_id, "seller_name": seller.get("company_name", "")})
                 continue
-            
-            seller_params = {
-                "from": SENDER_EMAIL,
-                "to": [seller_email],
-                "subject": f"New Order Booking - {order_number} | Prepare for Dispatch | Locofast",
-                "html": get_seller_order_notification_email(order, seller_order_items, seller)
-            }
+
+            seller_subject = f"New Order Booking - {order_number} | Prepare for Dispatch | Locofast"
+            seller_html = get_seller_order_notification_email(order, seller_order_items, seller)
+            seller_params = {"from": SENDER_EMAIL, "to": [seller_email], "subject": seller_subject, "html": seller_html}
             await asyncio.to_thread(resend.Emails.send, seller_params)
             results["sellers_notified"].append(seller_email)
             logger.info(f"Supplier notification sent to {seller_email} for order {order_number}")
+            await log_email(kind=f"order_{order_type_label}_seller", recipients=[seller_email], subject=seller_subject, html=seller_html, status="sent",
+                            order_id=order_id, order_number=order_number, brand_id=brand_id, customer_id=customer_id,
+                            meta={"seller_id": seller_id, "seller_name": seller.get("company_name", "")})
         except Exception as e:
             logger.error(f"Failed to send supplier notification to seller {seller_id}: {str(e)}")
+            await log_email(kind=f"order_{order_type_label}_seller", recipients=[], subject=f"Seller notification — {order_number}", status="failed",
+                            error=str(e),
+                            order_id=order_id, order_number=order_number, brand_id=brand_id, customer_id=customer_id,
+                            meta={"seller_id": seller_id})
     
     logger.info(f"Order {order_number} email results: customer={results['customer_sent']}, admin={results['admin_sent']}, sellers={results['sellers_notified']}")
     return results

@@ -311,19 +311,153 @@ Embedded multi-lender credit lines + curated catalogue for brand-tier B2B custom
 - **Hero search bar**: pinned category order — Denim → Cotton → Polyester → Viscose → Sustainable → Linen via a `CATEGORY_ORDER` priority array in `HeroSearchCard.js`. Unranked categories fall back to fabric_count-desc.
 - **Certification disclaimer**: new one-line `CertificationDisclaimer.js` amber chip ("Certifications are owned by respective partner mills; Locofast is a sourcing partner. Documents available on request.") rendered on public PDP, brand PDP, and the catalog certification filter sidebar.
 - **Vendor RFQ Pick Pool — Phase A** (matches mobile mockups, ported to desktop):
-  - **Backend** `vendor_rfq_router.py` — eligibility-aware listing of public RFQs based on the vendor's `category_ids`. Knits routes to vendors with `cat-polyester` (post-Phase 22 merge). 6 endpoints:
-    - `GET /api/vendor/rfqs?status=new|picked|submitted|closed`
-    - `GET /api/vendor/rfqs/stats?period=today|yesterday|7d|30d`
-    - `GET /api/vendor/rfqs/{id}`
-    - `POST /api/vendor/rfqs/{id}/pick` (no exclusivity — multiple vendors can pick & quote)
-    - `POST /api/vendor/rfqs/{id}/quote` (auto-creates pick on first quote)
-    - `PUT /api/vendor/rfqs/quotes/{quote_id}`
+  - **Backend** `vendor_rfq_router.py` — eligibility-aware listing of public RFQs based on the vendor's `category_ids`. Knits routes to vendors with `cat-polyester` (post-Phase 22 merge). 6 endpoints (list / stats / detail / pick / quote / edit-quote).
   - **New collections**: `vendor_rfq_picks`, `vendor_quotes` (one quote per vendor per RFQ; re-submit upserts).
-  - **Frontend pages**:
-    - `/vendor/rfqs` — Business Overview collapsible (Total / Answered / Unanswered / Orders & Sales / Sample Shared) with date filter pills, status pill tabs (All new · Picked · Submitted · Closed), search box, and RFQ cards with Pick CTA / Submitted-on date.
-    - `/vendor/rfqs/:rfqId` — side-by-side Fabric details + Query details cards, buyer-notes callout, my-quote chip block (price ₹/m, lead days, basis, fabric state, sample, finished-fabric specs), and a Submit/Edit Quote modal.
+  - **Frontend pages**: `/vendor/rfqs` (Business Overview + status pill tabs + RFQ cards with Pick CTA) and `/vendor/rfqs/:rfqId` (Submit/Edit Quote modal).
   - **Vendor sidebar** — added "RFQ / Requests" item to `VendorLayout.js`.
-  - **Smoke-tested end-to-end**: 3 RFQs visible in pool → Pick moves to Picked tab → Submit Quote (price ₹45.8/m, 4 days, Air Jet, 63 in, 65 GSM, sample) → moves to Submitted tab → stats shows 1 answered, 1 sample shared. Both pages verified visually at 1440px.
+
+### Phase 43: Customer-driven Quote Conversion + Vendor Orders Source Filter (Phase B-1) (Complete - Feb 2026)
+**Customer (not admin) compares received quotes and converts the chosen one.** Mirrors the staging customer screens (Quotes received tab + Quote-comparison detail with Proceed-payment CTA).
+
+- **Backend** `customer_queries_router.py` (3 endpoints):
+  - `GET /api/customer/queries?status=received|not_received|closed` — list customer's RFQs with quote count + best-quote summary.
+  - `GET /api/customer/queries/{rfq_id}` — RFQ detail + sorted quotes; cheapest gets `is_best_price`.
+  - `POST /api/customer/queries/quotes/{quote_id}/place-order` — converts winning quote → real order. Delegates to `orders_router.create_order` so Razorpay/credit/commission/email logic stays single-sourced. Stamps `source: "rfq"` + `rfq_id`/`quote_id` on the order. Marks losing quotes `lost`, winning quote `won`, RFQ `won`.
+- **RFQ ↔ customer linkage**: `rfq_router.submit_rfq` now reads optional Bearer customer token and writes `customer_id` on the RFQ doc — anonymous public RFQ submissions still work.
+- **Customer Account** (`/account`):
+  - New "My Queries" tab with sub-tabs `Quotes received | Quotes not received | Closed`, search box, RFQ cards with best-quote pill + relative date.
+  - New page `/account/queries/:rfqId` — fabric/order detail cards + quote comparison list. Each quote has a `Proceed payment ›` CTA → Razorpay checkout → order confirmation. Won quotes get an "Order placed" badge; losing quotes get "Not selected" greyed state.
+- **Vendor Orders** (`/vendor/orders`):
+  - New `Inventory | RFQ | All` source filter chips (with live counts).
+  - Each row shows a small `RFQ` or `Inventory` pill next to the order number.
+  - `GET /api/vendor/orders` extended with `?source=` param + matches on either `items.fabric_id` (catalog) OR `items.seller_id` (RFQ flow, since the synthetic item id has no fabric document).
+- **Smoke-tested end-to-end**: customer RFQ (Bearer attached) → 2 vendor quotes → list shows 1 query in "Quotes received" with best ₹45.8/m → detail shows 2 quote cards with Best Price + spec chips → place-order on quote 1 creates real order LF/ORD/003 with `source='rfq'`, ₹131,250 total, RFQ flipped to `won`, vendor's orders list shows it tagged `source='rfq'`.
+
+### Phase 44: Customer Profile — Mandatory Fields + Live GST Verification (Complete - Feb 2026)
+- **Mandatory fields** on `/account → Profile`: GST Number, Company Name (auto-filled from GST), Email (read-only login identity), Contact Person Name, Phone. Red asterisk markers + inline error text.
+- **Live GST verification** on every save via `Sandbox.co.in` API (`gst_verify.py` shared helper extracted from server.py — also used by the existing `/api/gst/verify` and supplier signup flow).
+- **PUT /api/customer/profile** validates mandatory fields, verifies the GSTIN against Sandbox.co.in, auto-fills `company` from `legal_name` (fallback `trade_name`), persists `gst_verified=true`, `gst_business_type`, `gst_status`, and seeds `city`/`state`/`pincode` from the GST registry if user hasn't entered them.
+- **Frontend** (`CustomerAccountPage.js`): client-side validation (mandatory + phone-digit check + 15-char GSTIN), inline red error text per field, server error pinned to GSTIN field if it mentions GST, "Verified" badge with ShieldCheck icon when `gst_verified=true`, save button label flips to "Verifying GST..." during the call.
+- **Tested**: 14/14 backend tests pass, all frontend UI requirements verified (iteration_41.json).
+
+### Phase 45: Order Detail & Tracking + "+ New Query" + Standalone Factories (Complete - Feb 2026)
+Three quick wins on top of Phase 44, all green-tested by the testing agent (10/10 backend, 100% frontend, iteration_42.json).
+
+- **Order Detail & Tracking** (`/account/orders/:orderId`, new `OrderDetailPage.js`):
+  - 5-stage timeline strip: *Payment → Paid → Processing → Shipped → Delivered* (cancelled fork shows red banner)
+  - **Pay-now CTA** for `payment_pending` orders — resumes the original `razorpay_order_id` (no duplicate orders) via new `GET /api/customer/orders/{id}/pay-context`
+  - **Download invoice** button for paid orders → `/api/orders/{id}/invoice`
+  - **Track shipment** link surfaces `https://shiprocket.co/tracking/<awb_code>` whenever Shiprocket has allocated an AWB (also shows the AWB chip)
+  - New owner-scoped backend endpoint `GET /api/customer/orders/{id}` (404s on cross-customer access, 401 without auth)
+  - Order cards in `My Orders` are now clickable cards with a "View details ›" CTA. URLs use `order.id` (UUID) so the `LF/ORD/001` slashes don't break routing.
+
+- **"+ New Query" button** (`CustomerQueriesTab.js`):
+  - Top-right CTA in the My Queries tab navigates to `/rfq?from=account`
+  - `RFQPage` now attaches `Authorization: Bearer <lf_customer_token>` so the resulting RFQ is auto-linked to the customer's account
+  - On success with `from=account`, redirects to `/account?tab=queries`. CustomerAccountPage now reads `?tab=` to deep-link into the right tab.
+
+- **Standalone Factories** (`brand_router.py` + `AdminBrands.js`):
+  - `parent_brand_id` is now optional when `type='factory'` — factories can buy for themselves without a brand parent
+  - When supplied, parent brand is still validated against the brands collection (regression-safe)
+  - Admin form: parent brand dropdown defaults to "— Standalone (no parent brand) —"; factory list rows show italic "Standalone" label when no parent is set
+
+### Phase 46: Full Shiprocket module port + auto-status webhook (Complete - Feb 2026)
+Ported the standalone Shiprocket integration repo (`github.com/deepakw0403-cpu/Shiprocket-integration`) into `/app/backend/shiprocket/` and mounted under `/api/shiprocket`. Replaces the older orphaned `shiprocket_router.py` + `shiprocket_service.py` files (deleted).
+
+- **6 routers mounted** under `/api/shiprocket`: orders, courier, tracking, pickup, returns, webhooks
+- **Singleton `auth_service`** with auto token refresh (24h before expiry) + tenacity retry/backoff on every Shiprocket API call
+- **Webhook → orders updater** (`shiprocket/api/webhooks.py`):
+  - `POST /api/shiprocket/webhooks/tracking` and `POST /api/shiprocket/webhooks/order-status` (already wired in your Shiprocket dashboard)
+  - Maps raw Shiprocket statuses → our 5-stage canonical: `Pickup Scheduled→processing`, `Picked Up / In Transit / OFD→shipped`, `Delivered→delivered`, `RTO Initiated/Lost→cancelled`
+  - **Regression guard** (`_STATUS_RANK`): never flips a delivered order back to processing if Shiprocket retransmits an older event
+  - Stamps `courier_name`, `shipped_at`, `delivered_at`, `shiprocket_last_event` on the order
+  - Writes a per-event audit log to `shiprocket_events` collection
+  - Uses BackgroundTasks → returns 200 to Shiprocket fast (no retry storms)
+  - In-memory ring buffer (200 most recent events) at `GET /api/shiprocket/webhooks/events` for debugging
+- **`orders_router.create_shiprocket_shipment`** migrated to use the new `OrderService` + `CreateOrderRequest` schema (fully validated payloads, type-safe)
+- **Bonus capabilities now available** (not yet surfaced in UI but wired): NDR/RTO actions, manifest generation, pickup-location CRUD, bulk tracking
+- **Tested**: 23/23 backend tests pass, frontend timeline auto-advances (iteration_43.json)
+
+### Phase 47: Tracking History Drawer (Complete - Feb 2026)
+Per-order vertical timeline of every Shiprocket scan, surfaced from the Order Detail page. Tested 13/13 backend + 100% frontend (iteration_44.json).
+
+- **Backend** `GET /api/customer/orders/{id}/tracking` — owner-scoped, returns events newest-first with `raw_status`, `mapped_status`, `courier_name`, `location`, `activity`, `event_time`, `received_at`. 404s on cross-customer access.
+- **Webhook handler** now also extracts `location` (Mumbai, Karnataka, etc.) and `activity` ("Pickup successful", "Bag scanned at hub", etc.) from Shiprocket payloads and persists them on `shiprocket_events`.
+- **Frontend** `<TrackingHistoryDrawer>` — slide-from-right drawer, vertical rail of events, dot color-coded by `mapped_status` (green delivered / blue shipped / amber processing / red cancelled), "Latest" badge on the newest event, MapPin icon for location, footer link out to `shiprocket.co/tracking/<awb>`. Closes via X, backdrop, or Esc. Locks body scroll while open.
+- **Visibility**: button only renders when there's something to show — i.e. when `awb_code` exists OR `shiprocket_last_event` is set OR order is at processing/shipped/delivered status.
+
+### Phase 48: Sweep window.confirm / window.prompt out of all admin pages (Complete - Feb 2026)
+Promise-based hook + provider pattern; every native browser popup across `/admin/*` replaced with branded modals.
+
+- **New `<ConfirmProvider>`** mounts a single `<ConfirmDialog>` + input dialog at the app root. Hooks: `useConfirm()` and `useInputDialog()` return Promise-based APIs that mimic `window.confirm()` / `window.prompt()`. One-line call sites: `if (!(await confirm({ title, message, tone:"danger" }))) return;`
+- **22 native popup sites replaced** across 12 admin pages: AdminBlog (3), AdminCategories (6), AdminFabrics (4), AdminSellerDetail (2), and 1 each in Sellers, Coupons, Reviews, Commission, Collections, Articles, Enquiries.
+- **Single `window.prompt()`** in AdminFabrics ("Add video URL") replaced with a branded text-input modal (Enter submits, Escape cancels, click-backdrop dismisses).
+- Tested 100% pass — all 11 admin pages verified, dismissal via Cancel/backdrop/Escape all work, no regressions on AdminBrands flows (iteration_45.json).
+
+### Phase 49: Sample-Order Email Audit Log + Unified Enterprise Account + Enterprise RFQ Portal (Complete - Feb 2026)
+Three P0 enterprise items shipped together. Tested 22/22 backend tests + 100% frontend (iteration_46.json). Detail in CHANGELOG.md.
+
+### Phase 50: Account Manager module + Brand Financial Ledger + Invoice/Email/Shiprocket fixes (Complete - Feb 2026)
+Major financial workflow capability. Tested 30/30 backend + 100% frontend (iteration_47.json).
+
+### Phase 51: AM-for-factories + Factory credit visibility + Address aggregation + E-way Bill everywhere (Complete - Feb 2026)
+4 deliverables building on the AM module. Tested 16/16 backend + 100% frontend (iteration_48.json). Detail in CHANGELOG.md.
+
+### Phase 52: Cloudinary uploads + Cart address picker + Brand-group AM picker (Complete - Feb 2026)
+3 UX upgrades. Tested 22/22 backend + 100% frontend (iteration_49.json).
+
+- **Cloudinary file uploads**: New reusable `<FileUploadInput>` (admin) + `<BrandFileUpload>` (brand) components. Drag-drop or click; shows file chip with Replace/Remove after upload. Backend changes: signature endpoint enum extended to `raw|auto|image|video` (PDF support), `verify_admin` accepts brand JWT type. Wired into 5 admin forms (Invoice PDF, E-way Bill PDF, Credit Note PDF, Debit Note PDF, Payment Receipt) + ApplyCreditModal supporting-document field.
+- **Cart saved-address picker**: BrandCart now loads `/api/brand/addresses` on mount and renders saved-address cards (with `REGISTERED OFFICE`, `Default`, `GST-seeded`, `Factory · {name}` badges). Auto-picks the default. "Add new address" toggle reveals the inline form (still saves to backend if "Save as default" is checked). Selection radios with brand colors.
+- **Brand-group AM picker**: `_require_am_for_brand` permission helper now grants access via `parent_brand_id` inheritance — assigning an AM to a parent brand auto-grants finance access to ALL its linked factories (no need to explicitly add each factory to `managed_brand_ids`). `GET /api/admin/account-managers` returns each managed brand entry with its `factories[]` nested. UI shows single "brand group" cards (brand + indented factories list, +1 factory badge) instead of two separate Brands/Factories columns. Capacity copy now says "brand groups".
+
+
+
+- **AM scope extended to factories**: `managed_brand_ids` now accepts factory IDs (which are `brands` records with `type: "factory"`). The Account Managers page renders a 2-column picker (Brands · Factories) with parent-brand context on every factory row. Permission gate `_require_am_for_brand` works identically — AMs see hard 403 on entities not in their list.
+- **Brand sees linked factories' credit**: New `GET /api/brand/factory-credit-summaries` returns per-factory credit summary (allocated/available/outstanding/sample credits). New "Linked Factories' Credit" section in `/enterprise/account` Overview. Empty state shows **"Credit limit not opened"** + **"Apply for credit"** amber CTA. Same CTA at the brand level when the brand itself has no credit lines.
+- **Apply for credit email**: New `POST /api/brand/credit-application` — persists to `credit_applications` collection and emails `creditops@locofast.com` (BCC's the assigned AM if any) with brand/factory name, GST, requested amount, use case, contact details. Configurable via `LOCOFAST_CREDITOPS_INBOX` env. Permission boundary: brand admin can apply for self or for a linked factory only. Audit-logged in `email_logs`.
+- **Address aggregation**: `GET /api/brand/addresses` (called by a brand admin) now merges every linked factory's GST + manual addresses into the response with `source: "factory"`, `factory_id`, `factory_name`, `read_only: true`. Brand-side cards render a `Building2 · from Factory · {name}` badge and hide the Set-default/Remove buttons.
+- **Invoice + E-way Bill everywhere**:
+  - `brand_invoices` schema gains `eway_bill_number` + `eway_bill_url` fields.
+  - AM Financials portal: Invoice Add/Edit form has both fields; invoice table row renders a purple Receipt icon next to the FileText icon when `eway_bill_url` is set.
+  - Brand Orders page: new **Documents** column showing Invoice (blue) + E-way (purple) chip buttons when the linked invoice exists; "no invoice" italic placeholder otherwise. Powered by `_attach_invoice_links` helper joining `brand_invoices.order_id`.
+  - Admin Order Detail modal: E-way Bill button next to Invoice button when `linked_invoice.eway_bill_url` is set; otherwise renders an "Add E-way Bill" CTA deep-linking to the brand's Financials portal. Powered by `list_orders` admin endpoint joining `brand_invoices`.
+
+
+
+- **Q3 Invoice fix**: Order numbers like `LF/ORD/014` contain slashes that broke the path-routed invoice URL. Frontend now passes UUID `order.id` (slash-free) in AdminOrders + OrderConfirmationPage; `downloadInvoice()` also URL-encodes defensively; backend handler accepts both.
+- **Q4 Customer email CTA**: `get_order_confirmation_email()` now renders a "Download Tax Invoice (GST)" button linking to `/api/orders/{order.id}/invoice` after every paid order.
+- **Q5 Ashish CC**: `ORDER_NOTIFICATION_EMAILS` now includes `ashish.katiyar@locofast.com`. New `LOCOFAST_ORDER_DELIVERY_CC` env (defaults to ashish) is appended to every brand-order ops handoff.
+- **Q6 Shiprocket on brand orders**: `brand_create_order` now `asyncio.create_task`s a new `_create_shiprocket_shipment_for_brand_order()` helper. Both samples and bulk auto-land on the courier pickup queue (parity with B2C `verify_payment` flow).
+- **Q1+Q2 Account Manager + Multi-doc Ledger**:
+  - **Role**: Admin users get `is_account_manager: bool` + `managed_brand_ids: List[str]` (max 3 brands per AM, 1 AM per brand). Endpoints: `PUT /api/admin/users/{id}/account-manager`, `PUT /api/admin/users/{id}/managed-brands`, `GET /api/admin/account-managers`, `GET /api/admin/brands/{id}/account-manager`.
+  - **Permission helper** `_require_am_for_brand()` — non-AM admins are super-users; AM admins can only act on their assigned brands (everything else returns 403).
+  - **3 new collections**: `brand_invoices`, `brand_credit_notes`, `brand_debit_notes`, `brand_payments`. Full CRUD on each with reason validation (CN: short_delivery / defective / return / quality_issue / discount / other; DN: late_payment / additional_logistics / tax_correction / other) and manual invoice numbers (rejects duplicates per brand).
+  - **Payments with allocation**: One payment splits across multiple invoices via `allocations: [{invoice_id, amount}]`. Validates allocations ≤ payment amount, invoice ownership, and invoice outstanding-balance. Auto-updates invoice `amount_paid` + `status` (unpaid → partially_paid → paid). Cancellation reverses balances.
+  - **Unified financials**: `GET /api/admin/brands/{id}/financials` and `GET /api/brand/financials` (read-only) return summary tiles (invoiced / paid / CN / DN / outstanding) + chronological timeline merging all 4 doc types + linked credit lines + sample-credit history. Brand version also surfaces the assigned AM contact card.
+  - **New admin pages**: `/admin/account-managers` (promote/demote/assign-brands) and `/admin/brands/:brandId/financials` (full management portal with 6 tabs: Summary / Invoices / Credit Notes / Debit Notes / Payments / Timeline).
+  - **Brand-side**: New "Financials" tab in `/enterprise/account` showing 5-tile summary, invoice list with PDF download links, AM contact card, recent activity timeline.
+
+
+
+- **Email Audit Log (#5)** — `email_logs` collection + `log_email()` helper in `email_router.py`. Every order email (customer / Locofast admin / vendor / brand admins / ops) is persisted with `kind`, `recipients`, `subject`, full `html` body, `status` (sent/failed/skipped), `error`, plus `order_id`, `brand_id`, `customer_id` for filtering.
+  - Admin endpoints: `GET /api/email/admin/logs?order_id=...&kind=...` (list), `GET /api/email/admin/logs/{log_id}` (single with html).
+  - Brand-side: `GET /api/brand/orders/{id}/emails` (own audit trail, html stripped).
+  - Wired into both `send_order_notification_emails` (B2C orders) and `_notify_order_recipients` (brand orders) — buyer / brand admins / sellers / ops all logged with distinct `kind` strings.
+  - Frontend: `OrderEmailAudit.js` component renders in Admin Order Detail modal with Eye-icon "View body" → iframe-sandboxed HTML preview modal.
+
+- **Unified Enterprise Account (#6)** — `BrandAccount.js` rewritten with 5 tabs (Overview / Profile / Addresses / Orders / Activity Ledger), URL deeplink via `?tab=...`.
+  - **Profile tab**: Edit-in-place enterprise card (name, GST, phone, address) — `PUT /api/brand/profile` (brand_admin only, GST length validation). Read-only "You" card with logged-in user details.
+  - **Addresses tab**: Full CRUD on the address book using existing `/api/brand/addresses` endpoints — saved cards, "Add address" inline form, set-default, remove. GST-seeded default highlighted with shield badge.
+  - **Orders tab**: Sample + Bulk sections with item lists and PDP links per line.
+  - **Activity Ledger**: `GET /api/brand/ledger` enriched with joined `order.products` array (fabric_id, fabric_name, fabric_code, color_name, quantity, unit, pdp_url) — every sample/bulk debit now shows the full product names with deep links to the catalog PDP.
+
+- **Enterprise RFQ & Quotes Portal (#7)** — `rfq_router.submit_rfq` extended to accept brand JWTs and stamp `brand_id` + `brand_user_id`. Brand contact info auto-backfilled from `brand_users` + `brands` profile.
+  - `GET /api/brand/queries?status=received|not_received|closed` — lists RFQs filed by anyone in the brand with `quotes_count`, `best_quote`, `quantity_label`.
+  - `GET /api/brand/queries/{rfq_id}` — full RFQ + sorted vendor quotes with `is_best_price` flag on the cheapest.
+  - Frontend pages: `/enterprise/queries` (3-tab grid with counts + search) and `/enterprise/queries/:rfqId` (spec card + best-price quote comparison). Won quotes get a Trophy badge; lost quotes greyed out.
+  - "Queries" added to `BrandLayout` nav between Catalog and Orders.
+  - `RFQPage.js` now sends `lf_brand_token` first (falls back to `lf_customer_token`); on success while brand-logged-in it redirects to `/enterprise/queries`.
+
 
 ## Backlog
 

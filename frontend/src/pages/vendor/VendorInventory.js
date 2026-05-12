@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Plus, Pencil, Trash2, X, Search, Package, Loader2, Upload, Video, Check, HelpCircle } from "lucide-react";
 import VendorLayout from "../../components/vendor/VendorLayout";
 import CommissionHelpModal from "../../components/vendor/CommissionHelpModal";
+import ErrorBoundary from "../../components/ErrorBoundary";
 import api, { getVendorFabrics, createVendorFabric, updateVendorFabric, deleteVendorFabric, getVendorCategories, getArticles, uploadToCloudinary, uploadVideoToCloudinary } from "../../lib/api";
 import useCompositionOptions from "../../hooks/useCompositionOptions";
 import { getDispatchOptions } from "../../lib/dispatchOptions";
@@ -110,7 +111,7 @@ const emptyForm = {
   has_multiple_colors: false, color_variants: [],
 };
 
-const VendorInventory = () => {
+const VendorInventoryInner = () => {
   const compositionOptions = useCompositionOptions();
   const [fabrics, setFabrics] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -131,7 +132,7 @@ const VendorInventory = () => {
   const isKnittedForm = () => (form?.fabric_type || "").toLowerCase() === "knitted";
   const isKnittedFabric = (fabric) => (fabric?.fabric_type || "").toLowerCase() === "knitted";
   const isDenimFabric = (fabric) => fabric?.category_id === DENIM_CATEGORY_ID;
-  const shouldUseKgUnit = () => isKnittedForm() && !isDenim();
+  const shouldUseKgUnit = () => isKnittedForm() && form.category_id !== DENIM_CATEGORY_ID;
   const shouldUseKgForFabric = (fabric) => isKnittedFabric(fabric) && !isDenimFabric(fabric);
   const unit = shouldUseKgUnit() ? "kg" : "m";
   const unitLabel = shouldUseKgUnit() ? "kilograms" : "meters";
@@ -1276,4 +1277,10 @@ const VendorInventory = () => {
   );
 };
 
-export default VendorInventory;
+const VendorInventoryWithBoundary = () => (
+  <ErrorBoundary fallbackTitle="Inventory page hit an unexpected error">
+    <VendorInventoryInner />
+  </ErrorBoundary>
+);
+
+export default VendorInventoryWithBoundary;

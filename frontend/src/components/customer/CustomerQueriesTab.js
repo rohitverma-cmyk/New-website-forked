@@ -9,9 +9,9 @@
  */
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Loader2, Search, Inbox } from "lucide-react";
-import { useCustomerAuth } from "../context/CustomerAuthContext";
-import { getCustomerQueries } from "../lib/api";
+import { Loader2, Search, Inbox, Plus } from "lucide-react";
+import { useCustomerAuth } from "../../context/CustomerAuthContext";
+import { getCustomerQueries } from "../../lib/api";
 
 const SUB_TABS = [
   { key: "received", label: "Quotes received" },
@@ -142,16 +142,26 @@ const CustomerQueriesTab = () => {
             </button>
           ))}
         </div>
-        <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search RFQ # or category…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-blue-400 focus:outline-none w-60"
-            data-testid="customer-queries-search"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search RFQ # or category…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-blue-400 focus:outline-none w-60"
+              data-testid="customer-queries-search"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate("/rfq?from=account")}
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#2563EB] text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition shadow-sm"
+            data-testid="customer-queries-new-query-btn"
+          >
+            <Plus size={14} /> New Query
+          </button>
         </div>
       </div>
 

@@ -11,7 +11,7 @@ import CertificationBadges from "../../components/CertificationBadges";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
-const FabricCard = ({ f, onOpen }) => {
+const FabricCard = ({ f, onOpen, samplesPreferred }) => {
   const unit = f.fabric_type === "knitted" && f.category_id !== "cat-denim" ? "kg" : "m";
   const stock = Number(f.quantity_available || 0);
   const rate = Number(f.rate_per_meter || 0);
@@ -105,23 +105,45 @@ const FabricCard = ({ f, onOpen }) => {
           );
         })()}
         <div className="mt-3 grid gap-1.5">
-          {rate > 0 && stock > 0 ? (
-            <button onClick={() => onOpen(f)} className="w-full flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-2 rounded-md" data-testid={`brand-bulk-${f.id}`}>
-              <ShoppingCart size={12} /> Order Bulk
-            </button>
+          {/* #1: When the brand has sample credits, surface the Sample CTA as
+              the primary (top) action. Falls back to bulk-first ordering if
+              the brand is in bulk-only mode. */}
+          {samplesPreferred && samplePrice > 0 ? (
+            <>
+              <button onClick={() => onOpen(f)} className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2 rounded-md" data-testid={`brand-sample-${f.id}`}>
+                <Beaker size={12} /> Request Sample
+              </button>
+              {rate > 0 && stock > 0 ? (
+                <button onClick={() => onOpen(f)} className="w-full flex items-center justify-center gap-1.5 bg-white border border-emerald-200 hover:bg-emerald-50 text-emerald-700 text-xs font-semibold py-2 rounded-md" data-testid={`brand-bulk-${f.id}`}>
+                  <ShoppingCart size={12} /> Order Bulk
+                </button>
+              ) : (
+                <Link to={detailUrl} className="w-full flex items-center justify-center gap-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs font-medium py-2 rounded-md">
+                  View details
+                </Link>
+              )}
+            </>
           ) : (
-            <button onClick={() => onOpen(f)} className="w-full flex items-center justify-center gap-1.5 bg-gray-900 hover:bg-black text-white text-xs font-semibold py-2 rounded-md" data-testid={`brand-quote-${f.id}`}>
-              <MessageSquare size={12} /> Request Quote
-            </button>
-          )}
-          {samplePrice > 0 ? (
-            <button onClick={() => onOpen(f)} className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2 rounded-md" data-testid={`brand-sample-${f.id}`}>
-              <Beaker size={12} /> Request Sample
-            </button>
-          ) : (
-            <Link to={detailUrl} className="w-full flex items-center justify-center gap-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs font-medium py-2 rounded-md">
-              View details
-            </Link>
+            <>
+              {rate > 0 && stock > 0 ? (
+                <button onClick={() => onOpen(f)} className="w-full flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-2 rounded-md" data-testid={`brand-bulk-${f.id}`}>
+                  <ShoppingCart size={12} /> Order Bulk
+                </button>
+              ) : (
+                <button onClick={() => onOpen(f)} className="w-full flex items-center justify-center gap-1.5 bg-gray-900 hover:bg-black text-white text-xs font-semibold py-2 rounded-md" data-testid={`brand-quote-${f.id}`}>
+                  <MessageSquare size={12} /> Request Quote
+                </button>
+              )}
+              {samplePrice > 0 ? (
+                <button onClick={() => onOpen(f)} className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2 rounded-md" data-testid={`brand-sample-${f.id}`}>
+                  <Beaker size={12} /> Request Sample
+                </button>
+              ) : (
+                <Link to={detailUrl} className="w-full flex items-center justify-center gap-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs font-medium py-2 rounded-md">
+                  View details
+                </Link>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -153,10 +175,21 @@ const BrandFabrics = () => {
   const [ozMin, setOzMin] = useState(searchParams.get("oz_min") || "");
   const [ozMax, setOzMax] = useState(searchParams.get("oz_max") || "");
   const [showFilters, setShowFilters] = useState(true);
+  const [samplesPreferred, setSamplesPreferred] = useState(false);
 
   // We treat the filter as "oz mode" when the user has scoped the catalog
   // down to denim. Other categories continue to use GSM.
   const isDenimScope = selectedCategory === "cat-denim";
+
+  // Fetch the brand's credit summary once to decide whether to default the
+  // listing's primary CTA to "Sample" (#1).
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${API}/api/brand/credit-summary`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => setSamplesPreferred(((d?.sample_credits?.available ?? 0)) > 0))
+      .catch(() => {});
+  }, [token]);
 
   useEffect(() => {
     if (!token) { navigate("/enterprise/login"); return; }
@@ -409,7 +442,7 @@ const BrandFabrics = () => {
             </div>
           ) : (
             <div className={`grid grid-cols-1 sm:grid-cols-2 ${showFilters ? "lg:grid-cols-3" : "lg:grid-cols-4"} gap-4`} data-testid="brand-fabric-grid">
-              {fabrics.map((f) => <FabricCard key={f.id} f={f} onOpen={openFabric} />)}
+              {fabrics.map((f) => <FabricCard key={f.id} f={f} onOpen={openFabric} samplesPreferred={samplesPreferred} />)}
             </div>
           )}
         </section>

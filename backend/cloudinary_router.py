@@ -53,12 +53,16 @@ def init_cloudinary():
 ALLOWED_FOLDERS = ("fabrics/", "sellers/", "categories/", "collections/", "uploads/")
 
 async def verify_admin(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify admin or vendor token for protected endpoints (uploads)"""
+    """Verify admin/vendor/brand token for protected endpoints (uploads).
+    Brand users get upload access too so they can attach supporting documents
+    to credit applications and other forms in the enterprise portal."""
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        # Accept vendor tokens for upload access
-        if payload.get('type') == 'vendor':
+        ttype = payload.get('type')
+        if ttype == 'vendor':
             return {'id': payload.get('seller_id'), 'type': 'vendor'}
+        if ttype == 'brand':
+            return {'id': payload.get('brand_user_id'), 'brand_id': payload.get('brand_id'), 'type': 'brand'}
         admin_id = payload.get('sub')
         if db is not None:
             admin = await db.admins.find_one({'id': admin_id}, {'_id': 0})
@@ -73,7 +77,7 @@ async def verify_admin(credentials: HTTPAuthorizationCredentials = Depends(secur
 
 @router.get("/signature")
 async def generate_signature(
-    resource_type: str = Query("image", enum=["image", "video"]),
+    resource_type: str = Query("image", enum=["image", "video", "raw", "auto"]),
     folder: str = Query("fabrics"),
     admin = Depends(verify_admin)
 ):

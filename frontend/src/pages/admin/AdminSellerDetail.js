@@ -4,8 +4,11 @@ import { ArrowLeft, Pencil, X, Upload, Check, Package, Search, Trash2 } from "lu
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { getSeller, updateSeller, getCategories, getFabrics, uploadImage, approveFabric, rejectFabric, deleteFabric } from "../../lib/api";
+import { useConfirm } from "../../components/useConfirm";
 
 const AdminSellerDetail = () => {
+  const confirm = useConfirm();
+
   const { id } = useParams();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("profile");
@@ -160,7 +163,7 @@ const AdminSellerDetail = () => {
   };
 
   const handleReject = async (fabric) => {
-    if (!window.confirm(`Reject "${fabric.name}"?`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Reject "${fabric.name}"?`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await rejectFabric(fabric.id);
       toast.success("Fabric rejected");
@@ -169,7 +172,7 @@ const AdminSellerDetail = () => {
   };
 
   const handleDeleteFabric = async (fabric) => {
-    if (!window.confirm(`Delete "${fabric.name}"?`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${fabric.name}"?`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteFabric(fabric.id);
       toast.success("Fabric deleted");

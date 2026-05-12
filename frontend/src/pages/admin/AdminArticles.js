@@ -3,8 +3,11 @@ import { Plus, Pencil, Trash2, X, Layers, Package } from "lucide-react";
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { getArticles, getCategories, getSellers, createArticle, updateArticle, deleteArticle } from "../../lib/api";
+import { useConfirm } from "../../components/useConfirm";
 
 const AdminArticles = () => {
+  const confirm = useConfirm();
+
   const [articles, setArticles] = useState([]);
   const [categories, setCategories] = useState([]);
   const [sellers, setSellers] = useState([]);
@@ -81,7 +84,7 @@ const AdminArticles = () => {
   };
 
   const handleDelete = async (article) => {
-    if (!window.confirm(`Delete "${article.name}"? Fabrics linked to this article will become standalone.`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${article.name}"? Fabrics linked to this article will become standalone.`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteArticle(article.id);
       toast.success("Article deleted");

@@ -56,25 +56,41 @@ const loadRazorpayScript = () =>
 
 const QuoteCard = ({ quote, rfq, onPay, busy }) => {
   const isBest = !!quote.is_best_price;
+  const isWon = quote.status === "won" || rfq?.winning_quote_id === quote.id;
+  const isLost = quote.status === "lost";
   return (
     <div
       className={`bg-white rounded-xl border p-5 transition ${
-        isBest ? "border-amber-300 shadow-sm" : "border-gray-200"
-      }`}
+        isWon
+          ? "border-emerald-300 shadow-sm"
+          : isBest
+            ? "border-amber-300 shadow-sm"
+            : "border-gray-200"
+      } ${isLost ? "opacity-60" : ""}`}
       data-testid={`customer-quote-card-${quote.id.slice(0, 8)}`}
     >
       <div className="flex items-start justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onPay(quote)}
-            className="inline-flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-full px-3.5 py-1.5 text-xs font-semibold shadow-sm disabled:opacity-60"
-            data-testid={`customer-quote-pay-${quote.id.slice(0, 8)}`}
-          >
-            Proceed payment ›
-          </button>
-          {isBest ? (
+          {isWon ? (
+            <span className="inline-flex items-center gap-1 bg-emerald-600 text-white rounded-full px-3.5 py-1.5 text-xs font-semibold shadow-sm">
+              ✓ Order placed
+            </span>
+          ) : isLost ? (
+            <span className="inline-flex items-center gap-1 bg-gray-200 text-gray-600 rounded-full px-3.5 py-1.5 text-xs font-semibold">
+              Not selected
+            </span>
+          ) : (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onPay(quote)}
+              className="inline-flex items-center gap-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-full px-3.5 py-1.5 text-xs font-semibold shadow-sm disabled:opacity-60"
+              data-testid={`customer-quote-pay-${quote.id.slice(0, 8)}`}
+            >
+              Proceed payment ›
+            </button>
+          )}
+          {isBest && !isWon && !isLost ? (
             <span className="inline-flex items-center gap-1 bg-orange-500 text-white rounded-full px-2.5 py-1 text-[11px] font-bold tracking-wide">
               <Star size={11} fill="currentColor" /> Best Price
             </span>

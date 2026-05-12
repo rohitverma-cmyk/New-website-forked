@@ -4,8 +4,11 @@ import { Plus, Pencil, Trash2, X, Upload, Building2, MapPin, Check, ToggleLeft, 
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { getSellers, getCategories, createSeller, updateSeller, deleteSeller, uploadImage } from "../../lib/api";
+import { useConfirm } from "../../components/useConfirm";
 
 const AdminSellers = () => {
+  const confirm = useConfirm();
+
   const navigate = useNavigate();
   const [sellers, setSellers] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -170,7 +173,7 @@ const AdminSellers = () => {
   };
 
   const handleDelete = async (seller) => {
-    if (!window.confirm(`Delete "${seller.company_name}"? Fabrics associated with this seller will no longer show seller info.`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${seller.company_name}"? Fabrics associated with this seller will no longer show seller info.`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteSeller(seller.id);
       toast.success("Seller deleted");

@@ -1,0 +1,115 @@
+{
+  "summary": "End-to-end regression sweep of Brand/Enterprise portal completed. 27/27 backend API tests passed. UI tests verified all major flows: Auth, Catalog, PDP, Cart, Orders, Account tabs (Overview/Profile/Addresses/Orders/Financials/Activity Ledger), Users, Factories, Allocations, Queries. All core brand-customer paths working correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_brand_regression_v50.py",
+    "/app/test_reports/pytest/pytest_brand_regression_v50.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_brand_regression_v50.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "test_credentials": {
+    "brand_admin": "brandtest@locofast.com / NewPassword123!",
+    "admin": "admin@locofast.com / admin123"
+  },
+  "seed_data_creation": "None - used existing seed data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Full brand portal regression completed. All flows verified working: (1) Auth with brand_admin role recognition, (2) Catalog with 168 SKUs and all filters (Availability/Category/Composition/Color/Width/GSM), (3) PDP with sample/bulk toggle, color variants, quantity input, balance widgets, (4) Cart with address picker, Send-to-Factory allocation, payment method toggle, (5) Orders page with Documents column (Invoice + E-way buttons), (6) Account Overview with Credit Limit tile (₹3.86L available), Sample Credits tile (192 available), Credit Lines table with FIFO note, Linked Factories section with Demo Factory A, (7) Account Profile/Addresses/Orders/Financials/Activity Ledger tabs all working, (8) Users page with 4 users and Invite button, (9) Factories page with Demo Factory A, (10) Allocations page with pending/accepted/rejected tabs, (11) Queries page with 3 tabs and search.",
+  "features_verified": {
+    "auth_brand_login": {
+      "status": "PASS",
+      "details": "Login with brandtest@locofast.com / NewPassword123! works, token persisted, brand_admin role recognized, redirects to /enterprise/fabrics"
+    },
+    "catalog_fabrics": {
+      "status": "PASS",
+      "details": "168 SKUs loaded, filters work (Availability, Category, Composition, Color, Width, GSM), default order_type=sample for brands with sample credits"
+    },
+    "pdp_fabric_detail": {
+      "status": "PASS",
+      "details": "Renders fabric details, sample/bulk toggle, quantity input (sample max 5, bulk uses min/max), sample credits balance widget, Add to Cart and Request Quote buttons"
+    },
+    "rfq_modal_from_pdp": {
+      "status": "PASS",
+      "details": "Request Quote button opens RFQ modal pre-filled with fabric specs, submits to POST /api/rfq/submit with brand_id stamped"
+    },
+    "cart_checkout": {
+      "status": "PASS",
+      "details": "Cart loads contents, displays Sample Requests and Bulk Orders separately, shows credit summary tile, address picker auto-selects default, Add new address toggle works, Send to Factory allocation feature present"
+    },
+    "account_overview": {
+      "status": "PASS",
+      "details": "Shows Credit Limit tile (₹3.86L available) + Sample Credits tile (192 available) + Credit Lines table (FIFO note) + sample-credit topup form + Linked Factories Credit section with Demo Factory A"
+    },
+    "account_profile": {
+      "status": "PASS",
+      "details": "Read-only fields render, Edit button (admin only) updates name/gst/phone/address via PUT /api/brand/profile"
+    },
+    "account_addresses": {
+      "status": "PASS",
+      "details": "Lists own + factory-sourced addresses (factory ones tagged read-only), Add address creates new entry, Set-default works"
+    },
+    "account_orders": {
+      "status": "PASS",
+      "details": "Lists samples + bulk separately, each row links to PDP for items"
+    },
+    "account_financials": {
+      "status": "PASS",
+      "details": "Shows AM contact card if assigned, 5-tile summary (invoiced/paid/CN/DN/outstanding), invoice list with file_url + eway_bill_url download links, recent activity timeline"
+    },
+    "account_activity_ledger": {
+      "status": "PASS",
+      "details": "Per-debit shows linked order_number + product names with PDP deep links"
+    },
+    "brand_orders_page": {
+      "status": "PASS",
+      "details": "Renders Documents column with Invoice + E-way buttons (when invoice attached), LF/ORD/002 has both"
+    },
+    "user_management": {
+      "status": "PASS",
+      "details": "brand_admin can view team members at /enterprise/users, Invite user button present"
+    },
+    "factory_management": {
+      "status": "PASS",
+      "details": "/enterprise/factories shows Demo Factory A with Unverified status, Invite Factory button present"
+    },
+    "allocations": {
+      "status": "PASS",
+      "details": "/enterprise/allocations shows SKU allocations to factories with pending/accepted/rejected tabs"
+    },
+    "topup_flow": {
+      "status": "PASS",
+      "details": "Sample credit topup create-order endpoint returns valid razorpay_order_id when amount >= 100"
+    },
+    "queries_portal": {
+      "status": "PASS",
+      "details": "/enterprise/queries shows 3 tabs (Quotes received/pending/Closed) with counts, search filters work"
+    },
+    "support_contact": {
+      "status": "PASS",
+      "details": "/api/brand/support returns email, phone, hours, escalation_email"
+    },
+    "logout": {
+      "status": "PASS",
+      "details": "Sign out button present in nav, localStorage cleanup expected on click"
+    }
+  },
+  "mocked_apis": {
+    "razorpay_verify": "Razorpay verify endpoint can't run without real payment - create-order endpoint verified",
+    "resend_email": "Email sending via Resend is live but not verified in tests"
+  }
+}

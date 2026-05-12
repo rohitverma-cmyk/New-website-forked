@@ -6,6 +6,7 @@ import BrandLayout from "./BrandLayout";
 import { Loader2, ArrowLeft, ShoppingCart, Beaker, MessageSquare, Maximize2 } from "lucide-react";
 import { toast } from "sonner";
 import RFQModal from "../../components/RFQModal";
+import InventoryShortfallModal from "../../components/InventoryShortfallModal";
 import { fmtLacs, fmtINR, fmtCount } from "../../lib/inr";
 import { displayFabricName } from "../../lib/fabricDisplay";
 import { thumbImage, mediumImage, fabricCoverImage } from "../../lib/imageUrl";
@@ -36,10 +37,12 @@ const BrandFabricDetail = () => {
   const [fabric, setFabric] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedVariant, setSelectedVariant] = useState(null);
+  const [activeImage, setActiveImage] = useState(null);
   const [orderType, setOrderType] = useState("bulk");
   const [qty, setQty] = useState(1);
   const [summary, setSummary] = useState(null);
   const [showRfq, setShowRfq] = useState(false);
+  const [showShortfallModal, setShowShortfallModal] = useState(false);
 
   useEffect(() => {
     if (!token) { navigate("/enterprise/login"); return; }
@@ -53,13 +56,29 @@ const BrandFabricDetail = () => {
         const fd = await fRes.json();
         if (!fRes.ok) throw new Error(fd.detail || "Failed");
         setFabric(fd);
-        setSummary(await sRes.json());
+        const summaryData = await sRes.json();
+        setSummary(summaryData);
+        // #1: If the brand has sample credits, default to Sample order mode —
+        // matches the user's expectation that picking "sample" workflow on
+        // signup carries through to every fabric they open.
+        const sampleAvailable = summaryData?.sample_credits?.available ?? 0;
+        if (sampleAvailable > 0) {
+          setOrderType("sample");
+          // Samples are 1-of, MOQ doesn't apply; show 1 by default
+          setQty(1);
+        } else {
+          // Bulk default — start at MOQ
+          const moq = Number(fd.moq || 1);
+          setQty(moq);
+        }
         const variants = fd.color_variants || [];
         if (fd.has_multiple_colors && variants.length) {
           setSelectedVariant(variants.find((v) => (v.quantity_available ?? 0) > 0) || variants[0]);
         }
-        const moq = Number(fd.moq || 1);
-        setQty(moq);
+        // Default the gallery hero to the first product image so thumbnails
+        // and the main image stay in sync from the start.
+        const firstImg = (fd.images || [])[0];
+        if (firstImg) setActiveImage(firstImg);
       } catch (err) {
         toast.error(err.message || "Fabric not found");
         navigate("/enterprise/fabrics");
@@ -95,20 +114,41 @@ const BrandFabricDetail = () => {
     return fabQty > 0 ? fabQty : Infinity; // no limit recorded
   })();
 
+  // We allow the user to type a qty above the available stock; the
+  // shortfall modal then triggers, splitting the order into an inventory
+  // line + a shortfall RFQ. So the qty input itself isn't capped at
+  // maxBulkQty for ready-stock fabrics.
   const onQtyChange = (raw) => {
     const v = Number(raw) || 1;
     if (orderType === "sample") setQty(Math.max(1, Math.min(MAX_SAMPLE_METERS, v)));
-    else setQty(Math.max(1, Math.min(maxBulkQty, v)));
+    else setQty(Math.max(1, v));
+  };
+
+  // Add inventory portion to cart — pulled out of `addToCart` so the
+  // shortfall modal can call it after the RFQ is created.
+  const addInventoryLine = (qtyOverride) => {
+    const lineQty = Number(qtyOverride ?? qty);
+    addLine({
+      fabric_id: fabric.id,
+      fabric_name: fabric.name,
+      fabric_code: fabric.fabric_code || "",
+      category_name: fabric.category_name || "",
+      image_url: (selectedVariant?.image_url || fabricCoverImage(fabric)) || "",
+      seller_company: fabric.seller_company || "",
+      quantity: lineQty,
+      unit,
+      color_name: selectedVariant?.color_name || "",
+      color_hex: selectedVariant?.hex || "",
+      order_type: orderType,
+      price_per_unit: orderType === "sample" ? samplePrice : rate,
+      moq: moqValue,
+    });
   };
 
   const addToCart = () => {
     if (!fabric) return;
     if (orderType === "bulk" && qty < moqValue) {
       toast.error(`MOQ for bulk orders is ${moqValue}${unit}`);
-      return;
-    }
-    if (orderType === "bulk" && qty > maxBulkQty) {
-      toast.error(`Only ${maxBulkQty}${unit} available — request a quote for more.`);
       return;
     }
     if (orderType === "sample" && qty > MAX_SAMPLE_METERS) {
@@ -119,22 +159,30 @@ const BrandFabricDetail = () => {
       toast.error("Bulk price not listed — use Request a Quote");
       return;
     }
-    addLine({
-      fabric_id: fabric.id,
-      fabric_name: fabric.name,
-      fabric_code: fabric.fabric_code || "",
-      category_name: fabric.category_name || "",
-      image_url: (selectedVariant?.image_url || fabricCoverImage(fabric)) || "",
-      seller_company: fabric.seller_company || "",
-      quantity: Number(qty),
-      unit,
-      color_name: selectedVariant?.color_name || "",
-      color_hex: selectedVariant?.hex || "",
-      order_type: orderType,
-      price_per_unit: orderType === "sample" ? samplePrice : rate,
-      moq: moqValue,
-    });
+    // Shortfall trigger: bulk only, ready-stock fabric, qty > available.
+    // Made-to-order fabrics skip this (no inventory exists to take).
+    const isReadyStock = (fabric.stock_type || "ready_stock") !== "made_to_order";
+    if (
+      orderType === "bulk" &&
+      isReadyStock &&
+      Number.isFinite(maxBulkQty) &&
+      maxBulkQty > 0 &&
+      qty > maxBulkQty
+    ) {
+      setShowShortfallModal(true);
+      return;
+    }
+    if (orderType === "bulk" && qty > maxBulkQty) {
+      toast.error(`Only ${maxBulkQty}${unit} available — request a quote for more.`);
+      return;
+    }
+    addInventoryLine(qty);
     toast.success(`Added to cart · ${orderType === "sample" ? "Sample" : "Bulk"} · ${qty}${unit}`);
+    // #2: For samples, jump straight to the cart so the buyer can review
+    // and check out without hunting for the cart icon.
+    if (orderType === "sample") {
+      setTimeout(() => navigate("/enterprise/cart"), 250);
+    }
   };
 
   if (loading) {
@@ -164,7 +212,7 @@ const BrandFabricDetail = () => {
         <div>
           <div className="group aspect-[4/5] bg-gray-100 rounded-xl overflow-hidden relative">
             <img
-              src={mediumImage(selectedVariant?.image_url || fabricCoverImage(fabric)) || "https://images.unsplash.com/photo-1558171813-4c088753af8f?w=800"}
+              src={mediumImage(activeImage || selectedVariant?.image_url || fabricCoverImage(fabric)) || "https://images.unsplash.com/photo-1558171813-4c088753af8f?w=800"}
               alt={fabric.name}
               className="w-full h-full object-cover"
               loading="lazy"
@@ -177,20 +225,35 @@ const BrandFabricDetail = () => {
             <Watermark size="lg" />
           </div>
           {(fabric.images || []).length > 1 && (
-            <div className="grid grid-cols-5 gap-2 mt-3">
-              {(fabric.images || []).slice(0, 5).map((img, i) => (
-                <img
-                  key={i}
-                  src={thumbImage(img)}
-                  alt={`${fabric.name} ${i + 1}`}
-                  className="aspect-square object-cover rounded border border-gray-200"
-                  loading="lazy"
-                  draggable={false}
-                  onDragStart={(e) => e.preventDefault()}
-                  onContextMenu={(e) => e.preventDefault()}
-                  style={{ WebkitUserDrag: "none", userSelect: "none" }}
-                />
-              ))}
+            <div className="grid grid-cols-5 gap-2 mt-3" data-testid="brand-pdp-thumbs">
+              {(fabric.images || []).slice(0, 5).map((img, i) => {
+                const isActive = (activeImage || fabric.images[0]) === img;
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setActiveImage(img)}
+                    className={`aspect-square rounded overflow-hidden border-2 transition ${
+                      isActive
+                        ? "border-blue-500 ring-2 ring-blue-100"
+                        : "border-gray-200 hover:border-gray-400"
+                    }`}
+                    aria-label={`Show image ${i + 1}`}
+                    data-testid={`brand-pdp-thumb-${i}`}
+                  >
+                    <img
+                      src={thumbImage(img)}
+                      alt={`${fabric.name} ${i + 1}`}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      draggable={false}
+                      onDragStart={(e) => e.preventDefault()}
+                      onContextMenu={(e) => e.preventDefault()}
+                      style={{ WebkitUserDrag: "none", userSelect: "none" }}
+                    />
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -327,8 +390,8 @@ const BrandFabricDetail = () => {
               data-testid="brand-qty-input"
             />
             {orderType === "bulk" && qty > maxBulkQty && Number.isFinite(maxBulkQty) && (
-              <p className="text-[11px] text-red-600 mt-1.5" data-testid="brand-qty-error">
-                Only {maxBulkQty}{unit} available. Use <strong>Request a Quote</strong> for larger volumes.
+              <p className="text-[11px] text-amber-700 mt-1.5" data-testid="brand-qty-error">
+                Only {maxBulkQty}{unit} in stock. We'll take what's here and send an RFQ for the remaining {qty - maxBulkQty}{unit}.
               </p>
             )}
           </div>
@@ -369,7 +432,6 @@ const BrandFabricDetail = () => {
           {/* Primary CTAs — Add to Cart + RFQ */}
           <button
             onClick={addToCart}
-            disabled={orderType === "bulk" && qty > maxBulkQty}
             className={`w-full ${orderType === "sample" ? "bg-blue-600 hover:bg-blue-700" : "bg-emerald-600 hover:bg-emerald-700"} disabled:opacity-50 disabled:cursor-not-allowed text-white py-3 rounded-lg font-semibold text-sm flex items-center justify-center gap-2`}
             data-testid="brand-add-to-cart"
           >
@@ -448,6 +510,34 @@ const BrandFabricDetail = () => {
         onClose={() => setShowRfq(false)}
         fabricUrl={typeof window !== "undefined" ? window.location.href : ""}
         fabricName={fabric?.name || ""}
+      />
+      <InventoryShortfallModal
+        open={showShortfallModal}
+        fabric={fabric}
+        requestedQty={qty}
+        availableQty={Number.isFinite(maxBulkQty) ? maxBulkQty : 0}
+        unit={unit}
+        showContactFields={false}
+        defaults={{
+          full_name: user?.name || "",
+          email: user?.email || "",
+          phone: user?.phone || "",
+          gst_number: summary?.brand?.gst || "",
+          company: user?.brand_name || "",
+        }}
+        onCancel={() => setShowShortfallModal(false)}
+        onConfirm={({ shortfallRfq }) => {
+          // Inventory portion → cart line at the listed rate. Shortfall is
+          // already filed server-side; surface a toast with the RFQ # and
+          // close the modal.
+          const inventoryQty = Number.isFinite(maxBulkQty) ? maxBulkQty : 0;
+          if (inventoryQty > 0) addInventoryLine(inventoryQty);
+          setShowShortfallModal(false);
+          toast.success(
+            `Took ${inventoryQty}${unit} into cart · RFQ ${shortfallRfq.rfq_number} sent for ${shortfallRfq.shortfall_qty}${unit}`
+          );
+          setQty(inventoryQty || moqValue);
+        }}
       />
     </BrandLayout>
   );
