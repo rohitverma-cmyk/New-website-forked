@@ -270,10 +270,18 @@ const CheckoutPage = () => {
   // phone / company / GST from what the user has already entered. Posts
   // to the public `/api/credit/apply` endpoint.
   const submitCreditApplication = async () => {
-    if (!customer.name || !customer.email || !customer.phone) {
-      toast.error("Fill name, email & phone first"); return;
+    if (!customer.name?.trim()) { toast.error("Enter your name"); return; }
+    if (!customer.email?.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer.email)) {
+      toast.error("Enter a valid email"); return;
     }
-    if (!gstResult?.valid) { toast.error("Verify GST before applying"); return; }
+    if (!customer.phone?.trim() || customer.phone.trim().length < 10) {
+      toast.error("Enter a valid 10-digit phone"); return;
+    }
+    if (!gstNumber || gstNumber.length !== 15) {
+      toast.error("Enter your 15-character GSTIN"); return;
+    }
+    if (!gstResult?.valid) { toast.error("GST verification failed — please re-check the number"); return; }
+    if (!creditApplyForm.turnover) { toast.error("Select your annual turnover"); return; }
     setCreditApplying(true);
     try {
       const res = await fetch(`${API_URL}/api/credit/apply`, {
@@ -1489,17 +1497,81 @@ const CheckoutPage = () => {
             <div className="flex items-start justify-between mb-3">
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Apply for Locofast Credit</h3>
-                <p className="text-xs text-gray-500 mt-0.5">Our team will reach out to <strong>{customer.company || gstResult?.trade_name || '—'}</strong> within 1 working day.</p>
+                <p className="text-xs text-gray-500 mt-0.5">Tell us about your business — our team will reach out within 1 working day.</p>
               </div>
               <button onClick={() => setShowCreditApply(false)} className="text-gray-400 hover:text-gray-600">
                 <X size={18} />
               </button>
             </div>
             <div className="space-y-3 text-sm">
-              <div className="bg-gray-50 border border-gray-200 rounded p-3 text-xs space-y-1">
-                <div><span className="text-gray-500">Applicant:</span> <span className="font-medium">{customer.name}</span></div>
-                <div><span className="text-gray-500">GSTIN:</span> <span className="font-mono">{gstNumber}</span></div>
-                <div><span className="text-gray-500">Email:</span> {customer.email} · <span className="text-gray-500">Phone:</span> {customer.phone}</div>
+              {/* Contact basics — editable so guest users can apply without
+                  filling out the order form first. Values sync back to
+                  the main checkout form (less typing later). */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Full name <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    value={customer.name || ""}
+                    onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
+                    placeholder="Your name"
+                    className="w-full px-3 py-2 border border-gray-200 rounded text-sm focus:border-blue-500 focus:outline-none"
+                    data-testid="credit-apply-name"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Email <span className="text-red-500">*</span></label>
+                  <input
+                    type="email"
+                    value={customer.email || ""}
+                    onChange={(e) => setCustomer({ ...customer, email: e.target.value })}
+                    placeholder="you@company.com"
+                    className="w-full px-3 py-2 border border-gray-200 rounded text-sm focus:border-blue-500 focus:outline-none"
+                    data-testid="credit-apply-email"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-red-500">*</span></label>
+                  <input
+                    type="tel"
+                    value={customer.phone || ""}
+                    onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
+                    placeholder="10-digit mobile"
+                    maxLength={13}
+                    className="w-full px-3 py-2 border border-gray-200 rounded text-sm focus:border-blue-500 focus:outline-none"
+                    data-testid="credit-apply-phone"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">GSTIN <span className="text-red-500">*</span></label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={gstNumber}
+                      onChange={(e) => {
+                        const v = e.target.value.toUpperCase().replace(/\s/g, "");
+                        setGstNumber(v);
+                        if (v.length === 15) verifyGst(v);
+                        else setGstResult(null);
+                      }}
+                      placeholder="22AAAAA0000A1Z5"
+                      maxLength={15}
+                      className={`w-full px-3 py-2 pr-9 border rounded text-sm font-mono uppercase focus:outline-none ${gstResult?.valid ? "border-emerald-500 bg-emerald-50/30" : gstResult?.valid === false ? "border-red-400" : "border-gray-200 focus:border-blue-500"}`}
+                      data-testid="credit-apply-gst"
+                    />
+                    {gstVerifying && <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-blue-500" />}
+                    {gstResult?.valid && <CheckCircle2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500" />}
+                    {gstResult?.valid === false && <AlertCircle size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-red-400" />}
+                  </div>
+                  {gstResult?.valid && (
+                    <p className="text-xs text-emerald-600 mt-1" data-testid="credit-apply-gst-verified">
+                      Verified: {gstResult.trade_name || gstResult.legal_name}
+                    </p>
+                  )}
+                  {gstResult?.valid === false && (
+                    <p className="text-xs text-red-500 mt-1">{gstResult.message || "Invalid GST"}</p>
+                  )}
+                </div>
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Annual turnover (₹) <span className="text-red-500">*</span></label>
@@ -1547,8 +1619,15 @@ const CheckoutPage = () => {
                 <button
                   type="button"
                   onClick={submitCreditApplication}
-                  disabled={creditApplying || !creditApplyForm.turnover}
-                  className="flex-1 py-2 bg-[#2563EB] text-white rounded text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
+                  disabled={
+                    creditApplying ||
+                    !creditApplyForm.turnover ||
+                    !customer.name?.trim() ||
+                    !customer.email?.trim() ||
+                    !customer.phone?.trim() ||
+                    !gstResult?.valid
+                  }
+                  className="flex-1 py-2 bg-[#2563EB] text-white rounded text-sm font-medium hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
                   data-testid="credit-apply-submit"
                 >
                   {creditApplying ? "Submitting…" : "Submit Application"}
