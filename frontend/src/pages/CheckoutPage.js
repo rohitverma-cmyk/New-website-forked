@@ -1493,7 +1493,7 @@ const CheckoutPage = () => {
       {/* ── Apply for Credit modal (inline on checkout) ───────────────── */}
       {showCreditApply && (
         <div className="fixed inset-0 z-[80] bg-black/50 flex items-center justify-center p-4" onClick={() => setShowCreditApply(false)}>
-          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl" onClick={(e) => e.stopPropagation()} data-testid="credit-apply-modal">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} data-testid="credit-apply-modal">
             <div className="flex items-start justify-between mb-3">
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Apply for Locofast Credit</h3>

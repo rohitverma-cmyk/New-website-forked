@@ -62,6 +62,14 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
     return () => { cancelled = true; };
   }, [open]);
 
+  // Escape key closes the modal — common accessibility expectation.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
   const isIndia = form.location === "India";
   const isBangladesh = form.location === "Bangladesh";
 
@@ -151,18 +159,26 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" data-testid="rfq-modal-overlay">
-      <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl relative overflow-hidden" data-testid="rfq-modal">
-        <div className="bg-gradient-to-r from-[#2563EB] to-[#1d4ed8] px-6 py-5 text-white">
-          <button onClick={onClose} className="absolute top-4 right-4 text-white/70 hover:text-white transition-colors" data-testid="rfq-modal-close">
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      onClick={onClose}
+      data-testid="rfq-modal-overlay"
+    >
+      <div
+        className="bg-white rounded-2xl max-w-lg w-full shadow-2xl relative max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        data-testid="rfq-modal"
+      >
+        <div className="bg-gradient-to-r from-[#2563EB] to-[#1d4ed8] px-6 py-5 text-white sticky top-0 z-10">
+          <button onClick={onClose} className="absolute top-4 right-4 text-white/70 hover:text-white transition-colors" data-testid="rfq-modal-close" aria-label="Close">
             <X size={20} />
           </button>
-          <h3 className="text-lg font-semibold">Request a Quote</h3>
+          <h3 className="text-lg font-semibold pr-8">Request a Quote</h3>
           <p className="text-blue-100 text-sm mt-1">Fill in your details — our sourcing experts will reach out within 24 hours.</p>
           <p className="text-blue-100/90 text-xs mt-1">Bulk production typically dispatches within ~30 days of order confirmation.</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4" data-testid="rfq-form">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto flex-1" data-testid="rfq-form">
           {loggedInCustomer ? null : (
             <>
               <div className="grid grid-cols-2 gap-4">
