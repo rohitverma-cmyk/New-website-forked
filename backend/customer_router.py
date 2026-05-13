@@ -53,6 +53,7 @@ class VerifyWhatsAppOTPRequest(BaseModel):
 
 class ProfileUpdate(BaseModel):
     name: str = ""
+    email: str = ""
     phone: str = ""
     company: str = ""
     gstin: str = ""
@@ -377,9 +378,11 @@ async def get_profile(request: Request):
 async def update_profile(data: ProfileUpdate, request: Request):
     """Update customer profile.
 
-    All these fields are mandatory: name (contact person), phone, company, gstin.
-    GSTIN is verified against Sandbox.co.in on every save and the company name
-    is auto-filled from the API response (legal_name preferred, trade_name fallback).
+    Mandatory fields: name, phone, gstin. GSTIN is verified against Sandbox.co.in
+    only when it CHANGES (or when the existing record has gst_verified=False).
+    Customers can now also update their email and address details — they were
+    previously locked to the login identity, which made editing painful.
+    Changing email returns `email_changed=True` so the client can prompt re-login.
     """
     payload = get_current_customer(request)
 
@@ -388,6 +391,7 @@ async def update_profile(data: ProfileUpdate, request: Request):
     phone = (data.phone or "").strip()
     gstin = (data.gstin or "").strip().upper()
     company = (data.company or "").strip()
+    new_email = (data.email or "").strip().lower()
 
     missing = []
     if not name:
@@ -404,51 +408,90 @@ async def update_profile(data: ProfileUpdate, request: Request):
     if len(digits) < 10:
         raise HTTPException(status_code=400, detail="Phone must be at least 10 digits")
 
-    # Server-side GST verification — always re-verifies on save.
-    from gst_verify import verify_gstin
-    try:
-        gst_result = await verify_gstin(gstin)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"GST verification error: {e}")
-        raise HTTPException(status_code=502, detail="GST verification service unavailable")
+    # Fetch current record to decide what's changed
+    current = await db.customers.find_one({"email": payload["email"]}, {"_id": 0}) or {}
+    gst_changed = (current.get("gstin") or "").upper() != gstin
+    needs_verify = gst_changed or not current.get("gst_verified")
 
-    if not gst_result.get("valid"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"GST verification failed: {gst_result.get('message', 'Invalid GSTIN')}"
+    if needs_verify:
+        # Server-side GST verification only when GSTIN changed or never verified.
+        from gst_verify import verify_gstin
+        try:
+            gst_result = await verify_gstin(gstin)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"GST verification error: {e}")
+            raise HTTPException(status_code=502, detail="GST verification service unavailable")
+
+        if not gst_result.get("valid"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"GST verification failed: {gst_result.get('message', 'Invalid GSTIN')}"
+            )
+
+        # Auto-fill company from GST API (legal_name preferred).
+        api_company = (gst_result.get("legal_name") or gst_result.get("trade_name") or "").strip()
+        if api_company:
+            company = api_company
+        if not company:
+            raise HTTPException(status_code=400, detail="Company Name could not be resolved from GST")
+        gst_extras = {
+            "gst_verified": True,
+            "gst_business_type": gst_result.get("business_type", ""),
+            "gst_status": gst_result.get("gst_status", ""),
+        }
+        gst_addr_defaults = {
+            "city": gst_result.get("city", ""),
+            "state": gst_result.get("state", ""),
+            "pincode": gst_result.get("pincode", ""),
+        }
+    else:
+        # GSTIN unchanged + already verified → preserve flags, skip API call.
+        company = company or current.get("company", "")
+        if not company:
+            raise HTTPException(status_code=400, detail="Company Name is required")
+        gst_extras = {}
+        gst_addr_defaults = {}
+
+    # Email change — only if it's actually different & well-formed.
+    email_changed = False
+    if new_email and new_email != (payload["email"] or "").lower():
+        if "@" not in new_email or "." not in new_email.split("@")[-1]:
+            raise HTTPException(status_code=400, detail="Invalid email format")
+        # Ensure no other customer already uses this email
+        existing = await db.customers.find_one(
+            {"email": new_email, "id": {"$ne": current.get("id")}}, {"_id": 0, "id": 1}
         )
-
-    # Auto-fill company from GST API (legal_name preferred). Override user input
-    # if API returns a name — single source of truth.
-    api_company = (gst_result.get("legal_name") or gst_result.get("trade_name") or "").strip()
-    if api_company:
-        company = api_company
-    if not company:
-        raise HTTPException(status_code=400, detail="Company Name could not be resolved from GST")
+        if existing:
+            raise HTTPException(status_code=409, detail="This email is already linked to another account")
+        email_changed = True
 
     update_data = {
         "name": name,
         "phone": phone,
         "company": company,
         "gstin": gstin,
-        "gst_verified": True,
-        "gst_business_type": gst_result.get("business_type", ""),
-        "gst_status": gst_result.get("gst_status", ""),
+        **gst_extras,
         "address": (data.address or "").strip(),
-        "city": (data.city or "").strip() or gst_result.get("city", ""),
-        "state": (data.state or "").strip() or gst_result.get("state", ""),
-        "pincode": (data.pincode or "").strip() or gst_result.get("pincode", ""),
+        "city": (data.city or "").strip() or gst_addr_defaults.get("city", current.get("city", "")),
+        "state": (data.state or "").strip() or gst_addr_defaults.get("state", current.get("state", "")),
+        "pincode": (data.pincode or "").strip() or gst_addr_defaults.get("pincode", current.get("pincode", "")),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if email_changed:
+        update_data["email"] = new_email
 
     await db.customers.update_one(
         {"email": payload["email"]},
         {"$set": update_data}
     )
 
-    customer = await db.customers.find_one({"email": payload["email"]}, {"_id": 0})
+    # Re-read using new email if it was changed
+    lookup_email = new_email if email_changed else payload["email"]
+    customer = await db.customers.find_one({"email": lookup_email}, {"_id": 0})
+    if email_changed and customer is not None:
+        customer["_email_changed"] = True
     return customer
 
 

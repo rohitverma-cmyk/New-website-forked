@@ -29,9 +29,10 @@ const CustomerAccountPage = () => {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [profileForm, setProfileForm] = useState({
-    name: "", phone: "", company: "", gstin: "", address: "", city: "", state: "", pincode: ""
+    name: "", email: "", phone: "", company: "", gstin: "", address: "", city: "", state: "", pincode: ""
   });
   const [gstVerified, setGstVerified] = useState(false);
+  const [gstVerifying, setGstVerifying] = useState(false);
   const [errors, setErrors] = useState({});
 
   useEffect(() => {
@@ -44,9 +45,57 @@ const CustomerAccountPage = () => {
     try {
       const res = await getCustomerProfile(token);
       const p = res.data;
-      setProfileForm({ name: p.name || "", phone: p.phone || "", company: p.company || "", gstin: p.gstin || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
+      const realEmail = (p.email || "").endsWith("@phone.locofast.local") ? "" : (p.email || "");
+      setProfileForm({ name: p.name || "", email: realEmail, phone: p.phone || "", company: p.company || "", gstin: p.gstin || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
       setGstVerified(!!p.gst_verified);
     } catch {}
+  };
+
+  // Verify GSTIN on demand — fills Company / City / State / Pincode / Address
+  // from the GST registry without waiting for Save. Keeps the form's intent
+  // explicit: GST first, then everything else flows from it.
+  const handleVerifyGst = async () => {
+    const cleaned = (profileForm.gstin || "").trim().toUpperCase();
+    if (cleaned.length !== 15) {
+      setErrors((p) => ({ ...p, gstin: "GSTIN must be 15 characters" }));
+      return;
+    }
+    setGstVerifying(true);
+    setErrors((p) => ({ ...p, gstin: undefined }));
+    try {
+      const apiUrl = process.env.REACT_APP_BACKEND_URL;
+      const res = await fetch(`${apiUrl}/api/gst/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gstin: cleaned }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.valid) {
+        const msg = data.detail || data.message || "GST verification failed";
+        setErrors((p) => ({ ...p, gstin: msg }));
+        setGstVerified(false);
+        toast.error(msg);
+        return;
+      }
+      const company = data.legal_name || data.trade_name || "";
+      // Prefill — only overwrite if the user hasn't typed in something already
+      setProfileForm((p) => ({
+        ...p,
+        gstin: cleaned,
+        company: company || p.company,
+        city: p.city || data.city || "",
+        state: p.state || data.state || "",
+        pincode: p.pincode || data.pincode || "",
+        address: p.address || data.address || "",
+      }));
+      setGstVerified(true);
+      toast.success("GST verified — company details auto-filled");
+    } catch (err) {
+      setErrors((p) => ({ ...p, gstin: "GST verification service unavailable" }));
+      toast.error("GST verification service unavailable");
+    } finally {
+      setGstVerifying(false);
+    }
   };
 
   const fetchOrders = async () => {
@@ -62,6 +111,7 @@ const CustomerAccountPage = () => {
     // Client-side mandatory validation
     const e = {};
     const name = (profileForm.name || "").trim();
+    const email = (profileForm.email || "").trim().toLowerCase();
     const phone = (profileForm.phone || "").trim();
     const gstin = (profileForm.gstin || "").trim().toUpperCase();
     if (!name) e.name = "Contact Person Name is required";
@@ -69,6 +119,8 @@ const CustomerAccountPage = () => {
     else if (phone.replace(/\D/g, "").length < 10) e.phone = "Phone must be at least 10 digits";
     if (!gstin) e.gstin = "GST Number is required";
     else if (gstin.length !== 15) e.gstin = "GSTIN must be 15 characters";
+    else if (!gstVerified) e.gstin = "Please verify your GST before saving";
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) e.email = "Invalid email format";
     setErrors(e);
     if (Object.keys(e).length) {
       toast.error("Please fix the highlighted fields");
@@ -77,19 +129,25 @@ const CustomerAccountPage = () => {
 
     setSaving(true);
     try {
-      const res = await updateCustomerProfile(token, { ...profileForm, gstin });
+      const res = await updateCustomerProfile(token, { ...profileForm, email, gstin });
       const p = res.data;
-      setProfileForm({ name: p.name || "", phone: p.phone || "", company: p.company || "", gstin: p.gstin || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
+      const emailChanged = !!p._email_changed;
+      setProfileForm({ name: p.name || "", email: (p.email || "").endsWith("@phone.locofast.local") ? "" : (p.email || ""), phone: p.phone || "", company: p.company || "", gstin: p.gstin || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
       setGstVerified(!!p.gst_verified);
       updateCustomer(p);
-      toast.success("Profile updated · GST verified");
       setEditing(false);
       setErrors({});
+      if (emailChanged) {
+        toast.success("Profile saved — please sign in again with your new email");
+        setTimeout(() => { logout(); navigate("/"); }, 1500);
+      } else {
+        toast.success("Profile updated");
+      }
     } catch (err) {
       const msg = err?.response?.data?.detail || "Failed to update profile";
       toast.error(msg);
-      // Surface server error against gstin field if it's GST-related
       if (/GST|GSTIN/i.test(msg)) setErrors((prev) => ({ ...prev, gstin: msg }));
+      else if (/email/i.test(msg)) setErrors((prev) => ({ ...prev, email: msg }));
     }
     setSaving(false);
   };
@@ -233,48 +291,26 @@ const CustomerAccountPage = () => {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-lg font-semibold">Profile Details</h2>
-                  <p className="text-xs text-gray-500 mt-1">Fields marked <span className="text-red-500">*</span> are mandatory. GST is verified live with the GSTN.</p>
+                  <p className="text-xs text-gray-500 mt-1">Verify your GST first — Company, City, State and Pincode will be auto-filled from the GSTN registry. Fields marked <span className="text-red-500">*</span> are mandatory.</p>
                 </div>
                 {!editing ? (
                   <button onClick={() => setEditing(true)} className="flex items-center gap-2 text-sm text-[#2563EB] hover:underline" data-testid="edit-profile-btn"><Pencil size={14} />Edit</button>
                 ) : (
                   <button onClick={handleSaveProfile} disabled={saving} className="flex items-center gap-2 px-4 py-2 bg-[#2563EB] text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50" data-testid="save-profile-btn">
-                    {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}{saving ? "Verifying GST..." : "Save"}
+                    {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}{saving ? "Saving…" : "Save"}
                   </button>
                 )}
               </div>
 
               <div className="space-y-4">
-                {/* Email — mandatory but immutable (login identity).
-                    For phone-OTP customers we hide the synthetic placeholder
-                    and prompt them to add a real email instead. */}
-                {(() => {
-                  const e = customer?.email || "";
-                  const isPlaceholder = e.endsWith("@phone.locofast.local");
-                  return (
-                    <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                      <Mail size={16} className="text-gray-400" />
-                      <div className="flex-1">
-                        <p className="text-xs text-gray-500">Email <span className="text-gray-400 font-normal">· optional</span></p>
-                        <p className="font-medium">
-                          {isPlaceholder
-                            ? <span className="text-gray-400 font-normal">Add an email so we can send invoices and updates</span>
-                            : e}
-                        </p>
-                      </div>
-                      {!isPlaceholder && <span className="text-xs text-gray-400">login identity</span>}
-                    </div>
-                  );
-                })()}
-
-                {/* GST Number — mandatory, verified */}
+                {/* ── GST Number — verified first, drives the rest ── */}
                 <div className="p-3 bg-gray-50 rounded-lg" data-testid="profile-gstin-row">
                   <div className="flex items-start gap-3">
                     <FileText size={16} className="text-gray-400 mt-1 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <p className="text-xs text-gray-500 flex items-center gap-2">
                         GST Number <span className="text-red-500">*</span>
-                        {gstVerified && !editing && (
+                        {gstVerified && (
                           <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
                             <ShieldCheck size={12} /> Verified
                           </span>
@@ -282,19 +318,37 @@ const CustomerAccountPage = () => {
                       </p>
                       {editing ? (
                         <>
-                          <input
-                            type="text"
-                            value={profileForm.gstin}
-                            onChange={(e) => setProfileForm({ ...profileForm, gstin: e.target.value.toUpperCase() })}
-                            placeholder="22AAAAA0000A1Z5"
-                            maxLength={15}
-                            className={`w-full mt-1 px-3 py-2 border rounded-lg focus:outline-none text-sm font-mono uppercase ${errors.gstin ? "border-red-400 focus:border-red-500" : "border-gray-300 focus:border-[#2563EB]"}`}
-                            data-testid="profile-gstin"
-                          />
+                          <div className="flex gap-2 mt-1">
+                            <input
+                              type="text"
+                              value={profileForm.gstin}
+                              onChange={(e) => {
+                                const v = e.target.value.toUpperCase();
+                                setProfileForm({ ...profileForm, gstin: v });
+                                // Auto-invalidate verified state if GST is being edited
+                                if (v !== (customer?.gstin || "").toUpperCase()) setGstVerified(false);
+                              }}
+                              placeholder="22AAAAA0000A1Z5"
+                              maxLength={15}
+                              className={`flex-1 px-3 py-2 border rounded-lg focus:outline-none text-sm font-mono uppercase ${errors.gstin ? "border-red-400 focus:border-red-500" : gstVerified ? "border-emerald-400 bg-emerald-50/30" : "border-gray-300 focus:border-[#2563EB]"}`}
+                              data-testid="profile-gstin"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleVerifyGst}
+                              disabled={gstVerifying || (profileForm.gstin || "").length !== 15 || gstVerified}
+                              className="px-4 py-2 bg-[#2563EB] text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap"
+                              data-testid="verify-gst-btn"
+                            >
+                              {gstVerifying ? <><Loader2 size={14} className="animate-spin" />Verifying…</> : gstVerified ? <><ShieldCheck size={14} />Verified</> : <>Verify</>}
+                            </button>
+                          </div>
                           {errors.gstin ? (
                             <p className="text-xs text-red-600 mt-1">{errors.gstin}</p>
+                          ) : gstVerified ? (
+                            <p className="text-xs text-emerald-600 mt-1">Company, City, State and Pincode auto-filled from GST registry.</p>
                           ) : (
-                            <p className="text-xs text-gray-500 mt-1">Company Name will be auto-filled from the GST registry on save.</p>
+                            <p className="text-xs text-gray-500 mt-1">Click <strong>Verify</strong> to fetch your company details from the GSTN registry.</p>
                           )}
                         </>
                       ) : (
@@ -312,6 +366,37 @@ const CustomerAccountPage = () => {
                     <p className="font-medium" data-testid="profile-company">
                       {profileForm.company || <span className="text-gray-400 font-normal">Will populate after GST verification</span>}
                     </p>
+                  </div>
+                </div>
+
+                {/* Email — editable. Login identity; changing it requires re-login. */}
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <Mail size={16} className="text-gray-400 mt-1 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-xs text-gray-500">Email <span className="text-gray-400 font-normal">· optional</span></p>
+                      {editing ? (
+                        <>
+                          <input
+                            type="email"
+                            value={profileForm.email}
+                            onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
+                            placeholder="you@company.com"
+                            className={`w-full mt-1 px-3 py-2 border rounded-lg focus:outline-none text-sm ${errors.email ? "border-red-400 focus:border-red-500" : "border-gray-300 focus:border-[#2563EB]"}`}
+                            data-testid="profile-email"
+                          />
+                          {errors.email ? (
+                            <p className="text-xs text-red-600 mt-1">{errors.email}</p>
+                          ) : (
+                            <p className="text-xs text-gray-500 mt-1">Changing your email will sign you out — you'll log in again with the new email.</p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="font-medium">
+                          {profileForm.email || <span className="text-gray-400 font-normal">Add an email so we can send invoices and updates</span>}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
 

@@ -13,6 +13,8 @@ export default function MAccount() {
   const [form, setForm] = useState({ name: "", phone: "", gstin: "", email: "", address: "", city: "", state: "", pincode: "" });
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const [gstVerified, setGstVerified] = useState(false);
+  const [gstVerifying, setGstVerifying] = useState(false);
 
   // Phone-only accounts get a synthetic email — we detect and handle them
   // the same way the desktop does (prompt to add a real email).
@@ -43,8 +45,51 @@ export default function MAccount() {
       state: customer?.state || "",
       pincode: customer?.pincode || "",
     });
+    setGstVerified(!!customer?.gst_verified);
     setErrors({});
     setProfileSheet(true);
+  };
+
+  // On-demand GST verify — fills company/city/state/pincode/address without
+  // waiting for Save. Mirrors desktop UX.
+  const verifyGst = async () => {
+    const cleaned = (form.gstin || "").trim().toUpperCase();
+    if (cleaned.length !== 15) {
+      setErrors((p) => ({ ...p, gstin: "GSTIN must be 15 characters" }));
+      return;
+    }
+    setGstVerifying(true);
+    setErrors((p) => ({ ...p, gstin: undefined }));
+    try {
+      const apiUrl = process.env.REACT_APP_BACKEND_URL;
+      const res = await fetch(`${apiUrl}/api/gst/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gstin: cleaned }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.valid) {
+        const msg = data.detail || data.message || "GST verification failed";
+        setErrors((p) => ({ ...p, gstin: msg }));
+        setGstVerified(false);
+        toast.error(msg);
+        return;
+      }
+      setForm((p) => ({
+        ...p,
+        gstin: cleaned,
+        city: p.city || data.city || "",
+        state: p.state || data.state || "",
+        pincode: p.pincode || data.pincode || "",
+        address: p.address || data.address || "",
+      }));
+      setGstVerified(true);
+      toast.success("GST verified");
+    } catch (err) {
+      setErrors((p) => ({ ...p, gstin: "GST service unavailable" }));
+    } finally {
+      setGstVerifying(false);
+    }
   };
 
   const save = async () => {
@@ -54,6 +99,7 @@ export default function MAccount() {
     else if (!/^\+?\d[\d\s-]{7,14}$/.test(form.phone.trim())) nextErrors.phone = "Enter a valid phone";
     if (!form.gstin.trim()) nextErrors.gstin = "Required";
     else if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9][A-Z][0-9A-Z]$/i.test(form.gstin.trim())) nextErrors.gstin = "Enter a valid 15-char GSTIN";
+    else if (!gstVerified) nextErrors.gstin = "Tap Verify to confirm your GST";
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) nextErrors.email = "Invalid email";
     if (form.pincode && !/^\d{6}$/.test(form.pincode.trim())) nextErrors.pincode = "6-digit pincode";
 
@@ -69,9 +115,16 @@ export default function MAccount() {
       const payload = { ...form };
       if (!payload.email) delete payload.email;
       const res = await updateCustomerProfile(token, payload);
-      updateCustomer(res.data);
-      toast.success("Profile updated");
+      const data = res.data;
+      const emailChanged = !!data._email_changed;
+      updateCustomer(data);
       setProfileSheet(false);
+      if (emailChanged) {
+        toast.success("Profile saved — sign in again with your new email");
+        setTimeout(() => { logout(); navigate("/m/login"); }, 1500);
+      } else {
+        toast.success("Profile updated");
+      }
     } catch (err) {
       const msg = err?.response?.data?.detail || "Couldn't save profile";
       // Surface GST-specific failures on the GSTIN field
@@ -227,22 +280,42 @@ export default function MAccount() {
         title="Edit profile"
         footer={
           <button onClick={save} disabled={saving} className="m-btn m-btn-primary" style={{ width: "100%" }} data-testid="m-account-save-btn">
-            {saving ? "Verifying GST…" : "Save changes"}
+            {saving ? "Saving…" : "Save changes"}
           </button>
         }
       >
-        <FieldLabel>Full name *</FieldLabel>
-        <Input value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="Your name" error={errors.name} data-testid="m-account-name" />
-
-        <FieldLabel style={{ marginTop: 12 }}>Phone *</FieldLabel>
-        <Input value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} placeholder="10-digit mobile" type="tel" error={errors.phone} data-testid="m-account-phone" />
-
-        <FieldLabel style={{ marginTop: 12 }}>Email{isPhoneOnly ? " · add one to receive invoices" : ""}</FieldLabel>
-        <Input value={form.email} onChange={(v) => setForm({ ...form, email: v })} placeholder="you@company.com" type="email" error={errors.email} data-testid="m-account-email" />
-
-        <FieldLabel style={{ marginTop: 12 }}>GSTIN *</FieldLabel>
-        <Input value={form.gstin} onChange={(v) => setForm({ ...form, gstin: v.toUpperCase() })} placeholder="22AAAAA0000A1Z5" error={errors.gstin} data-testid="m-account-gstin" />
-        <p className="m-caption" style={{ marginTop: 6 }}>Company name will be auto-filled from the GST registry on save.</p>
+        {/* GST — verified first, drives the rest */}
+        <FieldLabel>
+          GSTIN * {gstVerified && <span style={{ color: "var(--m-green, #16A34A)", fontWeight: 600, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>· Verified</span>}
+        </FieldLabel>
+        <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+          <div style={{ flex: 1 }}>
+            <Input
+              value={form.gstin}
+              onChange={(v) => {
+                const up = v.toUpperCase();
+                setForm({ ...form, gstin: up });
+                if (up !== (customer?.gstin || "").toUpperCase()) setGstVerified(false);
+              }}
+              placeholder="22AAAAA0000A1Z5"
+              error={errors.gstin}
+              data-testid="m-account-gstin"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={verifyGst}
+            disabled={gstVerifying || (form.gstin || "").length !== 15 || gstVerified}
+            className="m-btn m-btn-primary"
+            style={{ padding: "0 14px", fontSize: 13, height: 46, alignSelf: "flex-start", whiteSpace: "nowrap" }}
+            data-testid="m-account-gstin-verify"
+          >
+            {gstVerifying ? "…" : gstVerified ? "Verified" : "Verify"}
+          </button>
+        </div>
+        <p className="m-caption" style={{ marginTop: 6 }}>
+          {gstVerified ? "Company, City, State, Pincode auto-filled." : "Tap Verify to auto-fill your company details."}
+        </p>
 
         {customer?.company && (
           <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 10, background: "var(--m-bg)", border: "1px solid var(--m-border)" }}>
@@ -250,6 +323,18 @@ export default function MAccount() {
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--m-ink)", marginTop: 2 }}>{customer.company}</div>
           </div>
         )}
+
+        <FieldLabel style={{ marginTop: 12 }}>Email{isPhoneOnly ? " · add one to receive invoices" : ""}</FieldLabel>
+        <Input value={form.email} onChange={(v) => setForm({ ...form, email: v })} placeholder="you@company.com" type="email" error={errors.email} data-testid="m-account-email" />
+        {form.email && (customer?.email || "").toLowerCase() !== form.email.toLowerCase() && !isPhoneOnly && (
+          <p className="m-caption" style={{ marginTop: 6 }}>Changing email will sign you out — log in again with the new one.</p>
+        )}
+
+        <FieldLabel style={{ marginTop: 12 }}>Full name *</FieldLabel>
+        <Input value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="Your name" error={errors.name} data-testid="m-account-name" />
+
+        <FieldLabel style={{ marginTop: 12 }}>Phone *</FieldLabel>
+        <Input value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} placeholder="10-digit mobile" type="tel" error={errors.phone} data-testid="m-account-phone" />
 
         <FieldLabel style={{ marginTop: 12 }}>Address</FieldLabel>
         <Input value={form.address} onChange={(v) => setForm({ ...form, address: v })} placeholder="Street, building, area" data-testid="m-account-address" />
