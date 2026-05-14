@@ -97,6 +97,7 @@ const SupplierProfilePage = lazy(() => import("./pages/SupplierProfilePage"));
 const CustomerAccountPage = lazy(() => import("./pages/CustomerAccountPage"));
 const OrderDetailPage = lazy(() => import("./pages/OrderDetailPage"));
 const LoginPreview = lazy(() => import("./pages/LoginPreview"));
+const LedgerPreviewMock = lazy(() => import("./pages/LedgerPreviewMock"));
 const CustomerQueryDetail = lazy(() => import("./pages/CustomerQueryDetail"));
 const SharedCartPage = lazy(() => import("./pages/SharedCartPage"));
 
@@ -269,6 +270,7 @@ function App() {
           {/* Customer Account */}
           <Route path="/account" element={<CustomerAccountPage />} />
           <Route path="/dev/login-preview" element={<Suspense fallback={<PageLoader />}><LoginPreview /></Suspense>} />
+          <Route path="/dev/ledger-preview" element={<Suspense fallback={<PageLoader />}><LedgerPreviewMock /></Suspense>} />
           <Route path="/account/queries/:rfqId" element={<Suspense fallback={<PageLoader />}><CustomerQueryDetail /></Suspense>} />
           <Route path="/account/orders/:orderId" element={<Suspense fallback={<PageLoader />}><OrderDetailPage /></Suspense>} />
           
