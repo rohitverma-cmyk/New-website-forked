@@ -11,6 +11,10 @@ export default function TryMobilePreview() {
   const [iframeKey, setIframeKey] = useState(0);
   const [path, setPath] = useState("/m");
 
+  // Hide on public catalogue brochure routes — those are client-facing
+  // and shouldn't have any agent/dev chrome.
+  const onCatalogue = pathname.startsWith("/c/");
+
   // Detect viewport (re-check on resize so dev-tools mobile mode hides the button)
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 900);
@@ -39,6 +43,7 @@ export default function TryMobilePreview() {
 
   // Hide on /m/* routes or on small viewports (real phones already redirect)
   if (pathname.startsWith("/m")) return null;
+  if (onCatalogue) return null;
   if (isMobile) return null;
 
   const reload = () => setIframeKey((k) => k + 1);

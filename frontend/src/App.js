@@ -71,6 +71,7 @@ import Footer from "./components/Footer";
 // Public pages
 const FabricsPage = lazy(() => import("./pages/FabricsPage"));
 const FabricDetailPage = lazy(() => import("./pages/FabricDetailPage"));
+const PublicCataloguePage = lazy(() => import("./pages/PublicCataloguePage"));
 const CollectionsPage = lazy(() => import("./pages/CollectionsPage"));
 const CollectionDetailPage = lazy(() => import("./pages/CollectionDetailPage"));
 const AboutPage = lazy(() => import("./pages/AboutPage"));
@@ -213,9 +214,11 @@ function MobileRedirector() {
 }
 
 // Hide WhatsApp widget on /m/* routes (mobile app handles support itself)
+// and on /c/* shareable catalogue brochures (client-facing, no chrome).
 function ConditionalWhatsAppChat() {
   const { pathname } = useLocation();
   if (pathname.startsWith("/m")) return null;
+  if (pathname.startsWith("/c/")) return null;
   return <WhatsAppChat />;
 }
 
@@ -242,6 +245,7 @@ function App() {
           <Route path="/" element={<><Navbar /><HomePage /><Footer /></>} />
           <Route path="/fabrics" element={<FabricsPage />} />
           <Route path="/fabrics/:id" element={<FabricDetailPage />} />
+          <Route path="/c/:slug" element={<PublicCataloguePage />} />
           <Route path="/collections" element={<CollectionsPage />} />
           <Route path="/inventory" element={<Navigate to="/fabrics" replace />} />
           <Route path="/collections/:id" element={<CollectionDetailPage />} />

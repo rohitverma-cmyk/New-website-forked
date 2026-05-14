@@ -9,6 +9,7 @@ import { getCheapestBulkPrice, formatQtyThreshold } from "../../lib/pricing";
 import { thumbImage } from "../../lib/imageUrl";
 import Watermark from "../../components/Watermark";
 import AgentAISearchBar from "../../components/agent/AgentAISearchBar";
+import CreateCatalogueModal from "../../components/agent/CreateCatalogueModal";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -54,6 +55,8 @@ const AgentDashboardPage = () => {
 
   // Cart
   const [cart, setCart] = useState([]);
+  const [showCatalogueModal, setShowCatalogueModal] = useState(false);
+  const [catalogueFabricIds, setCatalogueFabricIds] = useState([]);
 
   // Shared carts
   const [sharedCarts, setSharedCarts] = useState([]);
@@ -520,14 +523,32 @@ Locofast Online Services`,
                     {activeFilterCount > 0 && <span className="ml-2 text-blue-600">· {activeFilterCount} filter{activeFilterCount !== 1 ? "s" : ""} applied</span>}
                   </p>
                 </div>
-                <button
-                  onClick={() => setShowFilters(!showFilters)}
-                  className={`flex items-center gap-2 px-4 py-2 border rounded-lg text-sm font-medium transition-colors ${showFilters || activeFilterCount > 0 ? "border-[#2563EB] bg-blue-50 text-[#2563EB]" : "border-gray-200 text-gray-700 hover:border-gray-300"}`}
-                  data-testid="agent-toggle-filters"
-                >
-                  <SlidersHorizontal size={15} />
-                  Filters{activeFilterCount > 0 && <span className="bg-[#2563EB] text-white text-xs px-1.5 py-0.5 rounded-full">{activeFilterCount}</span>}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const ids = (fabrics || []).map((f) => f.id).filter(Boolean);
+                      if (!ids.length) {
+                        toast.error("No fabrics in view to save as catalogue");
+                        return;
+                      }
+                      setCatalogueFabricIds(ids);
+                      setShowCatalogueModal(true);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 border border-indigo-200 bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-700 rounded-lg text-sm font-medium hover:from-indigo-100 hover:to-blue-100 transition-all"
+                    data-testid="agent-save-as-catalogue"
+                    title="Bundle the fabrics shown into a watermarked, shareable catalogue page"
+                  >
+                    <FileText size={15} />Save as Catalogue
+                  </button>
+                  <button
+                    onClick={() => setShowFilters(!showFilters)}
+                    className={`flex items-center gap-2 px-4 py-2 border rounded-lg text-sm font-medium transition-colors ${showFilters || activeFilterCount > 0 ? "border-[#2563EB] bg-blue-50 text-[#2563EB]" : "border-gray-200 text-gray-700 hover:border-gray-300"}`}
+                    data-testid="agent-toggle-filters"
+                  >
+                    <SlidersHorizontal size={15} />
+                    Filters{activeFilterCount > 0 && <span className="bg-[#2563EB] text-white text-xs px-1.5 py-0.5 rounded-full">{activeFilterCount}</span>}
+                  </button>
+                </div>
               </div>
 
               {/* Search bar */}
@@ -828,6 +849,21 @@ Locofast Online Services`,
           {/* ===== CART TAB ===== */}
           {activeTab === "cart" && (
             <div>
+              {cart.length > 0 && (
+                <div className="mb-4 flex justify-end">
+                  <button
+                    onClick={() => {
+                      const ids = cart.map((c) => c.fabric_id).filter(Boolean);
+                      setCatalogueFabricIds(ids);
+                      setShowCatalogueModal(true);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 border border-indigo-200 bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-700 rounded-lg text-sm font-medium hover:from-indigo-100 hover:to-blue-100"
+                    data-testid="agent-cart-save-catalogue"
+                  >
+                    <FileText size={15} />Save cart as Catalogue
+                  </button>
+                </div>
+              )}
               {cart.length === 0 ? (
                 <div className="text-center py-16 text-gray-500">
                   <ShoppingCart size={48} className="mx-auto mb-3 text-gray-300" />
@@ -1321,6 +1357,11 @@ Locofast Online Services`,
         </div>
       )}
 
+      <CreateCatalogueModal
+        open={showCatalogueModal}
+        onClose={() => setShowCatalogueModal(false)}
+        fabricIds={catalogueFabricIds}
+      />
     </div>
   );
 };
