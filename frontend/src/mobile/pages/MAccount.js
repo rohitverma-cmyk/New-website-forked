@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { User, Mail, Phone, Building2, MapPin, FileText, LogOut, ChevronRight, Package, ShoppingBag, MessageSquare, Bell, Shield, Smartphone } from "lucide-react";
+import { User, Mail, Phone, Building2, MapPin, FileText, LogOut, ChevronRight, Package, ShoppingBag, MessageSquare, Bell, Shield, Smartphone, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { useCustomerAuth } from "../../context/CustomerAuthContext";
 import { getCustomerProfile, updateCustomerProfile } from "../../lib/api";
@@ -234,6 +234,16 @@ export default function MAccount() {
             <div style={{ fontSize: 16, fontWeight: 700, color: "var(--m-ink)" }}>View quotes</div>
           </button>
         </div>
+        <button onClick={() => navigate("/m/ledger")} className="m-card" style={{ width: "100%", padding: "12px 14px", textAlign: "left", border: "1px solid var(--m-border)", cursor: "pointer", marginTop: 10, display: "flex", alignItems: "center", gap: 10 }} data-testid="m-account-ledger-cta">
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: "#ecfdf5", display: "grid", placeItems: "center", flexShrink: 0 }}>
+            <Wallet size={18} color="#059669" />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ fontSize: 14, fontWeight: 700, color: "var(--m-ink)", margin: 0 }}>Credit & Ledger</p>
+            <p style={{ fontSize: 11, color: "var(--m-ink-3)", margin: "2px 0 0" }}>Limits · disbursements · payments · adjustments</p>
+          </div>
+          <ChevronRight size={16} color="var(--m-ink-3)" />
+        </button>
         <button onClick={() => navigate("/m/rfq")} className="m-card" style={{ width: "100%", padding: "12px 14px", textAlign: "left", border: "1px solid var(--m-border)", cursor: "pointer", marginTop: 10, display: "flex", alignItems: "center", gap: 10 }} data-testid="m-account-new-rfq-cta">
           <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--m-blue-50)", display: "grid", placeItems: "center", flexShrink: 0 }}>
             <MessageSquare size={18} color="var(--m-blue)" />

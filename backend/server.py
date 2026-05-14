@@ -625,6 +625,10 @@ import commission_router
 commission_router.set_db(db)
 app.include_router(commission_router.router)
 
+import credit_ledger_router
+credit_ledger_router.set_db(db)
+app.include_router(credit_ledger_router.router)
+
 import payouts_router  # noqa: E402
 app.include_router(payouts_router.router, prefix="/api")
 
@@ -761,6 +765,13 @@ async def startup_create_default_admin():
         await ensure_indexes(db)
     except Exception as e:
         logger.error(f"Index bootstrap failed: {e}")
+
+    # Spin up the Google-Sheets credit-ledger poller (no-op if env unset)
+    try:
+        import credit_ledger_router as _clr
+        asyncio.create_task(_clr.start_sheets_poller())
+    except Exception as e:
+        logger.error(f"Credit-ledger sheets poller failed to start: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

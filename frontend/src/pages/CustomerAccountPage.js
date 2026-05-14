@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { User, Package, Mail, Phone, Building2, MapPin, Pencil, Save, Loader2, LogOut, ArrowRight, Clock, CheckCircle, Truck, XCircle, MessageSquare, FileText, ShieldCheck, Globe } from "lucide-react";
+import { User, Package, Mail, Phone, Building2, MapPin, Pencil, Save, Loader2, LogOut, ArrowRight, Clock, CheckCircle, Truck, XCircle, MessageSquare, FileText, ShieldCheck, Globe, Wallet } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
 import { getCustomerProfile, updateCustomerProfile, getCustomerOrders } from "../lib/api";
 import { COUNTRIES, getCountry, stripDialCode } from "../lib/countries";
 import CustomerQueriesTab from "../components/customer/CustomerQueriesTab";
+import CreditLedgerView from "../components/customer/CreditLedgerView";
 import { toast } from "sonner";
 
 const statusConfig = {
@@ -23,7 +24,13 @@ const CustomerAccountPage = () => {
   const { customer, token, isLoggedIn, logout, updateCustomer } = useCustomerAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const initialTab = searchParams.get("tab") === "queries" ? "queries" : searchParams.get("tab") === "profile" ? "profile" : "orders";
+  const initialTab = (() => {
+    const t = searchParams.get("tab");
+    if (t === "queries") return "queries";
+    if (t === "profile") return "profile";
+    if (t === "ledger") return "ledger";
+    return "orders";
+  })();
   const [activeTab, setActiveTab] = useState(initialTab);
   const [orders, setOrders] = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(true);
@@ -222,6 +229,9 @@ const CustomerAccountPage = () => {
             <button onClick={() => setActiveTab("queries")} className={`px-6 py-3 text-sm font-medium border-b-2 ${activeTab === "queries" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-gray-500 hover:text-gray-700"}`} data-testid="tab-my-queries">
               <MessageSquare size={16} className="inline mr-2" />My Queries
             </button>
+            <button onClick={() => setActiveTab("ledger")} className={`px-6 py-3 text-sm font-medium border-b-2 ${activeTab === "ledger" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-gray-500 hover:text-gray-700"}`} data-testid="tab-credit-ledger">
+              <Wallet size={16} className="inline mr-2" />Credit & Ledger
+            </button>
             <button onClick={() => setActiveTab("profile")} className={`px-6 py-3 text-sm font-medium border-b-2 ${activeTab === "profile" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-gray-500 hover:text-gray-700"}`} data-testid="tab-profile">
               <User size={16} className="inline mr-2" />Profile
             </button>
@@ -229,6 +239,11 @@ const CustomerAccountPage = () => {
 
           {/* ===== QUERIES TAB ===== */}
           {activeTab === "queries" && <CustomerQueriesTab />}
+
+          {/* ===== CREDIT & LEDGER TAB ===== */}
+          {activeTab === "ledger" && (
+            <CreditLedgerView gstin={profileForm.gstin} clientName={profileForm.company || profileForm.name} />
+          )}
 
           {/* ===== ORDERS TAB ===== */}
           {activeTab === "orders" && (

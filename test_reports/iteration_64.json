@@ -1,0 +1,94 @@
+{
+  "summary": "Comprehensive testing of Credit & Ledger feature (v64). All backend APIs and frontend components working correctly. 14/16 backend tests passed (2 skipped due to rate limiting). Full OTP-gated adjustment flow verified via both API and UI. Customer account Credit & Ledger tab and mobile /m/ledger route both render correctly with real data.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_credit_ledger_v64.py",
+    "/app/test_reports/pytest/pytest_credit_ledger_v64.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "All 4 data streams (Disbursements CSV, Payments CSV, OTP-gated Adjustments, Razorpay hook) working correctly",
+    "Idempotency verified: re-uploading same CSV doesn't create duplicates",
+    "OTP rate limiting working (429 after 5 requests in 10 minutes)",
+    "JWT scope validation working (only 'credit_adjustment' scope accepted)",
+    "Legacy wallet fallback working for GSTINs without new-format lender lines"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_credit_ledger_v64.py"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 passed, 2 skipped due to rate limiting)",
+    "frontend": "100% (all tabs working, no console errors)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123",
+    "credit_adjustment_admin": "sandeep.kumar@locofast.com (OTP from db.credit_adjustment_otps)",
+    "test_customer": "test.ledger@locofast.com (OTP from db.customer_otps), GSTIN: 07AIKPY4565A1Z0"
+  },
+  "seed_data_creation": "Created test customer with GSTIN 07AIKPY4565A1Z0 for ledger UI testing. Uploaded 35 disbursement rows from provided CSV.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Credit & Ledger feature fully tested. Key test data: GSTIN 07AIKPY4565A1Z0 (E-Future) has 8 disbursements, 1 lender (Indifi), ₹25L limit, 91% utilized. OTP-gated adjustments require sandeep.kumar@locofast.com email. Rate limit: 5 OTPs per 10 minutes. JWT expires in 4 hours.",
+  "features_verified": {
+    "disbursements_csv_upload": {
+      "status": "PASS",
+      "details": "35 rows ingested cleanly, idempotent on invoice_no"
+    },
+    "payments_csv_upload": {
+      "status": "PASS",
+      "details": "2 test rows ingested, triggers _recompute_disbursement_repayment"
+    },
+    "by_gstin_endpoint": {
+      "status": "PASS",
+      "details": "Returns totals, lenders, disbursements, payments, adjustments. 400 for invalid GSTIN."
+    },
+    "otp_gate": {
+      "status": "PASS",
+      "details": "403 for non-admin email, 200 for sandeep.kumar@locofast.com, 429 rate limit after 5 requests"
+    },
+    "adjustment_post": {
+      "status": "PASS",
+      "details": "401 without token, 401 with invalid token, 409 for duplicate reference_no"
+    },
+    "full_adjustment_flow": {
+      "status": "PASS",
+      "details": "send-otp → verify-otp → JWT → post adjustment → appears in by-gstin"
+    },
+    "razorpay_auto_record": {
+      "status": "PASS",
+      "details": "record_razorpay_payment creates doc with utr='razorpay:<id>' and source='razorpay-webhook'"
+    },
+    "legacy_wallet_fallback": {
+      "status": "PASS",
+      "details": "Synthesizes Locofast lender row from credit_wallets if no credit_lender_lines"
+    },
+    "admin_credit_adjustments_page": {
+      "status": "PASS",
+      "details": "3-stage form (email → OTP → form) working. Posted CN/UI/TEST/1778761247 successfully."
+    },
+    "customer_account_ledger_tab": {
+      "status": "PASS",
+      "details": "data-testid='tab-credit-ledger' present, CreditLedgerView renders with 1 lender, 8 disbursements"
+    },
+    "mobile_ledger_route": {
+      "status": "PASS",
+      "details": "/m/ledger renders CreditLedgerView with same data in mobile viewport"
+    },
+    "account_tabs_regression": {
+      "status": "PASS",
+      "details": "My Orders, My Queries, Profile tabs all working, no console errors"
+    }
+  },
+  "mocked_apis": {
+    "has_mocked_apis": false,
+    "mocked_apis_list": []
+  }
+}

@@ -714,6 +714,13 @@ async def verify_payment(verification: PaymentVerification):
             )
     except Exception as e:
         logger.error(f"Failed to update inventory: {str(e)}")
+
+    # Auto-record into credit_payments ledger (best-effort, non-blocking)
+    try:
+        import credit_ledger_router as _clr
+        await _clr.record_razorpay_payment(order, verification.razorpay_payment_id)
+    except Exception as _e:
+        logger.warning(f"credit_ledger auto-record skipped: {_e}")
     
     # Create Shiprocket shipment (best effort, non-blocking)
     # First, split into child orders if multi-vendor
