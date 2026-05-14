@@ -196,6 +196,8 @@ async def place_order_from_quote(
     # we reuse the (battle-tested) Razorpay + credit + commission code paths.
     from orders_router import create_order, OrderCreate, OrderItem, CustomerInfo
 
+    qty = int(payload.quantity)
+    rate = float(quote["price_per_meter"])
     item = OrderItem(
         fabric_id=f"rfq-{rfq['id']}",  # synthetic id; not a catalog SKU
         fabric_name=f"{rfq.get('category', 'Fabric').title()} {rfq.get('fabric_requirement_type', '') or ''}".strip(),
@@ -203,11 +205,23 @@ async def place_order_from_quote(
         category_name=(rfq.get("category") or "").title(),
         seller_company=quote.get("vendor_company", ""),
         seller_id=quote.get("vendor_id", ""),
-        quantity=int(payload.quantity),
-        price_per_meter=float(quote["price_per_meter"]),
+        quantity=qty,
+        price_per_meter=rate,
         order_type="bulk",
         dispatch_timeline=f"{quote.get('lead_days', '')} days",
     )
+
+    # ── Packaging + Logistics charge calculation ─────────────────────
+    # RFQ-converted orders are always bulk. Mirror the same math used by
+    # the standard checkout path (`CheckoutPage.calculatePricing`) so the
+    # final invoice carries the correct packaging & logistics lines.
+    #   total_logistics = max(3% of goods value, ₹3,000)
+    #   packaging       = ₹1 per meter (or kg for knitted)
+    #   logistics_only  = max(0, total_logistics - packaging)
+    goods_subtotal = round(qty * rate, 2)
+    total_logistics = max(round(goods_subtotal * 0.03, 2), 3000.0)
+    packaging_charge = float(qty) * 1.0
+    logistics_only_charge = max(0.0, round(total_logistics - packaging_charge, 2))
     customer_info = CustomerInfo(
         name=customer.get("name") or rfq.get("full_name", ""),
         email=customer.get("email") or rfq.get("email"),
@@ -225,6 +239,8 @@ async def place_order_from_quote(
         customer=customer_info,
         notes=payload.notes or f"RFQ {rfq.get('rfq_number')} → Quote {quote_id[:8]}",
         payment_method=payload.payment_method,
+        packaging_charge=packaging_charge,
+        logistics_only_charge=logistics_only_charge,
     )
     result = await create_order(order_payload)
 
