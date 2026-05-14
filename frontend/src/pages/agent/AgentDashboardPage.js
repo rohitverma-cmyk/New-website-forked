@@ -8,6 +8,7 @@ import { getFabrics, getFabricsCount, getCategories, getFabricFilterOptions, get
 import { getCheapestBulkPrice, formatQtyThreshold } from "../../lib/pricing";
 import { thumbImage } from "../../lib/imageUrl";
 import Watermark from "../../components/Watermark";
+import AgentAISearchBar from "../../components/agent/AgentAISearchBar";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -490,6 +491,27 @@ Locofast Online Services`,
           {/* ===== CATALOG TAB ===== */}
           {activeTab === "catalog" && (
             <div>
+              {/* AI Sourcing Assistant — natural-language search powered by Claude. */}
+              <AgentAISearchBar
+                fabrics={fabrics}
+                onApplyFilters={(f) => {
+                  // Map Claude's extracted filters → existing state setters.
+                  if (f.category) {
+                    const cat = categories.find((c) => c.name?.toLowerCase() === f.category.toLowerCase());
+                    if (cat) setSelectedCategory(cat.id);
+                  }
+                  if (f.gsm_min) setGsmRange({ min: f.gsm_min, max: "" });
+                  if (f.max_price) setPriceRange({ min: "", max: f.max_price });
+                  if (f.availability === "Bookable") setAvailabilityFilter("bulk");
+                }}
+                onSuggestToClient={(fabric) => {
+                  // Adds the suggested fabric to the agent's working cart so
+                  // they can build a shareable basket in one click.
+                  addToCart(fabric, "bulk");
+                  toast.success(`Added "${fabric.name}" to cart`);
+                }}
+              />
+
               {/* Count + Search + Filter Toggle */}
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <div>
