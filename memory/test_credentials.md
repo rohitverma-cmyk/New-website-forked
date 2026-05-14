@@ -72,3 +72,11 @@ Then use `123456` as the OTP. Applies to `purpose`: `brand_credit_upload` AND `b
 - Phone: +91 120 4938200 (env: `LOCOFAST_SUPPORT_PHONE`)
 - Ops inbox: orders@locofast.com (env: `LOCOFAST_OPS_INBOX`) — brand order notifications go here
 - Endpoint: `GET /api/brand/support`
+
+## Credit Adjustments (OTP-gated)
+- Authorised email: sandeep.kumar@locofast.com (env: `CREDIT_ADJUSTMENT_ADMIN_EMAIL`)
+- Auth: OTP via Resend → exchange for 4h JWT scoped `credit_adjustment`
+- Admin URL: /admin/credit-adjustments
+- Test customer with seeded ledger data: test.ledger@locofast.com (OTP login via /api/customer/send-otp), GSTIN 07AIKPY4565A1Z0
+- OTP retrieval for tests: `db.credit_adjustment_otps` collection (most recent unused row)
+

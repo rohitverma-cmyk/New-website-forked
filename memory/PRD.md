@@ -514,6 +514,25 @@ Full admin order-edit capability + Shiprocket pickup now sourced from the assign
 - **Frontend — `EditOrderModal.js`**: Full 5-tab modal (Items / Customer / Shipping / Vendor / History) opened via "Edit Order" button on the admin order detail. Live total recomputation preview, vendor search with pickup-warning badge, audit history viewer with collapsible diff JSON, optional "cancel & re-push SR" checkbox.
 - **Frontend — Admin Seller Detail Finance tab**: Adds a "Pickup address (Ship-From)" card with 7 fields + Save button so admin can register each vendor's warehouse for Shiprocket pickup.
 
+### Phase 61: Unified Credit & Ledger (Complete - Feb 14, 2026)
+**Goal**: Bring B2C/standard buyers to parity with enterprise — every buyer with a GSTIN now sees a single Credit & Ledger view (limits per lender, full disbursement history, payments stream, manual adjustments).
+
+- **Backend** — new router `/api/credit-ledger/*` (`credit_ledger_router.py`):
+  - 4 new MongoDB collections: `credit_lender_lines`, `credit_disbursements`, `credit_payments`, `credit_adjustments` (+ `credit_adjustment_otps`). Indexed in `db_indexes.py`.
+  - `POST /admin/disbursements/upload-csv` & `POST /admin/payments/upload-csv` — tolerant CSV parser (handles `#REF!`, comma-thousands, `DD-Mon-YY`/ISO dates). Idempotent on `invoice_no` / `utr`.
+  - OTP-gated manual adjustments: `send-otp` → `verify-otp` (4h JWT scoped `credit_adjustment`) → `post`. Restricted to `CREDIT_ADJUSTMENT_ADMIN_EMAIL` (default `sandeep.kumar@locofast.com`). Adjustments are immutable (409 on duplicate ref).
+  - Razorpay auto-record hook fires from `orders_router.verify_payment` → credit_payments with `utr='razorpay:<id>'`, `source='razorpay-webhook'`.
+  - `GET /by-gstin/{gstin}` unified read returns `{ totals, lenders, disbursements, payments, adjustments }`. Falls back to legacy `credit_wallets` row when new tables are empty (so existing buyers see something immediately).
+  - Google Sheets poller scaffolded (env: `SHEETS_SERVICE_ACCOUNT_JSON`, `SHEET_DISBURSEMENTS_ID`, `SHEET_PAYMENTS_ID`, `SHEETS_POLL_INTERVAL_SEC=900`). No-op until creds supplied.
+
+- **Frontend** — shared `<CreditLedgerView/>` presentation component (top stat cards, lender utilisation bars, disbursement table with status pills, payments stream with auto/manual badges, adjustments table). Used by:
+  - Desktop `/account?tab=ledger` — new "Credit & Ledger" tab (testid `tab-credit-ledger`).
+  - Mobile `/m/ledger` — new route + tile on `/m/account`.
+  - `/admin/credit-adjustments` — 3-stage OTP form (email → 6-digit OTP → adjustment form). JWT cached in localStorage `credit_adj_jwt`.
+  - Static design preview at `/dev/ledger-preview` (kept for stakeholder reference).
+
+- **Verified** (iteration_64.json): 14/14 backend + 100% frontend. Real CSV (35 rows) ingested cleanly; idempotency, OTP rate-limit, JWT scope, Razorpay hook, legacy wallet fallback all PASS.
+
 ### Phase 60: RFQ → Order Packaging & Logistics Parity (Complete - Feb 14, 2026)
 Bug fix — orders created from a vendor quote (RFQ flow) were missing `packaging_charge` and `logistics_only_charge` because `place_order_from_quote` built an `OrderCreate` without these fields, defaulting them to ₹0. This caused revenue leakage on RFQ-converted orders.
 - **Backend (`customer_queries_router.py`)** — `place_order_from_quote` (lines 199-244) now computes bulk pricing inline (`total_logistics = max(3% of subtotal, ₹3000)`, `packaging = qty × ₹1`, `logistics_only = total_logistics - packaging`) — mirroring `CheckoutPage.calculatePricing`. Passes both fields into `OrderCreate` so downstream `calculate_totals` produces correct taxable value & total. Tested 6/6 backend cases (iteration_63.json).
