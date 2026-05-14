@@ -1237,7 +1237,7 @@ Locofast Online Services`,
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase" title="Final invoice value — goods + packaging + logistics + 5% GST">Invoice Value <span className="ml-1 text-[10px] font-normal normal-case text-gray-400">(all-incl.)</span></th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
                       </tr>
@@ -1245,8 +1245,17 @@ Locofast Online Services`,
                     <tbody className="divide-y divide-gray-100">
                       {orders.map((o) => {
                         const isSample = o.items?.[0]?.order_type === 'sample';
+                        // Pricing breakdown — same fields persisted by orders_router.
+                        // `packaging_charge` + `logistics_only_charge` is the modern
+                        // (Feb 2026+) split; older orders may carry only the legacy
+                        // `logistics_charge`. Either way, totals add up.
+                        const goods = Number(o.subtotal || 0);
+                        const pkg = Number(o.packaging_charge || 0);
+                        const log = Number(o.logistics_only_charge ?? o.logistics_charge ?? 0);
+                        const tax = Number(o.tax || 0);
+                        const grand = Number(o.total || (goods + pkg + log + tax));
                         return (
-                        <tr key={o.id} className="hover:bg-gray-50">
+                        <tr key={o.id} className="hover:bg-gray-50" data-testid={`agent-order-row-${o.order_number}`}>
                           <td className="px-4 py-4 font-medium text-[#2563EB]">{o.order_number}</td>
                           <td className="px-4 py-4">
                             <span className={`px-2 py-1 rounded-full text-xs font-bold ${isSample ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>
@@ -1257,7 +1266,15 @@ Locofast Online Services`,
                             <p className="text-sm font-medium">{o.customer?.name}</p>
                             <p className="text-xs text-gray-500">{o.customer?.email}</p>
                           </td>
-                          <td className="px-4 py-4 font-semibold text-emerald-600">₹{o.total?.toLocaleString()}</td>
+                          <td className="px-4 py-4 text-right" data-testid={`agent-order-invoice-${o.order_number}`}>
+                            <div className="font-semibold text-emerald-700 tabular-nums">₹{grand.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+                            <div className="mt-0.5 text-[11px] text-gray-500 tabular-nums leading-tight">
+                              Goods ₹{goods.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                              {pkg > 0 && <> · Pkg ₹{pkg.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</>}
+                              {log > 0 && <> · Logs ₹{log.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</>}
+                              {tax > 0 && <> · GST ₹{tax.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</>}
+                            </div>
+                          </td>
                           <td className="px-4 py-4">
                             <span className={`px-2 py-1 rounded-full text-xs font-medium ${o.status === "confirmed" || o.status === "delivered" ? "bg-emerald-100 text-emerald-700" : o.status === "shipped" ? "bg-purple-100 text-purple-700" : "bg-yellow-100 text-yellow-700"}`}>
                               {o.status}
