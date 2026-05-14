@@ -58,8 +58,21 @@ class Category(BaseModel):
 @router.get("/categories", response_model=List[Category])
 async def get_categories():
     categories = await db.categories.find({}, {'_id': 0}).to_list(100)
-    # Compute live fabric counts in one aggregation, then merge
-    pipeline = [{"$group": {"_id": "$category_id", "n": {"$sum": 1}}}]
+    # Compute live fabric counts in one aggregation, then merge.
+    # IMPORTANT: only count APPROVED fabrics so the badge on the home /
+    # nav matches what the user sees on the listing page (which filters
+    # to status='approved' by default). Counting drafts/pending caused
+    # categories like Polyester (49 total → 1 approved) and Greige
+    # (62 → 0) to look broken from the buyer's perspective.
+    approved_filter = {'$or': [
+        {'status': 'approved'},
+        {'status': {'$exists': False}},
+        {'status': None},
+    ]}
+    pipeline = [
+        {"$match": approved_filter},
+        {"$group": {"_id": "$category_id", "n": {"$sum": 1}}},
+    ]
     counts = {row["_id"]: row["n"] async for row in db.fabrics.aggregate(pipeline)}
     for c in categories:
         c['fabric_count'] = counts.get(c['id'], 0)

@@ -4,6 +4,7 @@ import { Search, Zap, CreditCard, Gift, FileText, ArrowRight, ChevronRight, Truc
 import api from "../../lib/api";
 import FabricCard, { FabricCardSkeleton } from "../components/FabricCard";
 import CategoryPill from "../components/CategoryPill";
+import BrandTicker from "../../components/BrandTicker";
 
 export default function MHome() {
   const navigate = useNavigate();
@@ -43,7 +44,7 @@ export default function MHome() {
           Hundreds of ready-to-sew fabrics.
         </h1>
         <p className="m-body" style={{ marginTop: 8 }}>
-          Sample today, refill the winners. Dispatch in 48–72h · 5,000 free credits on signup.
+          Sample today, refill the winners. Dispatch in 48–72h.
         </p>
       </section>
 
@@ -100,8 +101,8 @@ export default function MHome() {
           {[
             { icon: Zap, color: "var(--m-orange)", bg: "var(--m-orange-50)", title: "Samples in 48–72h", sub: "Ready stock dispatch" },
             { icon: CreditCard, color: "var(--m-blue)", bg: "var(--m-blue-50)", title: "Embedded credit", sub: "Approved at checkout" },
-            { icon: Gift, color: "var(--m-green)", bg: "var(--m-green-50)", title: "5,000 free credits", sub: "For new brands" },
-            { icon: FileText, color: "#0F1B2D", bg: "#EAEEF5", title: "SLA in writing", sub: "Every PO, predictable" },
+            { icon: Truck, color: "var(--m-green)", bg: "var(--m-green-50)", title: "Pan-India dispatch", sub: "GST-verified network" },
+            { icon: Shield, color: "#0F1B2D", bg: "#EAEEF5", title: "Quality assured", sub: "Pre-checked on every PO" },
           ].map((p) => {
             const Icon = p.icon;
             return (
@@ -117,6 +118,13 @@ export default function MHome() {
             );
           })}
         </div>
+      </section>
+
+      {/* Brand ticker — parity with the desktop home (#9 in the
+       * mobile-issue list). We reuse the shared component; the marquee
+       * animation handles overflow on narrow viewports automatically. */}
+      <section style={{ marginTop: 22 }}>
+        <BrandTicker />
       </section>
 
       {/* Categories rail */}
@@ -212,7 +220,7 @@ export default function MHome() {
               Sample to delivery, on one platform.
             </h2>
             <p className="m-body" style={{ marginTop: 8, color: "rgba(255,255,255,0.75)" }}>
-              5,000 free sample credits · Same-day catalog · Dispatch SLA in writing
+              Same-day catalog · GST-verified mills · Pan-India dispatch
             </p>
             <button
               onClick={() => navigate("/m/rfq")}

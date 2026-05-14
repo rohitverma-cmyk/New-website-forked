@@ -30,15 +30,20 @@ const LocofastMark = ({ size = 24 }) => (
   </svg>
 );
 
-export default function TopAppBar({ title, showBack = false, showSearch = true, showNotifications = true, onSearchClick, hasNotifications = false, right = null }) {
+export default function TopAppBar({ title, showBack, showSearch = true, showNotifications = true, onSearchClick, hasNotifications = false, right = null }) {
   const navigate = useNavigate();
   const location = useLocation();
   const isHome = location.pathname === "/m" || location.pathname === "/m/";
+  // Auto-decision: show back button on every non-home route unless the
+  // page explicitly opts out by passing showBack={false}. Previously this
+  // defaulted to false everywhere, leaving secondary screens (e.g.
+  // /m/rfq triggered from the fabric-detail chat icon) with no way back.
+  const effectiveShowBack = typeof showBack === "boolean" ? showBack : !isHome;
 
   return (
     <header className="m-appbar">
       <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
-        {showBack && !isHome ? (
+        {effectiveShowBack && !isHome ? (
           <button className="m-icon-btn" onClick={() => navigate(-1)} aria-label="Back">
             <ChevronLeft size={22} />
           </button>

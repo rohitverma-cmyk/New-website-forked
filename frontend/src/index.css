@@ -87,10 +87,17 @@ h1, h2, h3, h4, h5, h6 {
   width: 100%;
 }
 
-/* Prevent horizontal scroll on mobile */
-html, body {
-  overflow-x: hidden;
-  max-width: 100vw;
+/* Prevent horizontal scroll on mobile.
+ * NOTE: We apply `overflow-x: clip` to BODY only (not html). Setting
+ * `overflow-x: hidden` on <html> + `max-width: 100vw` on both elements is
+ * a well-known momentum-scroll killer on iOS Safari — after the first
+ * swipe, vertical scroll gets stuck. `clip` keeps horizontal overflow
+ * suppressed without nuking touch scrolling. */
+body {
+  overflow-x: clip;
+}
+@supports not (overflow: clip) {
+  body { overflow-x: hidden; }
 }
 
 /* Section spacing */

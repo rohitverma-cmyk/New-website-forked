@@ -62,7 +62,9 @@ export default function MCatalog() {
     (async () => {
       try {
         const [fRes, cRes] = await Promise.all([
-          api.get("/fabrics"),
+          // Load the full catalog so filters/sorts operate on every fabric,
+          // not just the backend default of 20. Backend cap is 1000.
+          api.get("/fabrics", { params: { limit: 1000 } }),
           categories.length ? Promise.resolve({ data: categories }) : api.get("/categories"),
         ]);
         if (!alive) return;
