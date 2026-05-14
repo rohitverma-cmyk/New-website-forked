@@ -44,36 +44,41 @@ export default function AgentAISearchBar({ onApplyFilters, fabrics = [], onSugge
     setLoading(true);
     setResult(null);
     try {
-      // ⚠️ Placeholder response — replace with /api/agent/ai-search call
-      // once Claude key is wired. Backend is expected to return:
-      //   { intent, filters, summary, suggestions: [{fabric_id, why}] }
-      await new Promise((r) => setTimeout(r, 900));
-      // Heuristic parse for the UI preview — picks 4 top fabrics from
-      // the currently loaded catalog with mock "reasoning".
-      const lc = q.toLowerCase();
-      const mockFilters = {
-        category: lc.includes("knit") ? "Knits" : lc.includes("denim") ? "Denim" : lc.includes("cotton") ? "Cotton" : null,
-        max_price: (lc.match(/(?:under|max|≤)\s*₹?\s*(\d+)/i) || [])[1] || null,
-        gsm_min: (lc.match(/(\d{2,3})\s*\+?\s*gsm/i) || [])[1] || null,
-        availability: lc.includes("ready stock") || lc.includes("ready-stock") ? "Bookable" : null,
-        location: (lc.match(/(?:from|in)\s+([A-Z][a-z]+)/) || [])[1] || null,
-      };
-      const filtered = (fabrics || []).slice(0, 4).map((f) => ({
-        fabric: f,
-        why: `Matches your "${lc.split(/[,.]/)[0].trim()}" requirement · MOQ ${f.moq || "—"} · ₹${f.starting_price || f.rate_per_meter || "—"}/m`,
-        confidence: 0.85,
-      }));
+      const token = localStorage.getItem("lf_agent_token");
+      const apiUrl = process.env.REACT_APP_BACKEND_URL;
+      const candidateIds = (fabrics || []).slice(0, 40).map((f) => f.id).filter(Boolean);
+      const res = await fetch(`${apiUrl}/api/agent/ai-search`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          query: q,
+          candidate_fabric_ids: candidateIds,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
       setResult({
-        summary: `Found ${filtered.length} matches based on your description. Filters extracted: ${
-          Object.entries(mockFilters)
-            .filter(([, v]) => v)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join(" · ") || "none — showing top picks"
-        }`,
-        filters: mockFilters,
-        suggestions: filtered,
+        summary: data.summary || "",
+        filters: data.filters || {},
+        suggestions: (data.picks || []).map((p) => ({
+          fabric: p.fabric,
+          why: p.why,
+          confidence: p.confidence,
+        })),
       });
       setHistory((h) => [{ q, ts: new Date().toISOString() }, ...h].slice(0, 5));
+    } catch (err) {
+      setResult({
+        summary: `Couldn't reach the AI assistant: ${err.message}. Try again in a moment.`,
+        filters: {},
+        suggestions: [],
+      });
     } finally {
       setLoading(false);
     }

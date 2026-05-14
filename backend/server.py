@@ -605,6 +605,10 @@ import agent_router
 agent_router.set_db(db)
 app.include_router(agent_router.router)
 
+import agent_ai_router
+agent_ai_router.set_db(db)
+app.include_router(agent_ai_router.router)
+
 import brand_router
 brand_router.set_db(db)
 app.include_router(brand_router.router, prefix="/api")
