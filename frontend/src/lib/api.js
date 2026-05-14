@@ -37,7 +37,14 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const status = error.response?.status;
+    // FastAPI HTTPBearer returns 403 "Not authenticated" when no Authorization
+    // header is sent (e.g. admin session was cleared in another tab). Treat
+    // these the same as 401 — clear stale creds and bounce to admin login
+    // so the user gets useful feedback instead of a generic toast.
+    const looksUnauth = status === 401
+      || (status === 403 && /not authenticated|invalid authentication/i.test(error.response?.data?.detail || ""));
+    if (looksUnauth) {
       // Only redirect to login if the failed request required auth
       // Don't redirect for public endpoints that happen to fail
       const requestUrl = error.config?.url || '';
@@ -56,17 +63,18 @@ api.interceptors.response.use(
         '/orders',
         '/cloudinary'
       ];
-      
+
       // Check if this was an auth-required endpoint
-      const isAuthRequired = authRequiredEndpoints.some(endpoint => 
+      const isAuthRequired = authRequiredEndpoints.some(endpoint =>
         requestUrl.includes(endpoint) && !requestUrl.includes('/blog/')
       );
-      
+
       if (isAuthRequired) {
         localStorage.removeItem("locofast_token");
         localStorage.removeItem("locofast_admin");
         if (window.location.pathname.startsWith("/admin") && window.location.pathname !== "/admin/login") {
-          window.location.href = "/admin/login";
+          // Preserve the original detail so the login page can show "Session expired"
+          window.location.href = "/admin/login?reason=expired";
         }
       }
     }

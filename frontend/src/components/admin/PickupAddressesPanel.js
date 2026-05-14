@@ -94,7 +94,13 @@ const PickupAddressesPanel = ({ sellerId }) => {
       setForm(EMPTY);
       load();
     } catch (e) {
-      toast.error("Save failed: " + (e?.response?.data?.detail || e.message));
+      const detail = e?.response?.data?.detail || e.message;
+      const status = e?.response?.status;
+      if (status === 401 || status === 403) {
+        toast.error("Session expired — redirecting you to log in again…");
+      } else {
+        toast.error("Save failed: " + detail);
+      }
     }
     setSaving(false);
   };

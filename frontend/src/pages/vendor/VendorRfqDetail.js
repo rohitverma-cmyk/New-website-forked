@@ -515,7 +515,11 @@ const QuoteModal = ({ rfq, existing, onClose, onSaved }) => {
             testId="section-construction"
           >
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-              {SPEC_FIELDS.construction.map(([k, label, type, opts]) => (
+              {SPEC_FIELDS.construction
+                // Denim is always shuttle/projectile loom; the buyer rarely
+                // cares which specific loom — hide to reduce form clutter.
+                .filter(([k]) => !((rfq.category || "").toLowerCase() === "denim" && k === "loom"))
+                .map(([k, label, type, opts]) => (
                 <label key={k} className="block">
                   <span className="text-[11px] text-gray-500">{label}</span>
                   {type === "select" ? (
