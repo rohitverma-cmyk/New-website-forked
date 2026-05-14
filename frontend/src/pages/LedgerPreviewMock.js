@@ -34,6 +34,11 @@ const MOCK = {
     { date: "2026-02-01", mode: "RTGS", ref: "ICIC0001234-UTR9981023", amount: 371352, against: "LF/25-26/391", lender: "Muthoot", source: "Manual sheet upload" },
     { date: "2026-01-15", mode: "Razorpay", ref: "pay_MqL2x33...", amount: 384058, against: "LF/25-26/365", lender: "Indifi", source: "Auto-synced from PG" },
   ],
+  adjustments: [
+    { date: "2026-02-12", type: "Credit Note", ref: "CN/25-26/018", amount: 54036, against: "LF/25-26/462", reason: "Short shipment — 60m undelivered", by: "sandeep.kumar@locofast.com" },
+    { date: "2026-01-22", type: "Debit Note", ref: "DN/25-26/005", amount: 12500, against: "LF/25-26/391", reason: "Late dispatch penalty waived back", by: "sandeep.kumar@locofast.com" },
+    { date: "2025-12-30", type: "Other", ref: "ADJ/25-26/002", amount: -5000, against: "On-account", reason: "Rate diff settlement", by: "sandeep.kumar@locofast.com" },
+  ],
 };
 
 const StatCard = ({ label, value, tone = "neutral", sub }) => {
@@ -246,8 +251,59 @@ export default function LedgerPreviewMock() {
           </div>
         </div>
 
+        {/* Manual Adjustments */}
+        <div className="mt-8 rounded-2xl border border-amber-200 bg-amber-50/30">
+          <div className="flex items-center justify-between border-b border-amber-100 px-5 py-4">
+            <div>
+              <h2 className="flex items-center gap-2 text-base font-semibold text-amber-900">
+                Manual Adjustments
+                <span className="rounded-full bg-amber-200/60 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-900">OTP-gated · Sandeep only</span>
+              </h2>
+              <p className="text-xs text-amber-800/70">Credit notes, debit notes & other ledger corrections. Restricted to <span className="font-mono">sandeep.kumar@locofast.com</span> via OTP login.</p>
+            </div>
+            <button className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100">
+              + Add Adjustment
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-amber-100/40 text-xs uppercase tracking-wider text-amber-900/80">
+                <tr>
+                  <th className="px-5 py-3 text-left font-medium">Date</th>
+                  <th className="px-5 py-3 text-left font-medium">Type</th>
+                  <th className="px-5 py-3 text-left font-medium">Reference No</th>
+                  <th className="px-5 py-3 text-right font-medium">Amount</th>
+                  <th className="px-5 py-3 text-left font-medium">Against</th>
+                  <th className="px-5 py-3 text-left font-medium">Reason</th>
+                  <th className="px-5 py-3 text-left font-medium">Posted By</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-amber-100">
+                {MOCK.adjustments.map((a) => {
+                  const typeStyle = {
+                    "Credit Note": "bg-emerald-100 text-emerald-800",
+                    "Debit Note": "bg-rose-100 text-rose-800",
+                    "Other": "bg-slate-200 text-slate-800",
+                  }[a.type];
+                  return (
+                    <tr key={a.ref} className="hover:bg-amber-50">
+                      <td className="px-5 py-3 tabular-nums text-slate-700">{a.date}</td>
+                      <td className="px-5 py-3"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${typeStyle}`}>{a.type}</span></td>
+                      <td className="px-5 py-3 font-mono text-xs text-slate-900">{a.ref}</td>
+                      <td className={`px-5 py-3 text-right tabular-nums font-semibold ${a.amount >= 0 ? "text-emerald-700" : "text-rose-700"}`}>{a.amount >= 0 ? "+" : ""}{inr(a.amount)}</td>
+                      <td className="px-5 py-3 font-mono text-xs">{a.against}</td>
+                      <td className="px-5 py-3 text-xs text-slate-600">{a.reason}</td>
+                      <td className="px-5 py-3 text-xs text-slate-500">{a.by}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         {/* Sheet Specs */}
-        <div className="mt-10 grid gap-5 lg:grid-cols-2">
+        <div className="mt-10 grid gap-5 lg:grid-cols-3">
           <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-5">
             <div className="mb-3 flex items-center gap-2">
               <IndianRupee className="h-5 w-5 text-indigo-700" />
@@ -303,6 +359,31 @@ export default function LedgerPreviewMock() {
               ))}
             </ol>
           </div>
+
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/40 p-5">
+            <div className="mb-3 flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-700" />
+              <h3 className="text-base font-bold text-amber-900">Form 3 · Manual Adjustment</h3>
+            </div>
+            <p className="mb-3 text-xs text-amber-800/80">OTP-only entry. Auth gated to <code className="rounded bg-white px-1">sandeep.kumar@locofast.com</code>. Each post creates a signed audit row.</p>
+            <ol className="space-y-1 text-xs text-slate-700">
+              {[
+                "Date (auto, server time)",
+                "GSTIN — required",
+                "Type — Credit Note / Debit Note / Other",
+                "Reference No — required, UNIQUE (e.g. CN/25-26/018)",
+                "Amount (₹) — signed (CN = +, DN = −)",
+                "Against Invoice No — optional",
+                "Against Order ID — optional",
+                "Lender — optional",
+                "Reason — required, free text",
+                "Attachment URL — optional (Cloudinary)",
+                "Posted By — auto-stamped from OTP session",
+              ].map((c, i) => (
+                <li key={c} className="flex gap-2"><span className="w-6 shrink-0 text-right tabular-nums text-slate-400">{i + 1}.</span>{c}</li>
+              ))}
+            </ol>
+          </div>
         </div>
 
         <div className="mt-8 rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-600">
@@ -311,7 +392,8 @@ export default function LedgerPreviewMock() {
             <li><b>Razorpay PG payments</b> → auto-recorded on payment-verify webhook (already live). No sheet needed.</li>
             <li><b>NEFT / RTGS / Cheque / Cash</b> → finance fills Sheet 2 daily → polled or manually uploaded → posts to `credit_payments` table.</li>
             <li><b>Credit Disbursements</b> → finance fills Sheet 1 on every new disbursement → posts to `credit_disbursements` table. Lender limits auto-recompute (sanctioned − sum(disbursed) + sum(repaid)).</li>
-            <li><b>Customer view</b> (this page) → identical UX for standard + enterprise users. Pulls live from the same three tables.</li>
+            <li><b>Manual Adjustments (CN/DN/Other)</b> → only <span className="font-mono">sandeep.kumar@locofast.com</span> can post via OTP-gated form → posts to `credit_adjustments` table with signed audit trail.</li>
+            <li><b>Customer view</b> (this page) → identical UX for standard + enterprise users. Pulls live from all four streams.</li>
           </ul>
         </div>
       </div>
