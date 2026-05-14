@@ -400,13 +400,18 @@ const CheckoutPage = () => {
     let logisticsOnly = 0;
     if (!hasBulk) {
       totalLogistics = 100 * cartItems.length;
+      logisticsOnly = totalLogistics;
     } else {
       const totalQty = cartItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
       totalLogistics = Math.max(sub * 0.03, 3000);
       packaging = totalQty * 1;
       logisticsOnly = Math.max(0, totalLogistics - packaging);
     }
-    const taxBase = sub + packaging + totalLogistics;
+    // Tax base = goods + packaging + logistics-only (NOT totalLogistics —
+    // that bundles packaging inside it; adding totalLogistics on top of the
+    // standalone packaging line double-counts). Mirrors backend
+    // orders_router.calculate_totals.
+    const taxBase = sub + packaging + logisticsOnly;
     const taxAmount = Math.round(taxBase * 0.05 * 100) / 100;
     const finalTotal = taxBase + taxAmount - discount;
     setSubtotal(sub);
@@ -468,6 +473,7 @@ const CheckoutPage = () => {
     let logisticsOnly = 0;
     if (orderType === "sample") {
       totalLogistics = 100; // Flat Rs 100 for samples
+      logisticsOnly = totalLogistics;
     } else {
       // Total = max(3% of cart value, Rs 3000)
       totalLogistics = Math.max(sub * 0.03, 3000);
@@ -478,8 +484,11 @@ const CheckoutPage = () => {
     }
     const logisticsPerUnit = quantity > 0 ? totalLogistics / quantity : 0;
 
-    // Tax base (Feb 2026+) = goods + packaging + logistics
-    const taxBase = sub + packaging + totalLogistics;
+    // Tax base = goods + packaging + logistics-only (mirrors backend
+    // orders_router.calculate_totals). totalLogistics already bundles
+    // packaging inside it — using it in the tax base would count
+    // packaging twice.
+    const taxBase = sub + packaging + logisticsOnly;
     const taxAmount = Math.round(taxBase * 0.05 * 100) / 100; // 5% GST
     const finalTotal = taxBase + taxAmount - discount;
 

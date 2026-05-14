@@ -133,7 +133,11 @@ const SharedCartPage = () => {
     : Math.max(subtotal * 0.03, 3000);
   const sharedCartPackaging = hasBulk ? totalQty * 1 : 0;
   const sharedCartLogisticsOnly = Math.max(0, sharedCartLogistics - sharedCartPackaging);
-  const sharedCartTaxBase = subtotal + sharedCartPackaging + sharedCartLogistics;
+  // Tax base must use the LOGISTICS-ONLY line, not the bundled total
+  // logistics figure — otherwise packaging is counted twice (once as its
+  // own line, once inside totalLogistics). Backend (orders_router.
+  // calculate_totals) uses the same logistics-only number.
+  const sharedCartTaxBase = subtotal + sharedCartPackaging + sharedCartLogisticsOnly;
   const sharedCartGst = Math.round(sharedCartTaxBase * 0.05 * 100) / 100;
   const sharedCartGrandTotal = sharedCartTaxBase + sharedCartGst;
 
