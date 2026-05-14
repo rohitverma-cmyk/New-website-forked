@@ -514,6 +514,11 @@ Full admin order-edit capability + Shiprocket pickup now sourced from the assign
 - **Frontend — `EditOrderModal.js`**: Full 5-tab modal (Items / Customer / Shipping / Vendor / History) opened via "Edit Order" button on the admin order detail. Live total recomputation preview, vendor search with pickup-warning badge, audit history viewer with collapsible diff JSON, optional "cancel & re-push SR" checkbox.
 - **Frontend — Admin Seller Detail Finance tab**: Adds a "Pickup address (Ship-From)" card with 7 fields + Save button so admin can register each vendor's warehouse for Shiprocket pickup.
 
+### Phase 60: RFQ → Order Packaging & Logistics Parity (Complete - Feb 14, 2026)
+Bug fix — orders created from a vendor quote (RFQ flow) were missing `packaging_charge` and `logistics_only_charge` because `place_order_from_quote` built an `OrderCreate` without these fields, defaulting them to ₹0. This caused revenue leakage on RFQ-converted orders.
+- **Backend (`customer_queries_router.py`)** — `place_order_from_quote` (lines 199-244) now computes bulk pricing inline (`total_logistics = max(3% of subtotal, ₹3000)`, `packaging = qty × ₹1`, `logistics_only = total_logistics - packaging`) — mirroring `CheckoutPage.calculatePricing`. Passes both fields into `OrderCreate` so downstream `calculate_totals` produces correct taxable value & total. Tested 6/6 backend cases (iteration_63.json).
+- Both Desktop (`CustomerQueryDetail.js`) and Mobile (`MRfqDetail.js`) RFQ-place-order paths benefit (shared endpoint).
+
 ### Phase 59: 5% GST on Packaging + Logistics (Complete - Feb 2026)
 Compliance fix — per Schedule II of the CGST Act, packaging and logistics charged by the supplier are part of the value of supply and are taxable at the same rate as the principal goods. Earlier orders didn't tax these charges; new orders do. Tested 9/9 backend + frontend (iteration_62.json).
 - **Backend (`orders_router.py`)**: `calculate_totals` rewritten — `taxable_value = goods_subtotal + packaging + logistics`, `tax = 5% × taxable_value`, `total = taxable_value + tax`. Result also exposes a `tax_on_charges_v2: True` flag so the PDF renderer can branch correctly.
