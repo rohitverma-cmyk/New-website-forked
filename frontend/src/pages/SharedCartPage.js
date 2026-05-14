@@ -121,6 +121,21 @@ const SharedCartPage = () => {
   };
 
   const subtotal = cart?.items?.reduce((s, i) => s + i.quantity * i.price_per_meter, 0) || 0;
+  // ── Match the same bulk pricing the checkout page applies ──────────
+  // (see CheckoutPage.calculateMultiItemPricing). Doing the math here
+  // means the "Estimated Total" the buyer sees in the shared cart is
+  // identical to what they'll see at checkout — no surprise jump from
+  // missing logistics + packaging + GST-on-charges.
+  const hasBulk = (cart?.items || []).some((it) => (it.order_type || "bulk") === "bulk");
+  const totalQty = (cart?.items || []).reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+  const sharedCartLogistics = !hasBulk
+    ? 100 * (cart?.items?.length || 0)
+    : Math.max(subtotal * 0.03, 3000);
+  const sharedCartPackaging = hasBulk ? totalQty * 1 : 0;
+  const sharedCartLogisticsOnly = Math.max(0, sharedCartLogistics - sharedCartPackaging);
+  const sharedCartTaxBase = subtotal + sharedCartPackaging + sharedCartLogistics;
+  const sharedCartGst = Math.round(sharedCartTaxBase * 0.05 * 100) / 100;
+  const sharedCartGrandTotal = sharedCartTaxBase + sharedCartGst;
 
   if (loading) {
     return (
@@ -223,20 +238,34 @@ const SharedCartPage = () => {
           </div>
 
           {/* Summary */}
-          <div className="bg-white rounded-xl p-6 border border-gray-200 mb-6">
+          <div className="bg-white rounded-xl p-6 border border-gray-200 mb-6" data-testid="shared-cart-summary">
             <div className="flex justify-between text-sm mb-2">
-              <span className="text-gray-600">Subtotal</span>
-              <span className="font-medium">₹{subtotal.toLocaleString()}</span>
+              <span className="text-gray-600">Goods Subtotal</span>
+              <span className="font-medium">₹{subtotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+            {hasBulk && (
+              <div className="flex justify-between text-sm mb-2">
+                <span className="text-gray-600">Packaging (₹1/m)</span>
+                <span>₹{sharedCartPackaging.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-sm mb-2">
+              <span className="text-gray-600">Logistics</span>
+              <span>₹{sharedCartLogisticsOnly.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+            <div className="flex justify-between text-xs text-gray-500 mb-2 border-t border-dashed pt-2">
+              <span>Taxable value (Goods + Packaging + Logistics)</span>
+              <span>₹{sharedCartTaxBase.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
             <div className="flex justify-between text-sm mb-2">
               <span className="text-gray-600">GST (5%)</span>
-              <span>₹{(subtotal * 0.05).toLocaleString()}</span>
+              <span>₹{sharedCartGst.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
             <div className="flex justify-between pt-3 border-t text-lg font-semibold">
               <span>Estimated Total</span>
-              <span className="text-emerald-600">₹{(subtotal * 1.05).toLocaleString()}</span>
+              <span className="text-emerald-600" data-testid="shared-cart-grand-total">₹{sharedCartGrandTotal.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
-            <p className="text-xs text-gray-400 mt-2">Logistics charges will be calculated at checkout.</p>
+            <p className="text-xs text-gray-400 mt-2">Final logistics is min ₹3,000 or 3% of goods, whichever is higher (bulk orders).</p>
             <p className="text-xs text-amber-600 mt-1.5">For export orders, additional port charges, custom charges, export documentation &amp; cess may be applicable.</p>
           </div>
 

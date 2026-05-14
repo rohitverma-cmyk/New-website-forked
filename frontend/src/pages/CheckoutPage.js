@@ -341,12 +341,18 @@ const CheckoutPage = () => {
           if (!res.ok) throw new Error("Cart not found");
           const data = await res.json();
           const items = Array.isArray(data.items) ? data.items : [];
-          if (items.length > 1) {
+          // Always honour the agent's curated price from the shared cart —
+          // even for single-item carts. Falling back to the catalog price
+          // (which is what fetchFabric() does next) drops any negotiated
+          // rate the agent locked in, causing a mismatch between the
+          // shared-cart summary and the checkout total. The multi-item
+          // pricing path is safe with N=1 too: it computes goods + bulk
+          // logistics + packaging + GST from the items directly.
+          if (items.length >= 1) {
             setCartItems(items);
             setLoading(false);
             return;
           }
-          // Single-item cart — still use the legacy fabric flow below
         } catch {
           // fall through to single fabric_id load
         }
