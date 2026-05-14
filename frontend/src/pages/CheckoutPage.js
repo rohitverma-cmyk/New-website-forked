@@ -178,8 +178,30 @@ const CheckoutPage = () => {
         state: loggedInCustomer.state || prev.state,
         pincode: loggedInCustomer.pincode || prev.pincode,
       }));
+      // Prefill GSTIN from the customer's verified profile so the user
+      // doesn't have to retype it. Mark it verified locally so the
+      // shipping toggle and credit lookup activate immediately.
       if (loggedInCustomer.gstin) {
-        getCreditBalance({ gst_number: loggedInCustomer.gstin }).then(res => {
+        const cleanedGst = loggedInCustomer.gstin.trim().toUpperCase();
+        setGstNumber(cleanedGst);
+        if (loggedInCustomer.gst_verified) {
+          setGstResult({
+            valid: true,
+            trade_name: loggedInCustomer.company || "",
+            legal_name: loggedInCustomer.company || "",
+            city: loggedInCustomer.city || "",
+            state: loggedInCustomer.state || "",
+            pincode: loggedInCustomer.pincode || "",
+            address: loggedInCustomer.address || "",
+          });
+          setGstAddress({
+            address: loggedInCustomer.address || "",
+            city: loggedInCustomer.city || "",
+            state: loggedInCustomer.state || "",
+            pincode: loggedInCustomer.pincode || "",
+          });
+        }
+        getCreditBalance({ gst_number: cleanedGst }).then(res => {
           setCreditBalance(res.data);
           if (res.data?.has_credit) setPaymentMethod("credit");
         }).catch(() => {});

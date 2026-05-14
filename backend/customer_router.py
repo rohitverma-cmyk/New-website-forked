@@ -55,6 +55,7 @@ class ProfileUpdate(BaseModel):
     name: str = ""
     email: str = ""
     phone: str = ""
+    country: str = ""  # ISO-2 code (IN, US, GB, …) — drives phone dial-code prefix
     company: str = ""
     gstin: str = ""
     address: str = ""
@@ -470,6 +471,7 @@ async def update_profile(data: ProfileUpdate, request: Request):
     update_data = {
         "name": name,
         "phone": phone,
+        "country": (data.country or current.get("country") or "IN").upper(),
         "company": company,
         "gstin": gstin,
         **gst_extras,

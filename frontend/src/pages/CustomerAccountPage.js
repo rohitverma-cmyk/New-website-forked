@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { User, Package, Mail, Phone, Building2, MapPin, Pencil, Save, Loader2, LogOut, ArrowRight, Clock, CheckCircle, Truck, XCircle, MessageSquare, FileText, ShieldCheck } from "lucide-react";
+import { User, Package, Mail, Phone, Building2, MapPin, Pencil, Save, Loader2, LogOut, ArrowRight, Clock, CheckCircle, Truck, XCircle, MessageSquare, FileText, ShieldCheck, Globe } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
 import { getCustomerProfile, updateCustomerProfile, getCustomerOrders } from "../lib/api";
+import { COUNTRIES, getCountry, stripDialCode } from "../lib/countries";
 import CustomerQueriesTab from "../components/customer/CustomerQueriesTab";
 import { toast } from "sonner";
 
@@ -29,7 +30,7 @@ const CustomerAccountPage = () => {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [profileForm, setProfileForm] = useState({
-    name: "", email: "", phone: "", company: "", gstin: "", address: "", city: "", state: "", pincode: ""
+    name: "", email: "", phone: "", country: "IN", company: "", gstin: "", address: "", city: "", state: "", pincode: ""
   });
   const [gstVerified, setGstVerified] = useState(false);
   const [gstVerifying, setGstVerifying] = useState(false);
@@ -46,7 +47,19 @@ const CustomerAccountPage = () => {
       const res = await getCustomerProfile(token);
       const p = res.data;
       const realEmail = (p.email || "").endsWith("@phone.locofast.local") ? "" : (p.email || "");
-      setProfileForm({ name: p.name || "", email: realEmail, phone: p.phone || "", company: p.company || "", gstin: p.gstin || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
+      const country = (p.country || "IN").toUpperCase();
+      setProfileForm({
+        name: p.name || "",
+        email: realEmail,
+        country,
+        phone: stripDialCode(p.phone || "", country),
+        company: p.company || "",
+        gstin: p.gstin || "",
+        address: p.address || "",
+        city: p.city || "",
+        state: p.state || "",
+        pincode: p.pincode || "",
+      });
       setGstVerified(!!p.gst_verified);
     } catch {}
   };
@@ -129,10 +142,26 @@ const CustomerAccountPage = () => {
 
     setSaving(true);
     try {
-      const res = await updateCustomerProfile(token, { ...profileForm, email, gstin });
+      // Combine country dial code + local phone digits before sending.
+      const dial = getCountry(profileForm.country).dial;
+      const phoneDigits = profileForm.phone.replace(/\D/g, "");
+      const fullPhone = phoneDigits ? `${dial}${phoneDigits}` : "";
+      const res = await updateCustomerProfile(token, { ...profileForm, email, gstin, phone: fullPhone });
       const p = res.data;
       const emailChanged = !!p._email_changed;
-      setProfileForm({ name: p.name || "", email: (p.email || "").endsWith("@phone.locofast.local") ? "" : (p.email || ""), phone: p.phone || "", company: p.company || "", gstin: p.gstin || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
+      const country = (p.country || "IN").toUpperCase();
+      setProfileForm({
+        name: p.name || "",
+        email: (p.email || "").endsWith("@phone.locofast.local") ? "" : (p.email || ""),
+        country,
+        phone: stripDialCode(p.phone || "", country),
+        company: p.company || "",
+        gstin: p.gstin || "",
+        address: p.address || "",
+        city: p.city || "",
+        state: p.state || "",
+        pincode: p.pincode || "",
+      });
       setGstVerified(!!p.gst_verified);
       updateCustomer(p);
       setEditing(false);
@@ -425,7 +454,31 @@ const CustomerAccountPage = () => {
                   </div>
                 </div>
 
-                {/* Phone — mandatory */}
+                {/* Country — drives phone dial code prefix */}
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <Globe size={16} className="text-gray-400 mt-1 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-xs text-gray-500">Country</p>
+                      {editing ? (
+                        <select
+                          value={profileForm.country}
+                          onChange={(e) => setProfileForm({ ...profileForm, country: e.target.value })}
+                          className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg focus:border-[#2563EB] focus:outline-none text-sm bg-white"
+                          data-testid="profile-country"
+                        >
+                          {COUNTRIES.map((c) => (
+                            <option key={c.code} value={c.code}>{c.flag} {c.name} ({c.dial})</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <p className="font-medium">{getCountry(profileForm.country).flag} {getCountry(profileForm.country).name}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Phone — mandatory · country code prefix auto-populated */}
                 <div className="p-3 bg-gray-50 rounded-lg">
                   <div className="flex items-start gap-3">
                     <Phone size={16} className="text-gray-400 mt-1 flex-shrink-0" />
@@ -433,18 +486,23 @@ const CustomerAccountPage = () => {
                       <p className="text-xs text-gray-500">Phone <span className="text-red-500">*</span></p>
                       {editing ? (
                         <>
-                          <input
-                            type="text"
-                            value={profileForm.phone}
-                            onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
-                            placeholder="+91 98765 43210"
-                            className={`w-full mt-1 px-3 py-2 border rounded-lg focus:outline-none text-sm ${errors.phone ? "border-red-400" : "border-gray-300 focus:border-[#2563EB]"}`}
-                            data-testid="profile-phone"
-                          />
+                          <div className={`flex mt-1 items-stretch border rounded-lg overflow-hidden focus-within:border-[#2563EB] ${errors.phone ? "border-red-400" : "border-gray-300"}`}>
+                            <span className="px-3 flex items-center bg-white text-sm text-gray-700 border-r border-gray-300 font-medium" data-testid="profile-phone-dialcode">
+                              {getCountry(profileForm.country).dial}
+                            </span>
+                            <input
+                              type="tel"
+                              value={profileForm.phone}
+                              onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value.replace(/\D/g, "") })}
+                              placeholder="98765 43210"
+                              className="flex-1 px-3 py-2 focus:outline-none text-sm bg-white"
+                              data-testid="profile-phone"
+                            />
+                          </div>
                           {errors.phone && <p className="text-xs text-red-600 mt-1">{errors.phone}</p>}
                         </>
                       ) : (
-                        <p className="font-medium">{profileForm.phone || <span className="text-gray-400">Not set</span>}</p>
+                        <p className="font-medium">{profileForm.phone ? `${getCountry(profileForm.country).dial} ${profileForm.phone}` : <span className="text-gray-400">Not set</span>}</p>
                       )}
                     </div>
                   </div>
