@@ -238,6 +238,85 @@ def _placeholder_email_for_phone(e164_phone: str) -> str:
     return f"phone+{e164_phone}{PHONE_PLACEHOLDER_EMAIL_DOMAIN}"
 
 
+async def _find_customer_by_phone(e164_phone: str):
+    """Return the canonical customer doc that owns this phone, regardless
+    of which legacy format it was stored in.
+
+    Phone numbers were saved in 5+ different shapes across the codebase
+    over time:
+      * '919876543210'    (E.164 no plus — what /send-whatsapp-otp produces)
+      * '+919876543210'   (E.164 with plus — saved by the profile editor's
+                          dial-code + local combiner)
+      * '9876543210'      (10-digit only — early signups before country code)
+      * '+91 9876543210'  (legacy with space — older profile saves)
+      * '91 9876543210'   (same, no plus)
+
+    We look up by the explicit list of variants so the match is exact and
+    cheap (single B-tree hit). Among multiple matches we prefer the row
+    whose email is NOT the synthetic phone placeholder — that's the
+    canonical record holding name/GST/orders.
+    """
+    local10 = e164_phone[-10:]
+    variants = list({
+        e164_phone,           # '919876543210'
+        f'+{e164_phone}',     # '+919876543210'
+        local10,              # '9876543210'
+        f'+91{local10}',      # '+919876543210' (dupe protection)
+        f'+91 {local10}',     # '+91 9876543210'
+        f'91 {local10}',      # '91 9876543210'
+    })
+    matches = await db.customers.find(
+        {'phone': {'$in': variants}},
+        {'_id': 0}
+    ).to_list(length=10)
+    if not matches:
+        return None
+    real = [c for c in matches if not (c.get('email') or '').endswith(PHONE_PLACEHOLDER_EMAIL_DOMAIN)]
+    return real[0] if real else matches[0]
+
+
+async def _merge_placeholder_into(canonical_id: str, e164_phone: str, now_iso: str):
+    """Find any phone-placeholder rows for this number and merge them into
+    the canonical customer. Re-points orders / queries / cart, then deletes
+    the placeholder. Safe to call on every WhatsApp login — no-op if no
+    placeholder exists.
+    """
+    local10 = e164_phone[-10:]
+    variants = list({
+        e164_phone, f'+{e164_phone}', local10,
+        f'+91{local10}', f'+91 {local10}', f'91 {local10}',
+    })
+    placeholders = await db.customers.find({
+        'email': {'$regex': PHONE_PLACEHOLDER_EMAIL_DOMAIN.replace('.', r'\.') + '$'},
+        'phone': {'$in': variants},
+        'id': {'$ne': canonical_id},
+    }, {'_id': 0, 'id': 1, 'email': 1}).to_list(length=20)
+    if not placeholders:
+        return 0
+    placeholder_ids = [p['id'] for p in placeholders]
+    placeholder_emails = [p['email'] for p in placeholders]
+    canonical = await db.customers.find_one({'id': canonical_id}, {'_id': 0, 'email': 1}) or {}
+    canonical_email = canonical.get('email') or ''
+    try:
+        await db.rfq_submissions.update_many(
+            {'customer_id': {'$in': placeholder_ids}},
+            {'$set': {'customer_id': canonical_id, 'email': canonical_email}}
+        )
+        await db.rfq_submissions.update_many(
+            {'email': {'$in': placeholder_emails}, 'customer_id': {'$exists': False}},
+            {'$set': {'customer_id': canonical_id, 'email': canonical_email}}
+        )
+        await db.orders.update_many(
+            {'customer_email': {'$in': placeholder_emails}},
+            {'$set': {'customer_email': canonical_email}}
+        )
+    except Exception as e:
+        logger.warning(f"Phone-merge: data re-pointing partial failure: {e}")
+    deleted = await db.customers.delete_many({'id': {'$in': placeholder_ids}})
+    logger.info(f"Phone-merge: collapsed {deleted.deleted_count} placeholder row(s) into {canonical_id} for +{e164_phone}")
+    return deleted.deleted_count
+
+
 @router.post("/send-whatsapp-otp")
 async def send_whatsapp_otp_endpoint(data: SendWhatsAppOTPRequest):
     """Send a 6-digit OTP via Gupshup WhatsApp template."""
@@ -310,12 +389,8 @@ async def verify_whatsapp_otp_endpoint(data: VerifyWhatsAppOTPRequest):
 
     await db.customer_otps.update_one({'_id': otp_doc['_id']}, {'$set': {'used': True}})
 
-    # Auto-merge: a customer doc may already exist with this phone under
-    # an email-account flow. Match exact phone OR phone-prefix-stripped.
-    customer = await db.customers.find_one(
-        {'$or': [{'phone': e164_phone}, {'phone': e164_phone[2:]}]},  # match '91xxxxxxxxxx' or 'xxxxxxxxxx'
-        {'_id': 0}
-    )
+    # Auto-merge: find canonical customer regardless of phone format.
+    customer = await _find_customer_by_phone(e164_phone)
 
     if not customer:
         # Brand-new customer — create row with synthetic placeholder email
@@ -343,15 +418,13 @@ async def verify_whatsapp_otp_endpoint(data: VerifyWhatsAppOTPRequest):
         customer.pop('_id', None)
         logger.info(f"New customer created via WhatsApp OTP: {e164_phone}")
     else:
-        # Existing customer — stamp phone_verified true (they've now proven
-        # ownership of the number).
-        if not customer.get('phone_verified'):
-            await db.customers.update_one(
-                {'id': customer['id']},
-                {'$set': {'phone_verified': True, 'phone': e164_phone, 'updated_at': now.isoformat()}}
-            )
-            customer['phone_verified'] = True
-            customer['phone'] = e164_phone
+        # Existing customer — stamp phone_verified and canonicalise phone
+        # format so future matches don't depend on the legacy storage.
+        updates = {'phone_verified': True, 'phone': e164_phone, 'updated_at': now.isoformat()}
+        await db.customers.update_one({'id': customer['id']}, {'$set': updates})
+        customer.update(updates)
+        # Collapse any stray phone-placeholder rows into this canonical doc.
+        await _merge_placeholder_into(customer['id'], e164_phone, now.isoformat())
 
     token = create_customer_token(customer.get('email', ''), customer['id'], e164_phone)
 
@@ -404,10 +477,19 @@ async def update_profile(data: ProfileUpdate, request: Request):
     if missing:
         raise HTTPException(status_code=400, detail=f"Required: {', '.join(missing)}")
 
-    # Phone shape: 10 digits (allow optional +91 / spaces)
+    # Phone shape: 10 digits (allow optional +91 / spaces). Normalise to
+    # E.164 ('91xxxxxxxxxx') so WhatsApp OTP login can match this account
+    # regardless of how the customer types their number later.
     digits = ''.join(c for c in phone if c.isdigit())
     if len(digits) < 10:
         raise HTTPException(status_code=400, detail="Phone must be at least 10 digits")
+    try:
+        from gupshup_service import normalize_indian_phone
+        is_valid, e164 = normalize_indian_phone(phone)
+        if is_valid:
+            phone = e164  # store as '91xxxxxxxxxx' — canonical form
+    except Exception:
+        pass
 
     # Fetch current record to decide what's changed
     current = await db.customers.find_one({"email": payload["email"]}, {"_id": 0}) or {}
