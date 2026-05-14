@@ -1,0 +1,3 @@
+Payment Date,GST No,Client Name,Mode,UTR,Amount,Against Invoice No,Against Order ID,Lender,Payer Bank Name,Notes
+10-Feb-26,07AIKPY4565A1Z0,E-Future Apparel Pvt Ltd,NEFT,HDFC0000123-UTR4423891,"428,696",LFU/25-26/121,LF/ORD/038,Indifi,HDFC Bank,Repaying Jan disbursement
+01-Feb-26,07AABCR1234D1Z9,R M Y Craft Private Limited,RTGS,ICIC0001234-UTR9981023,"100,000",,,Locofast,ICICI Bank,On-account top-up
