@@ -52,6 +52,11 @@ export default function RFQAuthGate({ children, dense = false, title = "Sign in 
     setEmail(customer?.email && !customer.email.endsWith("@phone.locofast.local") ? customer.email : "");
     setName(customer?.name || "");
     setGstin(customer?.gstin || "");
+    // Pre-fill phone from customer profile if available (e.g. WA-OTP signup);
+    // otherwise leave blank so the register form prompts for it (email-OTP signup case).
+    if (!phone && customer?.phone) {
+      setPhone(String(customer.phone).replace(/^\+?91/, "").replace(/\D/g, "").slice(-10));
+    }
   }
 
   // ── handlers ─────────────────────────────────────────────────
@@ -101,6 +106,10 @@ export default function RFQAuthGate({ children, dense = false, title = "Sign in 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return toast.error("Valid email is required");
     if (gstin.trim().length !== 15) return toast.error("GSTIN must be 15 characters");
 
+    // Phone is required by the backend. Use entered phone, else fallback to customer's saved phone.
+    const phoneOnly = (phone.replace(/\D/g, "") || String(customer?.phone || "").replace(/\D/g, ""));
+    if (phoneOnly.length < 10) return toast.error("Enter a valid 10-digit mobile number");
+
     setBusy(true);
     try {
       const tk = tokenStash || localStorage.getItem("lf_customer_token");
@@ -108,7 +117,6 @@ export default function RFQAuthGate({ children, dense = false, title = "Sign in 
       // company from GSTN API. On success the customer doc is now fully
       // registered. We must send `phone` because it's a required field
       // (we already have it from the OTP step).
-      const phoneOnly = phone.replace(/\D/g, "") || customer?.phone || "";
       const res = await axios.put(
         `${API_URL}/api/customer/profile`,
         {
@@ -212,6 +220,19 @@ export default function RFQAuthGate({ children, dense = false, title = "Sign in 
             <RegField label="Work email" required>
               <RegInput icon={Mail} value={email} onChange={setEmail} placeholder="you@brand.com" type="email" autoComplete="email" testid="rfq-gate-email" />
             </RegField>
+            {!(String(customer?.phone || "").replace(/\D/g, "").length >= 10) && (
+              <RegField label="Mobile number" required>
+                <RegInput
+                  icon={Phone}
+                  value={phone}
+                  onChange={(v) => setPhone(v.replace(/\D/g, "").slice(0, 10))}
+                  placeholder="10-digit mobile"
+                  type="tel"
+                  autoComplete="tel"
+                  testid="rfq-gate-phone-reg"
+                />
+              </RegField>
+            )}
             <RegField label="GSTIN — we'll verify & auto-fill your company" required>
               <RegInput icon={FileText} value={gstin} onChange={(v) => setGstin(v.toUpperCase())} placeholder="15-character GSTIN" testid="rfq-gate-gstin" maxLength={15} mono />
             </RegField>
