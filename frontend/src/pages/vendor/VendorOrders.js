@@ -334,7 +334,7 @@ const VendorOrderInvoiceBlock = ({ order }) => {
         if (match) {
           setInvoiceNumber(match.vendor_invoice_number || "");
           setInvoiceDate(match.vendor_invoice_date || new Date().toISOString().slice(0, 10));
-          setAmount(match.vendor_invoice_amount ?? match.net_payable ?? "");
+          setAmount(match.vendor_invoice_amount ?? match.supplier_invoice_value ?? match.net_payable ?? "");
           if (match.vendor_invoice_url) {
             setFileMeta({ url: match.vendor_invoice_url, filename: match.vendor_invoice_filename || match.vendor_invoice_url.split("/").pop() });
           }
@@ -403,8 +403,10 @@ const VendorOrderInvoiceBlock = ({ order }) => {
         Tax Invoice for Payout
       </h3>
 
-      <div className="text-[12px] text-gray-700 mb-3">
-        Net payable to you: <strong className="text-emerald-700">₹{Number(payout.net_payable || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>
+      <div className="text-[12px] text-gray-700 mb-3 space-y-0.5">
+        <p>Your invoice value (incl. {payout.goods_gst_pct ?? 5}% GST on goods): <strong>₹{Number(payout.supplier_invoice_value || payout.gross_subtotal || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></p>
+        <p className="text-red-600">Less: Commission ₹{Number(payout.commission_total || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })} + {payout.commission_gst_pct ?? 18}% GST ₹{Number(payout.gst_on_commission || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</p>
+        <p>Net payable to you: <strong className="text-emerald-700">₹{Number(payout.net_payable || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong></p>
       </div>
 
       {status === "uploaded" && (
@@ -467,7 +469,7 @@ const VendorOrderInvoiceBlock = ({ order }) => {
             type="number"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
-            placeholder={`Invoice total (optional, default ₹${payout.net_payable})`}
+            placeholder={`Invoice total (default ₹${payout.supplier_invoice_value || payout.net_payable})`}
             className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-xs mb-2"
           />
           <VendorFileUpload

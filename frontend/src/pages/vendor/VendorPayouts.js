@@ -151,8 +151,8 @@ const VendorPayouts = () => {
               <thead className="bg-gray-50 border-b border-gray-100">
                 <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                   <th className="px-4 py-3">Order</th>
-                  <th className="px-4 py-3 text-right">Gross</th>
-                  <th className="px-4 py-3 text-right">Commission</th>
+                  <th className="px-4 py-3 text-right">Invoice Value<br/><span className="text-[9px] text-gray-400 normal-case">(incl. GST)</span></th>
+                  <th className="px-4 py-3 text-right">Commission<br/><span className="text-[9px] text-gray-400 normal-case">(+ GST)</span></th>
                   <th className="px-4 py-3 text-right">Net you receive</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3"></th>
@@ -168,8 +168,15 @@ const VendorPayouts = () => {
                         <p className="font-medium text-blue-700">{p.order_number}</p>
                         <p className="text-[11px] text-gray-500">{(p.order_paid_at || p.created_at || "").slice(0, 10)}</p>
                       </td>
-                      <td className="px-4 py-3 text-right">{fmtINR(p.gross_subtotal)}</td>
-                      <td className="px-4 py-3 text-right text-red-600">−{fmtINR(p.commission_total)}</td>
+                      <td className="px-4 py-3 text-right">
+                        <span title={`Gross ₹${Number(p.gross_subtotal||0).toLocaleString('en-IN')} + ${p.goods_gst_pct ?? 5}% GST`}>
+                          {fmtINR(p.supplier_invoice_value ?? p.gross_subtotal)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right text-red-600">
+                        −{fmtINR((p.commission_total || 0) + (p.gst_on_commission || 0))}
+                        <p className="text-[9px] text-gray-400">incl GST @{p.commission_gst_pct ?? 18}%</p>
+                      </td>
                       <td className="px-4 py-3 text-right font-semibold text-emerald-700">{fmtINR(p.net_payable)}</td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border ${meta.tone}`}>
@@ -222,7 +229,7 @@ const VendorPayoutDetail = ({ payout, onClose, onChanged }) => {
   const [invoiceDate, setInvoiceDate] = useState(
     payout.vendor_invoice_date || new Date().toISOString().slice(0, 10)
   );
-  const [amount, setAmount] = useState(payout.vendor_invoice_amount ?? payout.net_payable ?? "");
+  const [amount, setAmount] = useState(payout.vendor_invoice_amount ?? payout.supplier_invoice_value ?? payout.net_payable ?? "");
   const [fileMeta, setFileMeta] = useState(
     payout.vendor_invoice_url
       ? { url: payout.vendor_invoice_url, filename: payout.vendor_invoice_filename || payout.vendor_invoice_url.split("/").pop() }
@@ -307,10 +314,13 @@ const VendorPayoutDetail = ({ payout, onClose, onChanged }) => {
 
           <div className="bg-blue-50 rounded-lg p-4 space-y-1.5 text-sm">
             <div className="flex justify-between"><span>Gross subtotal</span><span>{fmtINR(payout.gross_subtotal)}</span></div>
-            <div className="flex justify-between text-red-700"><span>Locofast commission</span><span>−{fmtINR(payout.commission_total)}</span></div>
+            <div className="flex justify-between"><span>(+) GST on goods @ {payout.goods_gst_pct ?? 5}%</span><span>+{fmtINR(payout.gst_on_goods || 0)}</span></div>
+            <div className="flex justify-between font-medium border-t border-blue-200 pt-1.5"><span>Your invoice value</span><span>{fmtINR(payout.supplier_invoice_value ?? payout.gross_subtotal)}</span></div>
+            <div className="flex justify-between text-red-700"><span>(−) Locofast commission</span><span>−{fmtINR(payout.commission_total)}</span></div>
+            <div className="flex justify-between text-red-700"><span>(−) GST on commission @ {payout.commission_gst_pct ?? 18}%</span><span>−{fmtINR(payout.gst_on_commission || 0)}</span></div>
             {payout.advances_applied > 0 && (
               <div className="flex justify-between text-red-700">
-                <span>Advances already received</span><span>−{fmtINR(payout.advances_applied)}</span>
+                <span>(−) Advances already received</span><span>−{fmtINR(payout.advances_applied)}</span>
               </div>
             )}
             <div className="flex justify-between font-bold text-base border-t border-blue-200 pt-2 mt-2">
@@ -402,13 +412,13 @@ const VendorPayoutDetail = ({ payout, onClose, onChanged }) => {
 
               <div className="mb-3">
                 <label className="text-xs font-medium text-gray-700 mb-1 block">
-                  Invoice total (₹) — optional, must match net payable
+                  Invoice total (₹) — should match your invoice value (goods + 5% GST)
                 </label>
                 <input
                   type="number"
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
-                  placeholder={String(payout.net_payable || 0)}
+                  placeholder={String(payout.supplier_invoice_value || payout.net_payable || 0)}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
                 />
               </div>

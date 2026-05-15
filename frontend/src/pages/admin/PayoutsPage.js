@@ -165,8 +165,9 @@ const PayoutsPage = () => {
                 <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                   <th className="px-4 py-3">Order</th>
                   <th className="px-4 py-3">Vendor</th>
-                  <th className="px-4 py-3 text-right">Gross</th>
+                  <th className="px-4 py-3 text-right">Invoice Value<br/><span className="text-[9px] text-gray-400 normal-case">(Gross + GST)</span></th>
                   <th className="px-4 py-3 text-right">Commission</th>
+                  <th className="px-4 py-3 text-right">GST on Comm</th>
                   <th className="px-4 py-3 text-right">Advances</th>
                   <th className="px-4 py-3 text-right">Net Payable</th>
                   <th className="px-4 py-3">Invoice</th>
@@ -185,8 +186,16 @@ const PayoutsPage = () => {
                       <p className="font-medium text-gray-800">{p.seller_company || "—"}</p>
                       <p className="text-[11px] text-gray-500">{p.payment_terms_snapshot || "No terms set"}</p>
                     </td>
-                    <td className="px-4 py-3 text-right">{fmtINR(p.gross_subtotal)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <span title={`Gross ₹${Number(p.gross_subtotal||0).toLocaleString('en-IN')} + ${p.goods_gst_pct ?? 5}% GST`}>
+                        {fmtINR(p.supplier_invoice_value ?? p.gross_subtotal)}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 text-right text-red-600">−{fmtINR(p.commission_total)}</td>
+                    <td className="px-4 py-3 text-right text-red-600">
+                      {(p.gst_on_commission || 0) > 0 ? `−${fmtINR(p.gst_on_commission)}` : "—"}
+                      <p className="text-[9px] text-gray-400">@{p.commission_gst_pct ?? 18}%</p>
+                    </td>
                     <td className="px-4 py-3 text-right text-red-600">{p.advances_applied > 0 ? `−${fmtINR(p.advances_applied)}` : "—"}</td>
                     <td className="px-4 py-3 text-right font-semibold text-emerald-700">{fmtINR(p.net_payable)}</td>
                     <td className="px-4 py-3">
@@ -291,9 +300,12 @@ const PayoutDetailModal = ({ payout, token, viewerRole, onClose, onPaid, onRecal
           {/* Totals */}
           <div className="bg-blue-50 rounded-lg p-4 space-y-1.5 text-sm">
             <div className="flex justify-between"><span>Gross subtotal</span><span>{fmtINR(payout.gross_subtotal)}</span></div>
-            <div className="flex justify-between text-red-700"><span>Commission</span><span>−{fmtINR(payout.commission_total)}</span></div>
+            <div className="flex justify-between"><span>(+) GST on goods @ {payout.goods_gst_pct ?? 5}%</span><span>+{fmtINR(payout.gst_on_goods || 0)}</span></div>
+            <div className="flex justify-between font-medium border-t border-blue-200 pt-1.5"><span>Supplier invoice value</span><span data-testid="payouts-detail-invoice-value">{fmtINR(payout.supplier_invoice_value ?? payout.gross_subtotal)}</span></div>
+            <div className="flex justify-between text-red-700"><span>(−) Locofast commission</span><span>−{fmtINR(payout.commission_total)}</span></div>
+            <div className="flex justify-between text-red-700"><span>(−) GST on commission @ {payout.commission_gst_pct ?? 18}%</span><span>−{fmtINR(payout.gst_on_commission || 0)}</span></div>
             {payout.advances_applied > 0 && (
-              <div className="flex justify-between text-red-700"><span>Advances ({payout.advance_ids?.length || 0})</span><span>−{fmtINR(payout.advances_applied)}</span></div>
+              <div className="flex justify-between text-red-700"><span>(−) Advances ({payout.advance_ids?.length || 0})</span><span>−{fmtINR(payout.advances_applied)}</span></div>
             )}
             <div className="flex justify-between font-bold text-base border-t border-blue-200 pt-2 mt-2"><span>Net payable</span><span className="text-emerald-700" data-testid="payouts-detail-net">{fmtINR(payout.net_payable)}</span></div>
           </div>

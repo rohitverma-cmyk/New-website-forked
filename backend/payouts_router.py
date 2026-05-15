@@ -104,6 +104,19 @@ async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str =
     return 5.0  # platform default
 
 
+def _gst_rates() -> tuple[float, float]:
+    """Return (goods GST %, commission GST %) read from env, with safe defaults."""
+    try:
+        goods = float(os.environ.get("PAYOUT_GOODS_GST_PCT", "5") or 5)
+    except Exception:
+        goods = 5.0
+    try:
+        comm = float(os.environ.get("PAYOUT_COMMISSION_GST_PCT", "18") or 18)
+    except Exception:
+        comm = 18.0
+    return goods, comm
+
+
 async def materialize_payouts_for_order(order: dict) -> List[dict]:
     """Idempotently create one `vendor_payouts` row per (seller × order).
 
@@ -169,6 +182,11 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
             {"_id": 0, "id": 1, "company_name": 1, "name": 1, "contact_email": 1, "contact_phone": 1, "payment_terms": 1},
         ) or {}
 
+        goods_gst_pct, comm_gst_pct = _gst_rates()
+        gst_on_goods = round(gross_subtotal * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(gross_subtotal + gst_on_goods, 2)
+        gst_on_commission = round(commission_total * comm_gst_pct / 100.0, 2)
+
         payout_doc = {
             "id": str(uuid.uuid4()),
             "order_id": order_id,
@@ -179,10 +197,17 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
             "seller_phone": seller.get("contact_phone", ""),
             "items": line_breakdown,
             "gross_subtotal": round(gross_subtotal, 2),
+            # GST on goods (added to supplier's invoice)
+            "goods_gst_pct": goods_gst_pct,
+            "gst_on_goods": gst_on_goods,
+            "supplier_invoice_value": supplier_invoice_value,
+            # Commission + GST on commission (deducted from payout)
             "commission_total": round(commission_total, 2),
+            "commission_gst_pct": comm_gst_pct,
+            "gst_on_commission": gst_on_commission,
             "advances_applied": 0.0,
             "advance_ids": [],
-            "net_payable": round(gross_subtotal - commission_total, 2),
+            "net_payable": round(supplier_invoice_value - commission_total - gst_on_commission, 2),
             "payment_terms_snapshot": seller.get("payment_terms", ""),
             "status": "pending",
             "paid_at": None,
@@ -208,7 +233,9 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
         results.append(payout_doc)
         logger.info(
             f"[payout] materialized {payout_doc['order_number']} → {payout_doc['seller_company']} "
-            f"gross=₹{payout_doc['gross_subtotal']} comm=₹{payout_doc['commission_total']} "
+            f"gross=₹{payout_doc['gross_subtotal']} +gst@{goods_gst_pct}%=₹{payout_doc['gst_on_goods']} "
+            f"invoice=₹{payout_doc['supplier_invoice_value']} comm=₹{payout_doc['commission_total']} "
+            f"commGst@{comm_gst_pct}%=₹{payout_doc['gst_on_commission']} "
             f"adv=₹{payout_doc['advances_applied']} net=₹{payout_doc['net_payable']}"
         )
     return results
@@ -375,6 +402,49 @@ async def recalculate_payout(
     fresh = await materialize_payouts_for_order(order)
     seller_payout = next((p for p in fresh if p["seller_id"] == payout["seller_id"]), None)
     return {"success": True, "payout": seller_payout}
+
+
+@router.post("/payouts/recalculate-unpaid-gst")
+async def recalculate_unpaid_payouts_gst(user=Depends(get_current_accounts_or_admin)):
+    """Backfill GST fields (goods GST + commission GST) on all UNPAID payouts.
+    Paid payouts are left untouched. Returns counts.
+    Idempotent — re-running is safe.
+    """
+    from auth_helpers import db as _db
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+    updated = 0
+    skipped_paid = 0
+    async for p in _db.vendor_payouts.find({}, {"_id": 0}):
+        if p.get("status") == "paid":
+            skipped_paid += 1
+            continue
+        gross = float(p.get("gross_subtotal", 0) or 0)
+        commission = float(p.get("commission_total", 0) or 0)
+        advances = float(p.get("advances_applied", 0) or 0)
+        gst_on_goods = round(gross * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(gross + gst_on_goods, 2)
+        gst_on_commission = round(commission * comm_gst_pct / 100.0, 2)
+        net_payable = round(supplier_invoice_value - commission - gst_on_commission - advances, 2)
+        await _db.vendor_payouts.update_one(
+            {"id": p["id"]},
+            {"$set": {
+                "goods_gst_pct": goods_gst_pct,
+                "gst_on_goods": gst_on_goods,
+                "supplier_invoice_value": supplier_invoice_value,
+                "commission_gst_pct": comm_gst_pct,
+                "gst_on_commission": gst_on_commission,
+                "net_payable": net_payable,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        updated += 1
+    return {
+        "success": True,
+        "updated": updated,
+        "skipped_paid": skipped_paid,
+        "goods_gst_pct": goods_gst_pct,
+        "commission_gst_pct": comm_gst_pct,
+    }
 
 
 # ── Advances ─────────────────────────────────────────────────────
