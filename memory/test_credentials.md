@@ -51,11 +51,14 @@
 - Email: info@palimills.com
 - Password: admin@123
 
-## Vendor — Cotton Manufacturer (for Payout Invoice test)
+## Vendor — Cotton Manufacturer (for Payout Invoice test + order LF/ORD/057)
 - Email: bhuvnesh.sharma@nsltextiles.com
-- Password: vendor123
+- Password: Vendor@2026
 - Login URL: /vendor/login
-- Used to test the "Vendor uploads invoice → Accounts mark paid" flow.
+- Seller code: LS-OFUCT
+- Seller ID: a1edb4e2-f942-4034-ad9b-e075979cc8a4
+- Company: NT, Cotton Manufacturer, Hyderabad
+- Used to test the "Vendor uploads invoice → Accounts mark paid" flow. Also the seller for order LF/ORD/057.
 
 ## Agent
 - Email: agent@locofast.com
