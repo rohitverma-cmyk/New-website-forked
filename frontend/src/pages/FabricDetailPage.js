@@ -958,7 +958,11 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                   )}
                   <button
                     onClick={() => { trackRFQIntent(fabric.name, 'fabric_detail'); setShowRfqModal(true); }}
-                    className="w-full border border-gray-300 text-gray-700 px-6 py-3 rounded-lg font-medium hover:bg-gray-50 transition-colors inline-flex items-center justify-center gap-2"
+                    className={
+                      (actions.canBookSample || actions.canBookBulk)
+                        ? "w-full border border-gray-300 text-gray-700 px-6 py-3 rounded-lg font-medium hover:bg-gray-50 transition-colors inline-flex items-center justify-center gap-2"
+                        : "w-full bg-[#2563EB] text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors inline-flex items-center justify-center gap-2"
+                    }
                     data-testid="enquiry-btn"
                   >
                     <MessageSquare size={18} />
@@ -1170,7 +1174,13 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
             </div>
           )}
 
-          {/* Final CTA */}
+          {/* Final CTA — hide when out of stock to avoid showing two
+              "Request a Quote" buttons on the same page (the inline
+              button at the top is already promoted to primary in that
+              scenario). Keep it as a re-engagement section when the
+              user CAN book sample/bulk, so the RFQ option stays
+              discoverable below the fold. */}
+          {(actions.canBookSample || actions.canBookBulk) && (
           <div className="border-t border-gray-200 pt-12 mt-12 text-center" data-testid="final-cta">
             <h2 className="text-2xl font-semibold mb-4">Ready to Source This Fabric?</h2>
             <p className="text-gray-500 mb-6 max-w-xl mx-auto">
@@ -1185,6 +1195,7 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
               Request a Quote
             </button>
           </div>
+          )}
 
           {/* Internal Links */}
           <div className="border-t border-gray-200 pt-8 mt-12">

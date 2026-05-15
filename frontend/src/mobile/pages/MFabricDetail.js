@@ -283,18 +283,21 @@ export default function MFabricDetail() {
         </div>
       </section>
 
-      {/* Sticky bottom CTAs */}
+      {/* Sticky bottom CTAs.
+       * In-stock: [ Quote ] [ Sample ] [ Book Bulk ]
+       * Out of stock: single full-width [ Request a Quote ] — we hide
+       * the smaller Quote pill so we don't show two RFQ CTAs at once. */}
       <div style={{
         position: "fixed", left: 0, right: 0, bottom: "calc(var(--m-tab-h) + env(safe-area-inset-bottom, 0px))",
         background: "var(--m-surface)", borderTop: "1px solid var(--m-border)",
         padding: "10px 16px", display: "flex", gap: 10, zIndex: 50,
         boxShadow: "0 -4px 20px rgba(15,27,45,0.06)",
       }}>
-        <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-outline" style={{ flex: "0 0 auto", padding: "0 14px", gap: 6 }} data-testid="m-quote" aria-label="Request a quote">
-          <FileText size={16} /> Quote
-        </button>
         {canBook ? (
           <>
+            <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-outline" style={{ flex: "0 0 auto", padding: "0 14px", gap: 6 }} data-testid="m-quote" aria-label="Request a quote">
+              <FileText size={16} /> Quote
+            </button>
             <button onClick={() => startBooking("sample")} className="m-btn m-btn-outline" style={{ flex: 1 }} data-testid="m-book-sample">
               <Package size={16} /> Sample
             </button>
@@ -303,8 +306,7 @@ export default function MFabricDetail() {
             </button>
           </>
         ) : (
-          // Not in stock — desktop falls through to "Request a Quote".
-          // Mirror that here so customers always have a path forward.
+          // Not in stock — single full-width RFQ CTA only.
           <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-primary" style={{ flex: 1 }} data-testid="m-request-quote">
             <FileText size={16} /> Request a Quote
           </button>
