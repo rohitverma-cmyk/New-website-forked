@@ -1028,4 +1028,14 @@ const RFQPage = () => {
   );
 };
 
-export default RFQPage;
+// Wrap the page in the WhatsApp-OTP auth gate so guests must register
+// (with GST-verified profile) before they can submit an RFQ. Already-
+// logged-in customers pass through transparently.
+import RFQAuthGate from "../components/RFQAuthGate";
+const RFQPageGated = () => (
+  <RFQAuthGate title="Sign in to request a quote" subtitle="Our sourcing team replies within 4 working hours.">
+    <RFQPage />
+  </RFQAuthGate>
+);
+
+export default RFQPageGated;
