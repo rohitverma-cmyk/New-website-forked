@@ -682,3 +682,68 @@ async def get_order_tracking(order_id: str, request: Request):
         "events": events,
     }
 
+
+# ── Saved shipping addresses ────────────────────────────────────────
+@router.get("/saved-addresses")
+async def get_saved_addresses(request: Request):
+    """Returns the unique set of shipping addresses this customer has
+    used on past orders, most-recent first. Derived from `db.orders` so
+    no schema change is needed — every successful order carries a
+    `customer{}` snapshot with name/phone/address/city/state/pincode.
+
+    Empty list for first-time buyers. The frontend renders these as
+    quick-fill chips on the checkout shipping form.
+    """
+    payload = get_current_customer(request)
+    # Re-load the customer doc — payload has only the JWT claims.
+    cust = None
+    if payload.get("email"):
+        cust = await db.customers.find_one({"email": payload["email"]}, {"_id": 0})
+    if not cust and payload.get("customer_id"):
+        cust = await db.customers.find_one({"id": payload["customer_id"]}, {"_id": 0})
+    if not cust:
+        return []
+    cust_email = (cust.get("email") or "").lower()
+    cust_phone = cust.get("phone") or ""
+    # Look up orders by email OR phone — phone-only signups historically
+    # use a synthetic @phone.locofast.local email so we can't rely on
+    # email alone.
+    or_clauses = []
+    if cust_email:
+        or_clauses.append({"customer.email": cust_email})
+    if cust_phone:
+        or_clauses.append({"customer.phone": cust_phone})
+    if not or_clauses:
+        return []
+    orders = await db.orders.find({"$or": or_clauses}, {
+        "_id": 0, "customer": 1, "ship_to": 1, "created_at": 1
+    }).sort("created_at", -1).limit(50).to_list(50)
+
+    seen = set()
+    out = []
+    for o in orders:
+        # Prefer the explicit ship_to block if present, else fall back
+        # to the billing customer block (most orders ship to billing).
+        cand = o.get("ship_to") or o.get("customer") or {}
+        addr_line = (cand.get("address") or "").strip()
+        pincode = (cand.get("pincode") or "").strip()
+        # Dedupe key — address + pincode is unique enough for UI
+        key = (addr_line.lower(), pincode)
+        if not addr_line or key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "name": cand.get("name", ""),
+            "company": cand.get("company", ""),
+            "phone": cand.get("phone", ""),
+            "address": addr_line,
+            "city": cand.get("city", ""),
+            "state": cand.get("state", ""),
+            "pincode": pincode,
+            "gst_number": cand.get("gst_number") or cand.get("gstin") or "",
+            "last_used": o.get("created_at"),
+        })
+        if len(out) >= 6:
+            break
+    return out
+

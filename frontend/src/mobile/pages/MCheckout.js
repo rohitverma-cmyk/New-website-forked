@@ -3,6 +3,8 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronLeft, MapPin, Shield, CreditCard, Lock, Package, ArrowRight, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { useCustomerAuth } from "../../context/CustomerAuthContext";
+import SavedAddressPicker from "../../components/SavedAddressPicker";
+import RFQAuthGate from "../../components/RFQAuthGate";
 import { getFabric, createOrder, verifyPayment, sendOrderConfirmation, getCustomerProfile } from "../../lib/api";
 import { formatPriceINR, getBulkPrice, getSamplePrice, getPrimaryImage } from "../lib/format";
 
@@ -12,7 +14,20 @@ const LOGISTICS_BULK_PCT = 0.03;     // 3% of goods value
 const LOGISTICS_BULK_MIN = 3000;     // ₹ floor on logistics alone
 const GST_RATE = 0.05;               // 5% on textiles
 
+// Public wrapper: gate the checkout behind the WhatsApp-OTP auth flow
+// so unknown visitors first land on the OTP screen (and the registration
+// step if they're brand new). Existing logged-in customers go straight
+// through to `MCheckoutInner`, which auto-fills shipping + GST from the
+// profile and surfaces past saved addresses.
 export default function MCheckout() {
+  return (
+    <RFQAuthGate dense title="Sign in to place this order" subtitle="We'll fill in your shipping & GST details automatically.">
+      <MCheckoutInner />
+    </RFQAuthGate>
+  );
+}
+
+function MCheckoutInner() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { customer, token, updateCustomer, loading: authLoading } = useCustomerAuth();
@@ -292,6 +307,19 @@ export default function MCheckout() {
         <h2 className="m-title" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
           <MapPin size={16} color="var(--m-orange)" /> Shipping address
         </h2>
+        <SavedAddressPicker
+          dense
+          onPick={(a) => setAddr((prev) => ({
+            ...prev,
+            name: a.name || prev.name,
+            phone: a.phone || prev.phone,
+            address: a.address || "",
+            city: a.city || "",
+            state: a.state || "",
+            pincode: a.pincode || "",
+            gst_number: a.gst_number || prev.gst_number,
+          }))}
+        />
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Input label="Full name *" value={addr.name} onChange={(v) => setAddr({ ...addr, name: v })} error={addrErrors.name} autoComplete="name" />
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>

@@ -6,6 +6,7 @@ import Footer from "../components/Footer";
 import { getFabric, createOrder, verifyPayment, sendOrderConfirmation, validateCoupon, getCreditBalance } from "../lib/api";
 import { trackBeginCheckout } from "../lib/analytics";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
+import SavedAddressPicker from "../components/SavedAddressPicker";
 import { toast } from "sonner";
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
@@ -1038,6 +1039,27 @@ const CheckoutPage = () => {
                     Shipping Address
                   </h2>
 
+                  {/* Saved-addresses quick-pick — surfaces past order
+                      shipping addresses as chips so returning buyers
+                      can fill the form with one tap. Renders nothing
+                      for first-time buyers. */}
+                  <SavedAddressPicker
+                    onPick={(a) => {
+                      setUseGstAddress(false);
+                      setCustomer((prev) => ({
+                        ...prev,
+                        name: a.name || prev.name,
+                        company: a.company || prev.company,
+                        phone: a.phone || prev.phone,
+                        address: a.address || "",
+                        city: a.city || "",
+                        state: a.state || "",
+                        pincode: a.pincode || "",
+                        gst_number: a.gst_number || prev.gst_number,
+                      }));
+                    }}
+                  />
+
                   {gstAddress && (
                     <div className="mb-4 space-y-2">
                       <label className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer ${useGstAddress ? 'border-[#2563EB] bg-blue-50/30' : 'border-gray-200'}`}>
@@ -1676,4 +1698,20 @@ const CheckoutPage = () => {
   );
 };
 
-export default CheckoutPage;
+import RFQAuthGate from "../components/RFQAuthGate";
+// eslint-disable-next-line
+function CheckoutPageGated() {
+  // For B2B checkout, we now require the buyer to be signed in via the
+  // same WhatsApp-OTP gate used on the RFQ form. Logged-in customers
+  // pass through immediately; guests see the OTP flow first (and the
+  // GST-verified registration step if they're brand new). This avoids
+  // the long checkout form for unknown visitors and lets us auto-fill
+  // every shipping field for returning buyers.
+  return (
+    <RFQAuthGate title="Sign in to place this order" subtitle="We'll fill in your shipping & GST details automatically.">
+      <CheckoutPage />
+    </RFQAuthGate>
+  );
+}
+
+export default CheckoutPageGated;
