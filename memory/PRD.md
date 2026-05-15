@@ -514,6 +514,14 @@ Full admin order-edit capability + Shiprocket pickup now sourced from the assign
 - **Frontend — `EditOrderModal.js`**: Full 5-tab modal (Items / Customer / Shipping / Vendor / History) opened via "Edit Order" button on the admin order detail. Live total recomputation preview, vendor search with pickup-warning badge, audit history viewer with collapsible diff JSON, optional "cancel & re-push SR" checkbox.
 - **Frontend — Admin Seller Detail Finance tab**: Adds a "Pickup address (Ship-From)" card with 7 fields + Save button so admin can register each vendor's warehouse for Shiprocket pickup.
 
+### Phase 63: Frictionless Checkout (Complete - Feb 15, 2026)
+**Goal**: Order flow needed to mirror the unified RFQ flow — gate guests behind WhatsApp OTP, auto-fill everything for logged-in customers, surface past saved addresses as one-tap chips.
+
+- **Backend**: `GET /api/customer/saved-addresses` — derives unique past shipping addresses from `db.orders` (looks up by email OR phone, dedupes on address+pincode, limits to 6). Zero schema change — addresses come from each order's snapshotted `customer{}` block.
+- **Frontend** — `SavedAddressPicker` component: horizontal scrollable chip list, only renders when API returns non-empty. Each chip fills form fields on tap (name, phone, address, city, state, pincode, GSTIN).
+- **Wrappers**: `CheckoutPage` (desktop) and `MCheckout` (mobile) now default-export gated variants using the same `RFQAuthGate`. Logged-in users pass through transparently.
+- **Verified** (iteration_66.json): 100% pass (11/11 backend + 10/10 frontend). Picker dedupe correct, gate shows for guests, complete-profile customers auto-fill cleanly.
+
 ### Phase 62: Unified RFQ Flow (Complete - Feb 15, 2026)
 **Goal**: Single RFQ structure across desktop + mobile, with smart skipping for logged-in users and inline registration for guests.
 
