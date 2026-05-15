@@ -9,11 +9,13 @@ const AdminLayout = ({ children }) => {
 
   const isAccountsRole = admin?.role === "accounts";
 
-  // Accounts users get a focused nav surface — only Payouts + read-only
-  // Sellers + Orders, nothing else. Everything is gated server-side too;
-  // hiding the items here just keeps the UI clean.
+  // Accounts users get a focused nav surface — only Payouts + Credit
+  // Ledger + read-only Sellers + Orders, nothing else. Everything is
+  // gated server-side too; hiding the items here just keeps the UI clean.
   const accountsNav = [
-    { path: "/admin/payouts", label: "Payouts", icon: IndianRupee },
+    { path: "/admin/payouts", label: "Vendor Payouts", icon: IndianRupee },
+    { path: "/admin/credit-adjustments", label: "Credit Adjustments", icon: Wallet },
+    { path: "/admin/credit", label: "Credit Limits", icon: Wallet },
     { path: "/admin/orders", label: "Orders (read)", icon: ShoppingCart },
     { path: "/admin/sellers", label: "Vendors", icon: Building2 },
   ];

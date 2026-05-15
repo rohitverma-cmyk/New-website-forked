@@ -5,12 +5,17 @@
 - Password: admin123
 - Login URL: /admin/login
 
-## Credit Operations (Vendor Payouts panel)
+## Credit Operations / Finance & Accounts (Vendor Payouts + Credit Ledger)
 - Email: creditoperations@locofast.com
-- Password: Accounts@123
-- Login URL: /admin/login
-- Role: `accounts` — focused nav (Payouts · Orders read · Vendors)
-- Permissions: read all orders/sellers/payouts, mark payouts paid, edit ONLY bank/PAN/payment_terms on vendors
+- Password: accounts@2026
+- Login URL: /admin/login (preview: https://fabric-sourcing-cms.preview.emergentagent.com/admin/login · prod: https://locofast.com/admin/login)
+- Role: `accounts` — focused nav for finance users:
+  - **Vendor Payouts** — mark vendor invoices paid, generate UTRs
+  - **Credit Adjustments** — OTP-gated CN/DN entry (gated to `sandeep.kumar@locofast.com` only, even within accounts role)
+  - **Credit Limits** — view & update buyer credit limits
+  - **Orders (read)** — read-only order audit
+  - **Vendors** — edit bank/PAN/payment_terms only (no other fields)
+- Permissions: read all orders/sellers/payouts, mark payouts paid, post CN/DN with OTP, edit credit limits, upload disbursement/payment CSVs.
 - Note: previously seeded as `accounts@locofast.com`, renamed Feb 2026 because that DL has no inbox.
 
 ## Vendor
