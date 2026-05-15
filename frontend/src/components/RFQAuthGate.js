@@ -130,16 +130,17 @@ export default function RFQAuthGate({ children, dense = false, title = "Sign in 
   };
 
   // ── render ───────────────────────────────────────────────────
-  const wrapStyle = dense
-    ? { padding: 16 }
-    : { maxWidth: 460, margin: "60px auto", padding: 32 };
-  const cardStyle = dense
-    ? { background: "#fff", borderRadius: 16, padding: 20, border: "1px solid #E4ECF7" }
-    : { background: "#fff", borderRadius: 24, padding: 32, boxShadow: "0 24px 60px rgba(15,27,45,0.10)", border: "1px solid #E4ECF7" };
+  // Backdrop-modal pattern: we always mount the underlying page so the
+  // visitor sees what they're about to do (RFQ form, checkout summary)
+  // peeking through behind a blurred overlay. The auth card slides up
+  // from the bottom on mobile (sheet) or sits centered on desktop. The
+  // background is `pointer-events: none` so accidental taps don't reach
+  // the gated content, but the visuals stay legible.
+  //
+  // `dense` ⇒ mobile (bottom-sheet)   ·   default ⇒ desktop (centered).
 
-  return (
-    <div style={wrapStyle} data-testid="rfq-auth-gate">
-      <div style={cardStyle}>
+  const stageJSX = (
+    <>
         {stage === "phone" && (
           <>
             <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "4px 10px", borderRadius: 999, background: "#EFF6FF", color: "#1D4ED8", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em" }}>
@@ -225,7 +226,105 @@ export default function RFQAuthGate({ children, dense = false, title = "Sign in 
             <p style={{ marginTop: 10, fontSize: 11, color: "#8A93A6" }}>By continuing you agree to Locofast's Terms & Privacy Policy.</p>
           </>
         )}
+    </>
+  );
+
+  return (
+    <div data-testid="rfq-auth-gate" style={{ position: "relative" }}>
+      {/* Background — gated content rendered behind so the user sees
+          what they're signing in for. Blurred + dimmed + non-interactive. */}
+      <div
+        aria-hidden="true"
+        style={{
+          filter: "blur(4px) saturate(0.9)",
+          WebkitFilter: "blur(4px) saturate(0.9)",
+          opacity: 0.55,
+          pointerEvents: "none",
+          userSelect: "none",
+          // Cap height so very long forms don't make the modal vanish in
+          // a tall page.
+          maxHeight: dense ? "100vh" : "calc(100vh - 20px)",
+          overflow: "hidden",
+        }}
+      >
+        {children}
       </div>
+
+      {/* Tinted overlay between content and the modal — gives the auth
+          card extra contrast on lighter pages. */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "linear-gradient(180deg, rgba(15,27,45,0.30) 0%, rgba(15,27,45,0.50) 100%)",
+          backdropFilter: "blur(2px)",
+          WebkitBackdropFilter: "blur(2px)",
+          zIndex: 90,
+          pointerEvents: "none",
+        }}
+      />
+
+      {/* Auth card — bottom-sheet on mobile (`dense`), centered on desktop. */}
+      {dense ? (
+        <>
+          <style>{`@keyframes lf-sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }`}</style>
+          <div
+            style={{
+              position: "fixed",
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 100,
+              background: "#fff",
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              padding: "10px 18px 28px",
+              boxShadow: "0 -16px 40px rgba(15,27,45,0.18)",
+              maxHeight: "92vh",
+              overflowY: "auto",
+              animation: "lf-sheet-up .28s ease-out",
+            }}
+          >
+            {/* Drag handle for the sheet affordance */}
+            <div
+              aria-hidden="true"
+              style={{
+                width: 44,
+                height: 5,
+                borderRadius: 5,
+                background: "#D6E0EE",
+                margin: "0 auto 14px",
+              }}
+            />
+            {stageJSX}
+          </div>
+        </>
+      ) : (
+        <>
+          <style>{`@keyframes lf-modal-in { from { opacity: 0; transform: translate(-50%, -42%); } to { opacity: 1; transform: translate(-50%, -50%); } }`}</style>
+          <div
+            style={{
+              position: "fixed",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              zIndex: 100,
+              width: "min(460px, calc(100vw - 32px))",
+              background: "#fff",
+              borderRadius: 24,
+              padding: 32,
+              boxShadow: "0 30px 80px rgba(15,27,45,0.25)",
+              border: "1px solid #E4ECF7",
+              maxHeight: "calc(100vh - 40px)",
+              overflowY: "auto",
+              animation: "lf-modal-in .28s cubic-bezier(.16,1,.3,1)",
+            }}
+          >
+            {stageJSX}
+          </div>
+        </>
+      )}
     </div>
   );
 }
