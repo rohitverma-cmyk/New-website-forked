@@ -6,9 +6,10 @@ import { useCustomerAuth } from "../../context/CustomerAuthContext";
 import { getFabric, createOrder, verifyPayment, sendOrderConfirmation, getCustomerProfile } from "../../lib/api";
 import { formatPriceINR, getBulkPrice, getSamplePrice, getPrimaryImage } from "../lib/format";
 
-const LOGISTICS_RATE_BULK = 5;       // ₹/m
-const LOGISTICS_RATE_SAMPLE = 100;   // ₹ flat
-const PACKAGING_FLAT = 0;            // included
+const LOGISTICS_SAMPLE_FLAT = 100;   // ₹ flat per sample-only order
+const PACKAGING_PER_M = 1;           // ₹/m for bulk (independent line)
+const LOGISTICS_BULK_PCT = 0.03;     // 3% of goods value
+const LOGISTICS_BULK_MIN = 3000;     // ₹ floor on logistics alone
 const GST_RATE = 0.05;               // 5% on textiles
 
 export default function MCheckout() {
@@ -70,13 +71,19 @@ export default function MCheckout() {
     return () => { alive = false; };
   }, [authLoading, token, fabricId]); // eslint-disable-line
 
-  // Pricing
+  // Pricing — mirrors desktop CheckoutPage.calculatePricing (May 2026):
+  // Bulk = packaging (qty × ₹1) + logistics (max 3% × goods, ₹3,000),
+  // both INDEPENDENT lines.  Sample = flat ₹100 logistics, no packaging.
+  // GST = 5% on (goods + packaging + logistics).
   const rate = orderType === "sample" ? getSamplePrice(fabric) : getBulkPrice(fabric);
   const subtotal = rate ? rate * qty : 0;
-  const logistics = orderType === "sample" ? LOGISTICS_RATE_SAMPLE : LOGISTICS_RATE_BULK * qty;
-  const packaging = PACKAGING_FLAT;
-  const tax = Math.round(subtotal * GST_RATE * 100) / 100;
-  const total = Math.round((subtotal + logistics + packaging + tax) * 100) / 100;
+  const packaging = orderType === "sample" ? 0 : qty * PACKAGING_PER_M;
+  const logistics = orderType === "sample"
+    ? LOGISTICS_SAMPLE_FLAT
+    : Math.max(subtotal * LOGISTICS_BULK_PCT, LOGISTICS_BULK_MIN);
+  const taxableValue = subtotal + packaging + logistics;
+  const tax = Math.round(taxableValue * GST_RATE * 100) / 100;
+  const total = Math.round((taxableValue + tax) * 100) / 100;
 
   // Variant resolution (for color)
   const variants = Array.isArray(fabric?.color_variants) ? fabric.color_variants : [];

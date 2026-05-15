@@ -121,22 +121,16 @@ const SharedCartPage = () => {
   };
 
   const subtotal = cart?.items?.reduce((s, i) => s + i.quantity * i.price_per_meter, 0) || 0;
-  // ── Match the same bulk pricing the checkout page applies ──────────
-  // (see CheckoutPage.calculateMultiItemPricing). Doing the math here
-  // means the "Estimated Total" the buyer sees in the shared cart is
-  // identical to what they'll see at checkout — no surprise jump from
-  // missing logistics + packaging + GST-on-charges.
+  // Bulk pricing — May 2026 rule: packaging and logistics are
+  // INDEPENDENT line items (no derivation). Mirrors CheckoutPage and the
+  // backend's calculate_totals. The buyer sees the same numbers in cart
+  // and at checkout.
   const hasBulk = (cart?.items || []).some((it) => (it.order_type || "bulk") === "bulk");
   const totalQty = (cart?.items || []).reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-  const sharedCartLogistics = !hasBulk
-    ? 100 * (cart?.items?.length || 0)
-    : Math.max(subtotal * 0.03, 3000);
   const sharedCartPackaging = hasBulk ? totalQty * 1 : 0;
-  const sharedCartLogisticsOnly = Math.max(0, sharedCartLogistics - sharedCartPackaging);
-  // Tax base must use the LOGISTICS-ONLY line, not the bundled total
-  // logistics figure — otherwise packaging is counted twice (once as its
-  // own line, once inside totalLogistics). Backend (orders_router.
-  // calculate_totals) uses the same logistics-only number.
+  const sharedCartLogisticsOnly = hasBulk
+    ? Math.max(subtotal * 0.03, 3000)
+    : 100 * (cart?.items?.length || 0);
   const sharedCartTaxBase = subtotal + sharedCartPackaging + sharedCartLogisticsOnly;
   const sharedCartGst = Math.round(sharedCartTaxBase * 0.05 * 100) / 100;
   const sharedCartGrandTotal = sharedCartTaxBase + sharedCartGst;

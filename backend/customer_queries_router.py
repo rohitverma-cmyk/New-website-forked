@@ -212,16 +212,15 @@ async def place_order_from_quote(
     )
 
     # ── Packaging + Logistics charge calculation ─────────────────────
-    # RFQ-converted orders are always bulk. Mirror the same math used by
-    # the standard checkout path (`CheckoutPage.calculatePricing`) so the
-    # final invoice carries the correct packaging & logistics lines.
-    #   total_logistics = max(3% of goods value, ₹3,000)
-    #   packaging       = ₹1 per meter (or kg for knitted)
-    #   logistics_only  = max(0, total_logistics - packaging)
+    # RFQ-converted orders are always bulk. Bulk pricing rule (May 2026):
+    # packaging and logistics are INDEPENDENT line items — both billed
+    # in full. Backend `calculate_totals` sums them additively into the
+    # taxable value.
+    #   packaging = qty × ₹1
+    #   logistics = max(3% × goods, ₹3,000)
     goods_subtotal = round(qty * rate, 2)
-    total_logistics = max(round(goods_subtotal * 0.03, 2), 3000.0)
     packaging_charge = float(qty) * 1.0
-    logistics_only_charge = max(0.0, round(total_logistics - packaging_charge, 2))
+    logistics_only_charge = max(round(goods_subtotal * 0.03, 2), 3000.0)
     customer_info = CustomerInfo(
         name=customer.get("name") or rfq.get("full_name", ""),
         email=customer.get("email") or rfq.get("email"),

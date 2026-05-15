@@ -395,22 +395,22 @@ const CheckoutPage = () => {
       0
     );
     const hasBulk = cartItems.some((it) => (it.order_type || "bulk") === "bulk");
-    let totalLogistics = 0;
     let packaging = 0;
     let logisticsOnly = 0;
     if (!hasBulk) {
-      totalLogistics = 100 * cartItems.length;
-      logisticsOnly = totalLogistics;
+      // Sample-only carts → flat ₹100 per item, no packaging line
+      logisticsOnly = 100 * cartItems.length;
     } else {
+      // Bulk pricing — Feb 2026 rule, updated May 2026:
+      // Packaging and logistics are INDEPENDENT line items.
+      //   packaging = total qty × ₹1
+      //   logistics = max(3% × goods, ₹3,000)
+      // Both are billed in full; logistics is NOT reduced by packaging.
       const totalQty = cartItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-      totalLogistics = Math.max(sub * 0.03, 3000);
       packaging = totalQty * 1;
-      logisticsOnly = Math.max(0, totalLogistics - packaging);
+      logisticsOnly = Math.max(sub * 0.03, 3000);
     }
-    // Tax base = goods + packaging + logistics-only (NOT totalLogistics —
-    // that bundles packaging inside it; adding totalLogistics on top of the
-    // standalone packaging line double-counts). Mirrors backend
-    // orders_router.calculate_totals.
+    const totalLogistics = packaging + logisticsOnly; // bundled for any UI that still wants the combined dispatch number
     const taxBase = sub + packaging + logisticsOnly;
     const taxAmount = Math.round(taxBase * 0.05 * 100) / 100;
     const finalTotal = taxBase + taxAmount - discount;
@@ -472,22 +472,20 @@ const CheckoutPage = () => {
     let packaging = 0;
     let logisticsOnly = 0;
     if (orderType === "sample") {
-      totalLogistics = 100; // Flat Rs 100 for samples
+      totalLogistics = 100; // Flat Rs 100 for samples — no packaging line
       logisticsOnly = totalLogistics;
     } else {
-      // Total = max(3% of cart value, Rs 3000)
-      totalLogistics = Math.max(sub * 0.03, 3000);
-      // Packaging = Rs 1/meter (or kg for knitted)
+      // Bulk pricing (May 2026 rule): packaging and logistics are INDEPENDENT.
+      //   packaging = qty × ₹1
+      //   logistics = max(3% × goods, ₹3,000)
+      // Both billed in full; total dispatch = packaging + logistics.
       packaging = quantity * 1;
-      // Logistics = Total - Packaging (ensure non-negative)
-      logisticsOnly = Math.max(0, totalLogistics - packaging);
+      logisticsOnly = Math.max(sub * 0.03, 3000);
+      totalLogistics = packaging + logisticsOnly;
     }
     const logisticsPerUnit = quantity > 0 ? totalLogistics / quantity : 0;
 
-    // Tax base = goods + packaging + logistics-only (mirrors backend
-    // orders_router.calculate_totals). totalLogistics already bundles
-    // packaging inside it — using it in the tax base would count
-    // packaging twice.
+    // Tax base = goods + packaging + logistics (both lines, both in full)
     const taxBase = sub + packaging + logisticsOnly;
     const taxAmount = Math.round(taxBase * 0.05 * 100) / 100; // 5% GST
     const finalTotal = taxBase + taxAmount - discount;
