@@ -1,33 +1,18 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { ChevronLeft, Bell, Search } from "lucide-react";
 
-// Locofast brand mark — inline SVG approximation of the interlocked
-// double-checkmark/diamond device from the official logo. Two slanted
-// strokes form a connected ✓✓ icon, in brand blue.
+// Locofast brand mark — official square favicon asset (interlocked weave).
+// Lives under /public/brand/. We use <img> so the asset is cacheable + the
+// design team owns the artwork (vs. inline SVG which drifts over time).
 const LocofastMark = ({ size = 24 }) => (
-  <svg
+  <img
+    src="/brand/locofast-mark.png"
+    alt="Locofast"
     width={size}
     height={size}
-    viewBox="0 0 24 24"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden="true"
-  >
-    <path
-      d="M5 13.5 L9 18 L14 4"
-      stroke="currentColor"
-      strokeWidth="2.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <path
-      d="M10.5 13.5 L14.5 18 L19.5 4"
-      stroke="currentColor"
-      strokeWidth="2.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-  </svg>
+    style={{ display: "block", objectFit: "contain" }}
+    draggable={false}
+  />
 );
 
 export default function TopAppBar({ title, showBack, showSearch = true, showNotifications = true, onSearchClick, hasNotifications = false, right = null }) {
@@ -48,11 +33,13 @@ export default function TopAppBar({ title, showBack, showSearch = true, showNoti
             <ChevronLeft size={22} />
           </button>
         ) : (
-          <div className="m-appbar-logo">
-            <span className="m-appbar-logo-mark" aria-label="Locofast">
-              <LocofastMark size={18} />
-            </span>
-            <span>locofast</span>
+          <div className="m-appbar-logo" style={{ height: 30, display: "flex", alignItems: "center" }}>
+            <img
+              src="/brand/locofast-logo.png"
+              alt="Locofast"
+              style={{ height: 26, width: "auto", display: "block" }}
+              draggable={false}
+            />
           </div>
         )}
         {title && (
