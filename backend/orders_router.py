@@ -1048,6 +1048,21 @@ async def create_shiprocket_shipment(order: dict) -> dict:
             sel_addresses = seller_doc.get("pickup_addresses", []) or []
             chosen = None
             order_addr_id = order.get("pickup_address_id")
+            # Fabric-level pickup: if every item in the order shares the same
+            # fabric.pickup_address_id, honor it. Inventory is defined at the
+            # supplier pickup-location level (one SKU = one location).
+            if not order_addr_id and items:
+                fabric_ids = [it.get("fabric_id") for it in items if it.get("fabric_id")]
+                if fabric_ids:
+                    pickup_ids_seen = set()
+                    async for f in db.fabrics.find(
+                        {"id": {"$in": fabric_ids}},
+                        {"_id": 0, "pickup_address_id": 1},
+                    ):
+                        pickup_ids_seen.add((f.get("pickup_address_id") or "").strip())
+                    pickup_ids_seen.discard("")
+                    if len(pickup_ids_seen) == 1:
+                        order_addr_id = pickup_ids_seen.pop()
             if order_addr_id:
                 chosen = next((a for a in sel_addresses if a.get("id") == order_addr_id), None)
             if not chosen:
@@ -1205,312 +1220,16 @@ async def get_order(order_id: str):
 
 
 # ────────────────────────────────────────────────────────────────────
-#  ADMIN — Edit Order
+#  ADMIN — Edit Order (DEPRECATED — orders are read-only online)
 # ────────────────────────────────────────────────────────────────────
-class OrderEditPayload(BaseModel):
-    """Partial edit payload. Any field omitted is left unchanged.
-    Per business rules:
-      • Item prices are NOT auto-repriced when the vendor changes —
-        admin's responsibility to update separately if needed.
-      • Recompute totals after edits (since ship_to state may have
-        flipped IGST↔CGST+SGST).
-      • Recompute commission + seller_payout after vendor changes —
-        new vendor may attract a different commission rule.
-      • If the order was already pushed to Shiprocket, cancel the old
-        shipment and create a new one (with the new vendor's pickup
-        address + new shipping address).
-    """
-    items: Optional[List[OrderItem]] = None
-    customer: Optional[CustomerInfo] = None
-    ship_to: Optional[ShipTo] = None
-    seller_id: Optional[str] = None
-    seller_company: Optional[str] = None
-    # Pickup-address selector: must be one of the seller's saved
-    # `pickup_addresses[].id`. Set to "" to fall back to the seller's
-    # primary. Free-form addresses are no longer supported here.
-    pickup_address_id: Optional[str] = None
-    notes: Optional[str] = None
-    repush_shiprocket: bool = True  # set False to skip the Shiprocket re-push
-
-
-def _compute_totals_from_items(items: List[dict], gst_rate: float = 0.05) -> dict:
-    """Mirror of the order-creation totals math so edits don't drift."""
-    subtotal = 0.0
-    for it in items:
-        try:
-            subtotal += float(it.get("price_per_meter") or 0) * float(it.get("quantity") or 0)
-        except (TypeError, ValueError):
-            pass
-    tax = round(subtotal * gst_rate, 2)
-    total = round(subtotal + tax, 2)
-    return {"subtotal": round(subtotal, 2), "tax": tax, "total": total}
-
-
 @router.patch("/{order_id}/edit")
-async def admin_edit_order(
-    order_id: str,
-    payload: OrderEditPayload,
-    admin=Depends(auth_helpers.get_current_admin),
-):
-    """Admin: edit an existing order. Tracks a full diff in `order_edits`.
-
-    If the order's status is `delivered` or `cancelled`, edits are
-    rejected to preserve audit integrity. All other statuses can be
-    edited — when the order has already been pushed to Shiprocket and
-    Shiprocket-impacting fields change (items, ship_to, vendor), the old
-    SR shipment is cancelled and a new one is created against the
-    (possibly new) vendor's pickup address.
-    """
-    order = await db.orders.find_one(
-        {"$or": [{"id": order_id}, {"order_number": order_id}]},
-        {"_id": 0},
+async def admin_edit_order(order_id: str):
+    """DEPRECATED — Edit Order is disabled. Orders are read-only online.
+    Returns HTTP 405 for any caller."""
+    raise HTTPException(
+        status_code=405,
+        detail="Order editing has been disabled. Orders cannot be edited online.",
     )
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    if order.get("status") in ("delivered", "cancelled"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot edit a {order['status']} order. Reopen or cancel-and-recreate instead.",
-        )
-
-    update: dict = {}
-    changed: dict = {}  # before/after diff for the audit trail
-    now = datetime.now(timezone.utc).isoformat()
-
-    if payload.items is not None:
-        new_items = [it.model_dump() for it in payload.items]
-        if new_items != order.get("items"):
-            update["items"] = new_items
-            changed["items"] = {"before": order.get("items", []), "after": new_items}
-
-    if payload.customer is not None:
-        new_customer = payload.customer.model_dump()
-        if new_customer != order.get("customer"):
-            update["customer"] = new_customer
-            changed["customer"] = {"before": order.get("customer", {}), "after": new_customer}
-
-    if payload.ship_to is not None:
-        new_ship_to = payload.ship_to.model_dump()
-        if all(not (v or "").strip() for v in new_ship_to.values() if isinstance(v, str)):
-            new_ship_to = None
-        if new_ship_to != order.get("ship_to"):
-            update["ship_to"] = new_ship_to
-            changed["ship_to"] = {"before": order.get("ship_to"), "after": new_ship_to}
-
-    vendor_changed = False
-    if payload.seller_id is not None and payload.seller_id != (order.get("seller_id") or ""):
-        # Look up the target vendor — accept active OR inactive (admin
-        # may legitimately want to reassign to a soft-disabled vendor
-        # for back-office corrections). Frontend lists active only.
-        new_seller = await db.sellers.find_one({"id": payload.seller_id}, {"_id": 0})
-        if not new_seller:
-            # Defensive: also try matching by `_id` (legacy / Mongo ObjectId
-            # string) so a frontend cache miss doesn't silently 404.
-            from bson import ObjectId  # local import — never used elsewhere in this hot path
-            try:
-                new_seller = await db.sellers.find_one({"_id": ObjectId(payload.seller_id)}, {"_id": 0})
-            except Exception:
-                new_seller = None
-        if not new_seller:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Target vendor not found (id={payload.seller_id}). "
-                       f"It may have been deleted or is missing from the sellers collection.",
-            )
-        update["seller_id"] = payload.seller_id
-        update["seller_company"] = new_seller.get("company_name") or payload.seller_company or ""
-        changed["seller_id"] = {"before": order.get("seller_id", ""), "after": payload.seller_id}
-        changed["seller_company"] = {
-            "before": order.get("seller_company", ""),
-            "after": update["seller_company"],
-        }
-        # Stamp seller_id onto every item. Prices stay per business rule.
-        items_now = update.get("items") or order.get("items", [])
-        items_now = [
-            {**it, "seller_id": payload.seller_id, "seller_company": update["seller_company"]}
-            for it in items_now
-        ]
-        update["items"] = items_now
-        if "items" in changed:
-            changed["items"]["after"] = items_now
-        vendor_changed = True
-
-    if payload.notes is not None and payload.notes != order.get("notes", ""):
-        update["notes"] = payload.notes
-        changed["notes"] = {"before": order.get("notes", ""), "after": payload.notes}
-
-    # Pickup-address selector — must reference one of the SELLER's
-    # saved pickup_addresses (after any seller_id change above).
-    # Empty string clears the per-order override, falling back to the
-    # seller's Primary.
-    if payload.pickup_address_id is not None and payload.pickup_address_id != order.get("pickup_address_id", ""):
-        new_pid = (payload.pickup_address_id or "").strip()
-        if new_pid:
-            # Determine effective seller (post-edit)
-            effective_seller_id = update.get("seller_id") or order.get("seller_id") or ""
-            if not effective_seller_id:
-                raise HTTPException(400, "Order has no seller — cannot set pickup address")
-            seller = await db.sellers.find_one({"id": effective_seller_id}, {"_id": 0})
-            if not seller:
-                raise HTTPException(404, "Seller not found")
-            addrs = seller.get("pickup_addresses", []) or []
-            if not any(a.get("id") == new_pid for a in addrs):
-                raise HTTPException(
-                    400,
-                    "Pickup address not found on this seller. Add it under Sellers → Pickup Addresses first.",
-                )
-        update["pickup_address_id"] = new_pid
-        changed["pickup_address_id"] = {
-            "before": order.get("pickup_address_id", ""),
-            "after": new_pid,
-        }
-
-    if not changed:
-        return {"success": True, "no_changes": True, "order": order}
-
-    # Recompute totals after the edits
-    items_for_totals = update.get("items") or order.get("items", [])
-    totals = _compute_totals_from_items(items_for_totals)
-    if (
-        totals["subtotal"] != order.get("subtotal")
-        or totals["tax"] != order.get("tax")
-        or totals["total"] != order.get("total")
-    ):
-        update.update(totals)
-        changed["totals"] = {
-            "before": {k: order.get(k) for k in ("subtotal", "tax", "total")},
-            "after": totals,
-        }
-
-    # Recompute commission + seller_payout when items OR vendor change.
-    # A new vendor may attract a vendor-specific commission rule, and
-    # quantity/price edits change the commission base — keeping the
-    # stale values would show wrong payouts in the order detail panel.
-    if changed.get("items") or vendor_changed:
-        try:
-            from commission_router import calculate_commission
-            commission_info = await calculate_commission(
-                {"source": order.get("source", "")},
-                items_for_totals,
-            )
-            new_subtotal = update.get("subtotal", order.get("subtotal", 0))
-            new_commission_pct = commission_info["commission_pct"]
-            new_commission_amount = commission_info["commission_amount"]
-            new_rule = commission_info["rule_applied"]
-            new_seller_payout = round(new_subtotal - new_commission_amount, 2)
-            commission_diff = {
-                "before": {
-                    "commission_pct": order.get("commission_pct"),
-                    "commission_amount": order.get("commission_amount"),
-                    "commission_rule": order.get("commission_rule"),
-                    "seller_payout": order.get("seller_payout"),
-                },
-                "after": {
-                    "commission_pct": new_commission_pct,
-                    "commission_amount": new_commission_amount,
-                    "commission_rule": new_rule,
-                    "seller_payout": new_seller_payout,
-                },
-            }
-            # Only persist when at least one field actually changed
-            if commission_diff["before"] != commission_diff["after"]:
-                update["commission_pct"] = new_commission_pct
-                update["commission_amount"] = new_commission_amount
-                update["commission_rule"] = new_rule
-                update["seller_payout"] = new_seller_payout
-                changed["commission"] = commission_diff
-        except Exception as e:
-            logger.warning(f"[order-edit] commission recompute failed for {order.get('order_number')}: {e}")
-
-    update["updated_at"] = now
-    update["last_edited_by"] = admin.get("email", "")
-    update["last_edited_at"] = now
-
-    await db.orders.update_one({"id": order["id"]}, {"$set": update})
-
-    audit = {
-        "id": str(uuid.uuid4()),
-        "order_id": order["id"],
-        "order_number": order.get("order_number", ""),
-        "edited_by": admin.get("email", ""),
-        "edited_at": now,
-        "changed_fields": list(changed.keys()),
-        "diff": changed,
-    }
-    await db.order_edits.insert_one(audit.copy())
-    audit.pop("_id", None)
-
-    sr_result = None
-    sr_impacting = bool(
-        changed.get("items") or changed.get("ship_to") or changed.get("seller_id")
-        or changed.get("customer")
-    )
-    if payload.repush_shiprocket and sr_impacting:
-        existing_sr = order.get("shiprocket_order_id")
-        if existing_sr:
-            cancel_res = await _cancel_shiprocket_order_safe(existing_sr)
-            logger.info(f"[order-edit] cancel old SR for {order.get('order_number')}: {cancel_res}")
-            await db.orders.update_one(
-                {"id": order["id"]},
-                {"$set": {
-                    "shiprocket_order_id": None,
-                    "shiprocket_shipment_id": None,
-                    "awb_code": "",
-                    "courier_name": "",
-                }},
-            )
-        fresh = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
-        push_res = await create_shiprocket_shipment(fresh)
-        sr_result = push_res
-        if push_res.get("success"):
-            sr_order_id = push_res.get("order_id") or push_res.get("shiprocket_order_id")
-            sr_update = {
-                "shiprocket_order_id": str(sr_order_id) if sr_order_id is not None else None,
-                "shiprocket_shipment_id": push_res.get("shipment_id"),
-            }
-            if push_res.get("awb_code"):
-                sr_update["awb_code"] = push_res["awb_code"]
-            if push_res.get("courier_name"):
-                sr_update["courier_name"] = push_res["courier_name"]
-            await db.orders.update_one({"id": order["id"]}, {"$set": sr_update})
-
-    if vendor_changed:
-        old_payouts = await db.vendor_payouts.find(
-            {"order_id": order["id"]}, {"_id": 0}
-        ).to_list(10)
-        for op in old_payouts:
-            if op.get("status") == "paid":
-                logger.warning(
-                    f"[order-edit] vendor changed but payout {op['id']} is already PAID — flagged for manual review"
-                )
-                await db.vendor_payouts.update_one(
-                    {"id": op["id"]},
-                    {"$set": {
-                        "needs_review": True,
-                        "review_reason": f"Vendor changed by {admin.get('email','')} after payout was paid",
-                        "updated_at": now,
-                    }},
-                )
-            else:
-                await db.vendor_payouts.update_one(
-                    {"id": op["id"]},
-                    {"$set": {
-                        "status": "cancelled",
-                        "cancelled_reason": "Vendor reassigned via order edit",
-                        "cancelled_at": now,
-                        "cancelled_by": admin.get("email", ""),
-                    }},
-                )
-
-    fresh_order = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
-    return {
-        "success": True,
-        "order": fresh_order,
-        "audit": audit,
-        "shiprocket": sr_result,
-        "vendor_changed": vendor_changed,
-    }
 
 
 @router.get("/{order_id}/edits")

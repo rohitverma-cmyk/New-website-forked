@@ -55,6 +55,7 @@ class VendorResponse(BaseModel):
     contact_phone: str
     city: str = ""
     state: str = ""
+    pickup_addresses: List[dict] = []
 
 class FabricCreate(BaseModel):
     name: str
@@ -99,6 +100,9 @@ class FabricCreate(BaseModel):
     pricing_tiers: List[dict] = []
     has_multiple_colors: bool = False
     color_variants: List[dict] = []
+    # Pickup-address tagging — links this SKU to ONE of the seller's
+    # saved pickup_addresses. "" = use seller's default pickup address.
+    pickup_address_id: str = ""
 
 class FabricUpdate(BaseModel):
     name: Optional[str] = None
@@ -142,6 +146,7 @@ class FabricUpdate(BaseModel):
     pricing_tiers: Optional[List[dict]] = None
     has_multiple_colors: Optional[bool] = None
     color_variants: Optional[List[dict]] = None
+    pickup_address_id: Optional[str] = None
 
 # ==================== AUTH HELPERS ====================
 
@@ -256,6 +261,12 @@ async def create_vendor_fabric(data: FabricCreate, vendor=Depends(get_current_ve
     # Hard-required: dispatch_timeline must match the preset list for stock_type
     data.dispatch_timeline = validate_dispatch_timeline(data.dispatch_timeline, data.stock_type)
 
+    # Validate pickup_address_id (must be one of the vendor's saved pickup addresses)
+    if data.pickup_address_id:
+        valid_ids = {a.get('id') for a in (vendor.get('pickup_addresses') or [])}
+        if data.pickup_address_id not in valid_ids:
+            raise HTTPException(status_code=400, detail='Selected pickup address does not belong to this vendor')
+
     fabric_id = str(uuid.uuid4())
     
     # Get category name
@@ -312,6 +323,7 @@ async def create_vendor_fabric(data: FabricCreate, vendor=Depends(get_current_ve
         'width_type': data.width_type,
         'has_multiple_colors': data.has_multiple_colors,
         'color_variants': data.color_variants,
+        'pickup_address_id': data.pickup_address_id,
         'created_at': datetime.now(timezone.utc).isoformat()
     }
     
@@ -341,7 +353,13 @@ async def update_vendor_fabric(fabric_id: str, data: FabricUpdate, vendor=Depend
 
     if 'composition' in update_data:
         update_data['composition'] = _canon_comp_or_raw(update_data['composition'])
-    
+
+    # Validate pickup_address_id if changing
+    if 'pickup_address_id' in update_data and update_data['pickup_address_id']:
+        valid_ids = {a.get('id') for a in (vendor.get('pickup_addresses') or [])}
+        if update_data['pickup_address_id'] not in valid_ids:
+            raise HTTPException(status_code=400, detail='Selected pickup address does not belong to this vendor')
+
     await db.fabrics.update_one({'id': fabric_id}, {'$set': update_data})
     
     updated = await db.fabrics.find_one({'id': fabric_id}, {'_id': 0})

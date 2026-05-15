@@ -397,9 +397,7 @@ export const upsertCreditWallet = (data) => api.post("/orders/credit/wallets/ups
 export const lookupCreditWalletByGst = (gstNumber) =>
   api.get(`/orders/credit/wallets/lookup?gst_number=${encodeURIComponent(gstNumber)}`);
 
-// Admin order edit + audit trail
-export const adminEditOrder = (orderId, payload) =>
-  api.patch(`/orders/${orderId}/edit`, payload);
+// Admin order audit trail (read-only)
 export const listOrderEdits = (orderId) =>
   api.get(`/orders/${orderId}/edits`);
 export const getCreditApplications = () => api.get("/credit/applications");

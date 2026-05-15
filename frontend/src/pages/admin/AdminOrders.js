@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
-import { Package, Clock, CheckCircle, Truck, XCircle, Search, RefreshCw, ChevronDown, Mail, Phone, MapPin, Eye, FileText, Receipt, Wallet, Upload, Pencil, Ban, X, AlertTriangle, Send, Loader2, Plus, Edit3 } from "lucide-react";
+import { Package, Clock, CheckCircle, Truck, XCircle, Search, RefreshCw, ChevronDown, Mail, Phone, MapPin, Eye, FileText, Receipt, Wallet, Upload, Pencil, Ban, X, AlertTriangle, Send, Loader2, Plus } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import BulkCreditUpload from "../../components/admin/BulkCreditUpload";
 import SetCreditByGstModal from "../../components/admin/SetCreditByGstModal";
-import EditOrderModal from "../../components/admin/EditOrderModal";
 import OrderEmailAudit from "../../components/admin/OrderEmailAudit";
 import { listOrders, updateOrderStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket } from "../../lib/api";
 import { toast } from "sonner";
@@ -53,8 +52,6 @@ const AdminOrders = () => {
   const [showBulkUpload, setShowBulkUpload] = useState(false);
   // Single-entry "Set credit limit by GST" modal
   const [showSetByGst, setShowSetByGst] = useState(false);
-  // Edit Order modal — opens from the order detail panel
-  const [editingOrder, setEditingOrder] = useState(null);
   // Push-to-Shiprocket state (per-order spinner)
   const [pushingShiprocket, setPushingShiprocket] = useState(false);
 
@@ -407,19 +404,12 @@ const AdminOrders = () => {
                 <div><h3 className="font-medium mb-3">Items</h3><div className="border rounded-lg divide-y">{selectedOrder.items?.map((item, idx) => (<div key={idx} className="p-4 flex gap-4">{item.image_url && <img src={item.image_url} alt={item.fabric_name} className="w-16 h-16 object-cover rounded" />}<div className="flex-1"><p className="font-medium">{item.fabric_name}</p><p className="text-sm text-gray-500">{item.category_name}</p><div className="mt-1 flex gap-3 text-sm"><span className={`px-2 py-0.5 rounded text-xs ${item.order_type === "sample" ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"}`}>{item.order_type}</span><span className="text-gray-600">{item.quantity}m x ₹{item.price_per_meter}/m</span></div></div><div className="text-right"><p className="font-medium">₹{(item.quantity * item.price_per_meter).toLocaleString()}</p></div></div>))}</div></div>
                 <div><h3 className="font-medium mb-3">Payment</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><div className="flex justify-between"><span className="text-gray-600">Subtotal</span><span>₹{selectedOrder.subtotal?.toLocaleString()}</span></div><div className="flex justify-between"><span className="text-gray-600">GST</span><span>₹{selectedOrder.tax?.toLocaleString()}</span></div>{selectedOrder.packaging_charge > 0 ? (<><div className="flex justify-between"><span className="text-gray-600">Packaging</span><span>₹{selectedOrder.packaging_charge?.toLocaleString()}</span></div><div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_only_charge?.toLocaleString()}</span></div></>) : selectedOrder.logistics_charge > 0 && <div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_charge?.toLocaleString()}</span></div>}{selectedOrder.discount > 0 && <div className="flex justify-between text-emerald-600"><span>Discount</span><span>-₹{selectedOrder.discount?.toLocaleString()}</span></div>}<div className="flex justify-between pt-2 border-t font-semibold"><span>Total</span><span className="text-emerald-600">₹{selectedOrder.total?.toLocaleString()}</span></div><div className="flex justify-between pt-2 text-sm"><span className="text-gray-600">Method</span><span className="font-medium">{selectedOrder.payment_method === 'credit' ? 'Locofast Credit' : 'Razorpay'}</span></div></div></div>
 
-                <div><h3 className="font-medium mb-3">Commission & Seller Payout</h3><div className="bg-amber-50 rounded-lg p-4 border border-amber-200 space-y-2"><div className="flex justify-between text-sm"><span className="text-gray-600">Vendor</span><span className="font-semibold text-amber-800" data-testid="order-detail-vendor-name">{selectedOrder.seller_company || selectedOrder.items?.[0]?.seller_company || '—'}</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Commission Rate</span><span className="font-semibold text-amber-600">{selectedOrder.commission_pct || 5}%</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Commission Amount</span><span className="font-medium text-amber-700">₹{(selectedOrder.commission_amount || 0).toLocaleString()}</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Rule Applied</span><span className="text-xs text-gray-500">{selectedOrder.commission_rule || 'default'}</span></div><div className="flex justify-between pt-2 border-t border-amber-200"><span className="text-emerald-700 font-semibold">Seller Payout</span><span className="text-emerald-700 font-bold">₹{(selectedOrder.seller_payout || 0).toLocaleString()}</span></div>{selectedOrder.pickup_address_id && (<div className="pt-2 border-t border-amber-200"><p className="text-xs text-gray-600 mb-1">Pickup (this order)</p><p className="text-xs text-amber-800">Custom pickup address selected — see Edit Order → Pickup tab</p></div>)}</div></div>
+                <div><h3 className="font-medium mb-3">Commission & Seller Payout</h3><div className="bg-amber-50 rounded-lg p-4 border border-amber-200 space-y-2"><div className="flex justify-between text-sm"><span className="text-gray-600">Vendor</span><span className="font-semibold text-amber-800" data-testid="order-detail-vendor-name">{selectedOrder.seller_company || selectedOrder.items?.[0]?.seller_company || '—'}</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Commission Rate</span><span className="font-semibold text-amber-600">{selectedOrder.commission_pct || 5}%</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Commission Amount</span><span className="font-medium text-amber-700">₹{(selectedOrder.commission_amount || 0).toLocaleString()}</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Rule Applied</span><span className="text-xs text-gray-500">{selectedOrder.commission_rule || 'default'}</span></div><div className="flex justify-between pt-2 border-t border-amber-200"><span className="text-emerald-700 font-semibold">Seller Payout</span><span className="text-emerald-700 font-bold">₹{(selectedOrder.seller_payout || 0).toLocaleString()}</span></div>{selectedOrder.pickup_address_id && (<div className="pt-2 border-t border-amber-200"><p className="text-xs text-gray-600 mb-1">Pickup (this order)</p><p className="text-xs text-amber-800">Custom pickup address selected for this order</p></div>)}</div></div>
                 {selectedOrder.cancellation_reason && <div className="bg-red-50 border border-red-200 rounded-lg p-4"><p className="text-red-700 font-medium flex items-center gap-2"><AlertTriangle size={16} />Cancelled: {selectedOrder.cancellation_reason === 'stock_out' ? 'Stock Out' : selectedOrder.cancellation_reason === 'credit_limit' ? 'Lack of Credit Limit' : selectedOrder.cancellation_reason}</p></div>}
                 <OrderEmailAudit orderId={selectedOrder.id} orderNumber={selectedOrder.order_number} />
               </div>
               <div className="p-6 border-t flex justify-between">
                 <div className="flex gap-3 flex-wrap">
-                  <button
-                    onClick={() => setEditingOrder(selectedOrder)}
-                    className="flex items-center gap-2 px-4 py-2 text-indigo-600 hover:bg-indigo-50 rounded-lg border border-indigo-200"
-                    data-testid="admin-order-edit-btn"
-                  >
-                    <Edit3 size={16} />Edit Order
-                  </button>
                   <button onClick={() => handleResendConfirmation(selectedOrder.id)} className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Mail size={16} />Resend Email</button>
                   {selectedOrder.payment_status === 'paid' && <a href={downloadInvoice(selectedOrder.id)} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 text-emerald-600 hover:bg-emerald-50 rounded-lg" data-testid="admin-order-invoice-btn"><FileText size={16} />Invoice</a>}
                   {selectedOrder.linked_invoice?.eway_bill_url && <a href={selectedOrder.linked_invoice.eway_bill_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 text-purple-600 hover:bg-purple-50 rounded-lg" data-testid="admin-order-eway-btn" title={`E-way Bill ${selectedOrder.linked_invoice.eway_bill_number || ''}`}><Receipt size={16} />E-way Bill</a>}
@@ -555,20 +545,6 @@ const AdminOrders = () => {
           onSuccess={fetchWallets}
           existingWallets={wallets}
         />
-
-        {/* ===== EDIT ORDER MODAL ===== */}
-        {editingOrder && (
-          <EditOrderModal
-            order={editingOrder}
-            onClose={() => setEditingOrder(null)}
-            onSaved={(updated) => {
-              setEditingOrder(null);
-              setSelectedOrder(updated);
-              fetchOrders();
-              fetchStats();
-            }}
-          />
-        )}
       </div>
     </AdminLayout>
   );
