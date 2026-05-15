@@ -213,7 +213,9 @@ export default function MCatalog() {
         )}
       </div>
 
-      {/* Results grid */}
+      {/* Results — single column on mobile so the cards have enough
+       * real estate for the fabric image, name and spec chips. The earlier
+       * 2-col grid was cramming long names and clipping composition. */}
       <div className="m-container" style={{ marginTop: 8 }}>
         {loading ? (
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
@@ -222,7 +224,7 @@ export default function MCatalog() {
         ) : filtered.length === 0 ? (
           <EmptyState onReset={() => setParams({}, { replace: true })} />
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
             {filtered.map((f) => (
               <div key={f.id} style={{ minWidth: 0 }}>
                 <FabricCard fabric={f} variant="grid" />

@@ -290,8 +290,8 @@ export default function MFabricDetail() {
         padding: "10px 16px", display: "flex", gap: 10, zIndex: 50,
         boxShadow: "0 -4px 20px rgba(15,27,45,0.06)",
       }}>
-        <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-outline" style={{ flex: "0 0 auto", padding: "0 14px", aspectRatio: "1" }} aria-label="Ask for a quote">
-          <MessageCircle size={20} />
+        <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-outline" style={{ flex: "0 0 auto", padding: "0 14px", gap: 6 }} data-testid="m-quote" aria-label="Request a quote">
+          <FileText size={16} /> Quote
         </button>
         {canBook ? (
           <>
@@ -306,7 +306,7 @@ export default function MFabricDetail() {
           // Not in stock — desktop falls through to "Request a Quote".
           // Mirror that here so customers always have a path forward.
           <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-primary" style={{ flex: 1 }} data-testid="m-request-quote">
-            <MessageCircle size={16} /> Request a Quote
+            <FileText size={16} /> Request a Quote
           </button>
         )}
       </div>

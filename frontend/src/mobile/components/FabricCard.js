@@ -38,7 +38,7 @@ export default function FabricCard({ fabric, variant = "rail" }) {
       }}
     >
       <div style={{
-        height: variant === "rail" ? 160 : 200,
+        height: variant === "rail" ? 160 : 220,
         background: img
           ? `linear-gradient(180deg, rgba(15,27,45,0) 0%, rgba(15,27,45,0.15) 100%), url(${img}) center/cover no-repeat`
           : "linear-gradient(135deg, #FFF1E6, #FFE3CE)",
