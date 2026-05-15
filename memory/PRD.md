@@ -514,6 +514,18 @@ Full admin order-edit capability + Shiprocket pickup now sourced from the assign
 - **Frontend — `EditOrderModal.js`**: Full 5-tab modal (Items / Customer / Shipping / Vendor / History) opened via "Edit Order" button on the admin order detail. Live total recomputation preview, vendor search with pickup-warning badge, audit history viewer with collapsible diff JSON, optional "cancel & re-push SR" checkbox.
 - **Frontend — Admin Seller Detail Finance tab**: Adds a "Pickup address (Ship-From)" card with 7 fields + Save button so admin can register each vendor's warehouse for Shiprocket pickup.
 
+### Phase 62: Unified RFQ Flow (Complete - Feb 15, 2026)
+**Goal**: Single RFQ structure across desktop + mobile, with smart skipping for logged-in users and inline registration for guests.
+
+- **3-stage auth gate** (`RFQAuthGate.js`): phone → WhatsApp OTP → (if new) inline registration (name + email + GSTIN with server-side GST verify via Sandbox API). Reuses existing Gupshup integration + `PUT /customer/profile` endpoint.
+- **Use-case logic**:
+  - Logged-in + PDP context → collapsed "Specs locked from {fabric}" card with Edit toggle, skip personal-info step
+  - Logged-in + header → fabric picker grid, skip personal-info step
+  - Guest → auth gate, then route into one of the above
+- **Mobile (`MRFQ.js`)**: full refactor — 2 steps for logged-in (specs+qty → notes), no contact step. Fabric pre-fills from `?fabric=` param via `/api/fabrics/{slug}`. Composition rendering normalises array/string forms.
+- **Desktop (`RFQPage.js`)**: wrapped in `RFQAuthGate` (last 15 lines) without touching the existing 1000+ line form below.
+- **Verified** (iteration_65.json): 100% pass (10/10 frontend + 9/9 backend). 1 LOW-priority composition display bug found and fixed.
+
 ### Phase 61: Unified Credit & Ledger (Complete - Feb 14, 2026)
 **Goal**: Bring B2C/standard buyers to parity with enterprise — every buyer with a GSTIN now sees a single Credit & Ledger view (limits per lender, full disbursement history, payments stream, manual adjustments).
 

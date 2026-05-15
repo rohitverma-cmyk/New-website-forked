@@ -145,7 +145,19 @@ function MRFQInner() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "var(--m-ink-3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Specs locked from</div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "var(--m-ink)", marginTop: 2, lineHeight: 1.3 }}>{fabric?.name || "this fabric"}</div>
-                  {fabric?.category_name && <div className="m-caption" style={{ marginTop: 4 }}>{fabric.category_name}{fabric.composition ? ` · ${fabric.composition}` : ""}{fabric.weight_gsm ? ` · ${fabric.weight_gsm} GSM` : ""}</div>}
+                  {fabric?.category_name && (() => {
+                    // `composition` can be either a string ("Cotton 100%") OR
+                    // an array of {material, percentage} objects depending on
+                    // the fabric record's vintage. Normalise for display.
+                    const compStr = Array.isArray(fabric.composition)
+                      ? fabric.composition.map((c) => `${c.material || c.name || ""} ${c.percentage || c.pct || ""}%`).join(", ")
+                      : (typeof fabric.composition === "string" ? fabric.composition : "");
+                    return (
+                      <div className="m-caption" style={{ marginTop: 4 }}>
+                        {fabric.category_name}{compStr ? ` · ${compStr}` : ""}{fabric.weight_gsm ? ` · ${fabric.weight_gsm} GSM` : ""}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <button onClick={() => setSpecsEditing(true)} style={{ background: "transparent", border: "1px solid var(--m-border-2)", borderRadius: 10, padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: 4, color: "var(--m-blue)", fontSize: 12, fontWeight: 600 }} data-testid="mrfq-specs-edit-btn">
                   <Pencil size={12} /> Edit
