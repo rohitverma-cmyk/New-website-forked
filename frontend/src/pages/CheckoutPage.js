@@ -1473,7 +1473,7 @@ const CheckoutPage = () => {
                   ) : (
                     <div className="flex justify-between">
                       <span className="text-gray-600">
-                        Logistics (Flat)
+                        Logistics
                       </span>
                       <span>₹{logistics.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                     </div>

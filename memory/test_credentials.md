@@ -5,6 +5,21 @@
 - Password: admin123
 - Login URL: /admin/login
 
+## Locofast Agent (Sourcing / Sales Team)
+- Email: agent@locofast.com (or deepak.wadhwa@locofast.com for Sujata)
+- Auth: **Email OTP only** — no password
+- Login URL: /agent/login (preview: https://fabric-sourcing-cms.preview.emergentagent.com/agent/login · prod: https://locofast.com/agent/login)
+- Flow: enter email → 6-digit OTP arrives in inbox (Resend) → enter OTP → land on agent dashboard
+- Dev OTP retrieval (no inbox in preview): `db.agent_otps` collection, latest `used=false` row for that email
+- What an agent can do:
+  - **AI Sourcing Search** (Claude) — natural-language fabric discovery
+  - **Build catalogues** — curated shareable URLs from search results (PublicCataloguePage)
+  - **Create shared carts** — agent-assisted curated carts with custom pricing, generates `/shared-cart/{token}` for the buyer
+  - **View orders** — all orders, with the new "Invoice Value (all-incl.)" breakdown column (Goods · Pkg · Logs · GST)
+  - **View RFQs assigned to them** — quote management
+- Rate limit: 3 OTP requests per 10 minutes per email
+- Note: Use OTP login from `/admin` won't work — `/agent/login` is a separate auth surface.
+
 ## Credit Operations / Finance & Accounts (Vendor Payouts + Credit Ledger)
 - Email: creditoperations@locofast.com
 - Password: accounts@2026
