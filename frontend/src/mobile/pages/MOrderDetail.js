@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { ChevronLeft, CheckCircle, Circle, Truck, MapPin, Package, Receipt, RefreshCcw, Phone, AlertCircle, CreditCard } from "lucide-react";
+import { ChevronLeft, CheckCircle, Circle, Truck, MapPin, Package, Receipt, RefreshCcw, Phone, AlertCircle, CreditCard, Download } from "lucide-react";
 import { toast } from "sonner";
 import { useCustomerAuth } from "../../context/CustomerAuthContext";
 import { useRequireMobileAuth } from "../utils/authGuard";
-import { getCustomerOrder, getOrderTracking } from "../../lib/api";
+import { getCustomerOrder, getOrderTracking, downloadInvoice } from "../../lib/api";
 import { statusLabel, statusTone, statusBackground, ORDER_TIMELINE, ORDER_STATUS, formatDateRelative } from "../lib/orderHelpers";
 import { formatPriceINR } from "../lib/format";
 
@@ -204,7 +204,19 @@ export default function MOrderDetail() {
         </div>
       </div>
 
-      <div className="m-container" style={{ marginTop: 20 }}>
+      <div className="m-container" style={{ marginTop: 20, display: "grid", gap: 10 }}>
+        {order.payment_status === "paid" && (
+          <a
+            href={downloadInvoice(order.id || order.order_number)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="m-btn m-btn-primary"
+            style={{ width: "100%" }}
+            data-testid="m-order-download-invoice"
+          >
+            <Download size={16} /> Download invoice (PDF)
+          </a>
+        )}
         <button onClick={() => navigate("/m/catalog")} className="m-btn m-btn-outline" style={{ width: "100%" }}>
           <RefreshCcw size={16} /> Reorder fabric
         </button>
