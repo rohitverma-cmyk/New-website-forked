@@ -387,6 +387,7 @@ export const getOrder = (id) => api.get(`/orders/${id}`);
 export const getOrderByRazorpayId = (razorpayOrderId) => api.get(`/orders/by-razorpay/${razorpayOrderId}`);
 export const listOrders = (params) => api.get("/orders", { params });
 export const updateOrderStatus = (id, status) => api.put(`/orders/${id}/status?status=${status}`);
+export const updateOrderPaymentStatus = (id, payload) => api.put(`/orders/${id}/payment-status`, payload);
 export const cancelOrder = (id, reason) => api.put(`/orders/${id}/cancel`, { reason });
 export const pushOrderToShiprocket = (id, force = false) =>
   api.post(`/orders/admin/${id}/push-to-shiprocket${force ? "?force=true" : ""}`);

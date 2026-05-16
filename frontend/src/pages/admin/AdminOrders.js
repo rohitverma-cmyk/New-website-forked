@@ -4,7 +4,7 @@ import AdminLayout from "../../components/admin/AdminLayout";
 import BulkCreditUpload from "../../components/admin/BulkCreditUpload";
 import SetCreditByGstModal from "../../components/admin/SetCreditByGstModal";
 import OrderEmailAudit from "../../components/admin/OrderEmailAudit";
-import { listOrders, updateOrderStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket } from "../../lib/api";
+import { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket } from "../../lib/api";
 import { toast } from "sonner";
 
 const statusConfig = {
@@ -54,6 +54,10 @@ const AdminOrders = () => {
   const [showSetByGst, setShowSetByGst] = useState(false);
   // Push-to-Shiprocket state (per-order spinner)
   const [pushingShiprocket, setPushingShiprocket] = useState(false);
+  // Mark-as-Paid (manual payment status override) state
+  const [markPayOpen, setMarkPayOpen] = useState(false);
+  const [markPayForm, setMarkPayForm] = useState({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" });
+  const [markPayBusy, setMarkPayBusy] = useState(false);
 
   useEffect(() => { fetchOrders(); fetchStats(); }, [statusFilter]);
   useEffect(() => { if (activeTab === "credit") fetchWallets(); }, [activeTab]);
@@ -87,6 +91,28 @@ const AdminOrders = () => {
       fetchOrders(); fetchStats();
     } catch { toast.error("Failed to update status"); }
     setUpdatingStatus(null);
+  };
+
+  const handleMarkPaymentStatus = async () => {
+    if (!selectedOrder) return;
+    if (markPayForm.payment_status === "paid" && !markPayForm.payment_method) {
+      toast.error("Pick the payment method that was actually used");
+      return;
+    }
+    setMarkPayBusy(true);
+    try {
+      await updateOrderPaymentStatus(selectedOrder.id, markPayForm);
+      toast.success(`Payment marked as ${markPayForm.payment_status}`);
+      // Patch the modal state so the UI reflects new status immediately
+      setSelectedOrder((p) => p ? { ...p, payment_status: markPayForm.payment_status, payment_method: markPayForm.payment_method || p.payment_method } : p);
+      setMarkPayOpen(false);
+      setMarkPayForm({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" });
+      fetchOrders();
+      fetchStats();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to update payment status");
+    }
+    setMarkPayBusy(false);
   };
 
   const handlePushToShiprocket = async (force = false) => {
@@ -491,6 +517,15 @@ const AdminOrders = () => {
               <div className="p-6 border-t flex justify-between">
                 <div className="flex gap-3 flex-wrap">
                   <button onClick={() => handleResendConfirmation(selectedOrder.id)} className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Mail size={16} />Resend Email</button>
+                  {selectedOrder.payment_status !== 'paid' && (
+                    <button
+                      onClick={() => { setMarkPayForm({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" }); setMarkPayOpen(true); }}
+                      className="flex items-center gap-2 px-4 py-2 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 font-medium"
+                      data-testid="admin-mark-paid-btn"
+                    >
+                      <CheckCircle size={16} />Mark as Paid
+                    </button>
+                  )}
                   {selectedOrder.payment_status === 'paid' && <a href={downloadInvoice(selectedOrder.id)} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 text-emerald-600 hover:bg-emerald-50 rounded-lg" data-testid="admin-order-invoice-btn"><FileText size={16} />Invoice</a>}
                   {selectedOrder.linked_invoice?.eway_bill_url && <a href={selectedOrder.linked_invoice.eway_bill_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 text-purple-600 hover:bg-purple-50 rounded-lg" data-testid="admin-order-eway-btn" title={`E-way Bill ${selectedOrder.linked_invoice.eway_bill_number || ''}`}><Receipt size={16} />E-way Bill</a>}
                   {selectedOrder.brand_id && !selectedOrder.linked_invoice && <a href={`/admin/brands/${selectedOrder.brand_id}/financials`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 text-purple-600 hover:bg-purple-50 rounded-lg text-sm" title="Upload E-way Bill via Financials"><Receipt size={16} />Add E-way Bill</a>}
@@ -657,6 +692,98 @@ const AdminOrders = () => {
           onSuccess={fetchWallets}
           existingWallets={wallets}
         />
+
+        {/* ===== MARK AS PAID MODAL ===== */}
+        {markPayOpen && selectedOrder && (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" data-testid="mark-paid-modal" onClick={() => !markPayBusy && setMarkPayOpen(false)}>
+            <div className="bg-white rounded-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+              <div className="p-5 border-b flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-gray-900">Manual Payment Status Update</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Order {selectedOrder.order_number} · Currently <strong className="uppercase">{selectedOrder.payment_status || "pending"}</strong></p>
+                </div>
+                <button onClick={() => !markPayBusy && setMarkPayOpen(false)} className="p-1 text-gray-400 hover:text-gray-600" disabled={markPayBusy}><X size={18} /></button>
+              </div>
+              <div className="p-5 space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">New Payment Status *</label>
+                  <select
+                    value={markPayForm.payment_status}
+                    onChange={(e) => setMarkPayForm({ ...markPayForm, payment_status: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                    data-testid="mark-paid-status-select"
+                  >
+                    <option value="paid">Paid</option>
+                    <option value="pending">Pending</option>
+                    <option value="initiated">Initiated</option>
+                    <option value="failed">Failed</option>
+                    <option value="refunded">Refunded</option>
+                  </select>
+                </div>
+                {markPayForm.payment_status === "paid" && (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Payment Method *</label>
+                      <select
+                        value={markPayForm.payment_method}
+                        onChange={(e) => setMarkPayForm({ ...markPayForm, payment_method: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                        data-testid="mark-paid-method-select"
+                      >
+                        <option value="neft">NEFT</option>
+                        <option value="rtgs">RTGS</option>
+                        <option value="imps">IMPS</option>
+                        <option value="upi">UPI</option>
+                        <option value="cheque">Cheque</option>
+                        <option value="cash">Cash</option>
+                        <option value="razorpay">Razorpay (manual confirm)</option>
+                        <option value="credit">Locofast Credit</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">UTR / Reference No</label>
+                      <input
+                        value={markPayForm.utr}
+                        onChange={(e) => setMarkPayForm({ ...markPayForm, utr: e.target.value })}
+                        placeholder="e.g. UTR202605160001"
+                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono"
+                        data-testid="mark-paid-utr"
+                      />
+                    </div>
+                  </>
+                )}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Notes (for audit trail)</label>
+                  <textarea
+                    value={markPayForm.notes}
+                    onChange={(e) => setMarkPayForm({ ...markPayForm, notes: e.target.value })}
+                    rows={2}
+                    placeholder="e.g. Bank confirmation received via email from accounts team"
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                    data-testid="mark-paid-notes"
+                  />
+                </div>
+                {markPayForm.payment_status === "paid" && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-800">
+                    Marking as <strong>paid</strong> will: send the order confirmation email to the customer, materialize vendor payouts, and bump the fulfillment status to <strong>pending</strong> if it was waiting on payment.
+                  </div>
+                )}
+              </div>
+              <div className="p-4 border-t flex items-center justify-end gap-2">
+                <button onClick={() => setMarkPayOpen(false)} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg" disabled={markPayBusy}>Cancel</button>
+                <button
+                  onClick={handleMarkPaymentStatus}
+                  disabled={markPayBusy}
+                  className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-60 flex items-center gap-1"
+                  data-testid="mark-paid-confirm"
+                >
+                  {markPayBusy && <Loader2 size={14} className="animate-spin" />}
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </AdminLayout>
   );

@@ -1520,6 +1520,92 @@ async def update_order_status(order_id: str, status: str):
     
     return {"success": True, "message": f"Order status updated to {status}"}
 
+@router.put("/{order_id}/payment-status")
+async def update_payment_status(order_id: str, payload: dict):
+    """Admin-only manual payment-status override. Useful for offline
+    payments (NEFT, RTGS, cheque, credit-line release) where the
+    customer paid through a channel the gateway can't auto-confirm.
+
+    Body:
+      {
+        "payment_status": "paid" | "pending" | "failed" | "refunded",
+        "payment_method": "neft" | "rtgs" | "cheque" | "credit" | "razorpay" | ...   (optional)
+        "utr": "...",                                                                 (optional, recommended for paid)
+        "notes": "human note for the audit trail"                                     (optional)
+      }
+
+    Side-effects when status flips to `paid`:
+      • `order.status` is bumped from `payment_pending`→`pending` so it
+        shows up in fulfillment queues (no auto-bump if already past).
+      • `paid_at` timestamp recorded.
+      • Order confirmation email is fired off (idempotent on our side —
+        safe if already sent).
+      • Vendor payouts are materialized.
+    """
+    valid_statuses = ["pending", "initiated", "paid", "failed", "refunded"]
+    new_status = (payload.get("payment_status") or "").strip().lower()
+    if new_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"payment_status must be one of {valid_statuses}")
+
+    order = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    previous = order.get("payment_status", "")
+    set_fields = {
+        "payment_status": new_status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if payload.get("payment_method"):
+        set_fields["payment_method"] = payload["payment_method"]
+    if payload.get("utr"):
+        set_fields["utr"] = payload["utr"].strip()
+    if payload.get("notes"):
+        set_fields["payment_status_notes"] = payload["notes"]
+
+    if new_status == "paid":
+        set_fields["paid_at"] = datetime.now(timezone.utc).isoformat()
+        # Bump fulfillment status only if still in the pre-pay limbo
+        if order.get("status") in ("payment_pending", "pending"):
+            set_fields["status"] = "pending"
+
+    # Audit trail (append-only)
+    audit = {
+        "from": previous,
+        "to": new_status,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "method": payload.get("payment_method") or order.get("payment_method", ""),
+        "utr": payload.get("utr", ""),
+        "notes": payload.get("notes", ""),
+        "actor": "admin",
+    }
+
+    await db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": set_fields, "$push": {"payment_status_history": audit}},
+    )
+
+    # Re-fetch for side-effects
+    if new_status == "paid" and previous != "paid":
+        fresh = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+        # Send order confirmation email + materialize payouts (best-effort)
+        try:
+            await send_order_notification_emails(fresh)
+        except Exception as e:
+            logger.warning(f"[manual-paid] email failed for {order['id']}: {e}")
+        try:
+            from payouts_router import materialize_payouts_for_order
+            await materialize_payouts_for_order(fresh)
+        except Exception as e:
+            logger.warning(f"[manual-paid] payout materialize failed for {order['id']}: {e}")
+        logger.info(f"[admin] payment_status: {order.get('order_number')} {previous} → {new_status}")
+
+    return {"success": True, "previous": previous, "current": new_status}
+
+
 @router.put("/{order_id}/cancel")
 async def cancel_order(order_id: str, data: dict):
     """Cancel an order with reason (stock out or credit limit). Refunds credit if paid via credit."""
