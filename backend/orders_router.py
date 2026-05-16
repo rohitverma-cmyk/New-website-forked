@@ -787,24 +787,33 @@ async def _push_to_shiprocket_safe(order: dict) -> None:
     back onto the order doc. Used by the auto-create path after order
     creation; errors are logged but never raised so the order flow
     completes regardless of Shiprocket availability.
+
+    Multi-supplier orders create one Shiprocket shipment per seller.
     """
     try:
-        result = await create_shiprocket_shipment(order)
-        if not result.get("success"):
-            logger.warning(f"[shiprocket-auto] {order.get('order_number')} failed: {result.get('error')}")
+        multi = await create_shiprocket_shipments_multi(order)
+        if not multi.get("success"):
+            logger.warning(f"[shiprocket-auto] {order.get('order_number')} failed: {multi.get('error')}")
             return
-        sr_order_id = result.get("order_id") or result.get("shiprocket_order_id")
+        shipments = multi["shipments"]
+        first_ok = next((s for s in shipments if s["success"]), shipments[0])
         update = {
-            "shiprocket_order_id": str(sr_order_id) if sr_order_id is not None else None,
-            "shiprocket_shipment_id": result.get("shipment_id"),
+            "shiprocket_shipments": shipments,
+            "shiprocket_pushed": True,
+            "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+            "shiprocket_order_id": first_ok.get("order_id") or None,
+            "shiprocket_shipment_id": first_ok.get("shipment_id"),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        if result.get("awb_code"):
-            update["awb_code"] = result["awb_code"]
-        if result.get("courier_name"):
-            update["courier_name"] = result["courier_name"]
+        if first_ok.get("awb_code"):
+            update["awb_code"] = first_ok["awb_code"]
+        if first_ok.get("courier_name"):
+            update["courier_name"] = first_ok["courier_name"]
         await db.orders.update_one({"id": order["id"]}, {"$set": update})
-        logger.info(f"[shiprocket-auto] {order.get('order_number')} pushed · sr={sr_order_id}")
+        logger.info(
+            f"[shiprocket-auto] {order.get('order_number')} pushed · "
+            f"shipments={multi['count']} ok={sum(1 for s in shipments if s['success'])}"
+        )
     except Exception as e:
         logger.warning(f"[shiprocket-auto] {order.get('order_number')} exception: {e}")
 
@@ -960,7 +969,7 @@ async def _cancel_shiprocket_order_safe(sr_order_id: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-async def create_shiprocket_shipment(order: dict) -> dict:
+async def create_shiprocket_shipment(order: dict, items_override: Optional[List[dict]] = None, seller_override: Optional[str] = None, order_id_suffix: str = "") -> dict:
     """Create a shipment in Shiprocket after payment is confirmed.
 
     Routing rule (per business spec):
@@ -972,10 +981,23 @@ async def create_shiprocket_shipment(order: dict) -> dict:
     Cargo and Courier responses are normalized into the same envelope
     on the order doc so downstream UI/PDF/payouts code doesn't care
     which vertical handled the shipment.
+
+    Multi-supplier support:
+      • Pass `items_override` to push only a subset of the order's items
+        (used when splitting one order into N shipments — one per seller).
+      • Pass `seller_override` to lock the pickup-address resolution to
+        a specific seller_id (even if the order doc has another at the
+        top level).
+      • Pass `order_id_suffix` to append a short tag to the SR order_id
+        (e.g. `-A`, `-B`) so each split shipment has a unique reference
+        Shiprocket-side.
     """
     try:
-        # ── Vertical routing — Cargo for bulk, Courier for everything else ──
-        items_for_routing = order.get("items", []) or []
+        # ── Use override items if provided (multi-supplier split path) ──
+        if items_override is not None:
+            items_for_routing = items_override
+        else:
+            items_for_routing = order.get("items", []) or []
         is_bulk = bool(items_for_routing) and all(
             (it.get("order_type") or "").lower() == "production" for it in items_for_routing
         )
@@ -1023,7 +1045,7 @@ async def create_shiprocket_shipment(order: dict) -> dict:
         from shiprocket.schemas.orders import CreateOrderRequest, OrderItemSchema
 
         customer = order.get("customer", {})
-        items = order.get("items", [])
+        items = items_override if items_override is not None else order.get("items", [])
         ship_to = order.get("ship_to") or {}
 
         if not customer or not items:
@@ -1031,6 +1053,7 @@ async def create_shiprocket_shipment(order: dict) -> dict:
 
         # ── Resolve vendor pickup (Ship-From) ──
         # Resolution order:
+        #   0. seller_override (multi-supplier split path) — highest priority
         #   1. order.pickup_address_id  →  pick from seller's saved addresses
         #   2. seller's PRIMARY pickup address
         #   3. legacy `_ensure_vendor_pickup_nickname` fallback
@@ -1041,7 +1064,7 @@ async def create_shiprocket_shipment(order: dict) -> dict:
             if (it.get("seller_id") or "").strip():
                 seller_id_from_items = it["seller_id"].strip()
                 break
-        seller_id = (order.get("seller_id") or seller_id_from_items or "").strip()
+        seller_id = (seller_override or order.get("seller_id") or seller_id_from_items or "").strip()
         seller_doc = await db.sellers.find_one({"id": seller_id}, {"_id": 0}) if seller_id else None
         pickup_nickname = None
         if seller_doc:
@@ -1097,8 +1120,23 @@ async def create_shiprocket_shipment(order: dict) -> dict:
         # Calculate weight (0.3 kg per meter, min 0.5 kg)
         weight_kg = max(0.5, total_quantity * 0.3)
 
+        # Per-split subtotal — when this shipment is one supplier's slice
+        # of a multi-supplier order, the value Shiprocket charges insurance
+        # against should be that supplier's slice, not the full order.
+        per_shipment_subtotal = sum(
+            float(it.get("price_per_meter", 0)) * float(it.get("quantity", 1))
+            for it in items
+        )
+
+        # Append the suffix to order_id so each split shipment is a unique
+        # reference in Shiprocket (e.g. LF/ORD/057-A, -B). When pushing the
+        # whole order as a single shipment the suffix is "".
+        sr_order_ref = order.get("order_number", order.get("id"))
+        if order_id_suffix:
+            sr_order_ref = f"{sr_order_ref}-{order_id_suffix}"
+
         req = CreateOrderRequest(
-            order_id=order.get("order_number", order.get("id")),
+            order_id=sr_order_ref,
             order_date=datetime.now(timezone.utc),
             pickup_location=pickup_nickname,
             billing_customer_name=customer.get("name", "") or "Customer",
@@ -1121,7 +1159,7 @@ async def create_shiprocket_shipment(order: dict) -> dict:
             breadth=30,
             height=15,
             payment_method="Prepaid",
-            sub_total=float(order.get("subtotal", 0)),
+            sub_total=round(per_shipment_subtotal, 2),
         )
 
         headers = await auth_service.get_auth_headers_async()
@@ -1129,11 +1167,142 @@ async def create_shiprocket_shipment(order: dict) -> dict:
             service = OrderService(client, headers)
             result = await service.create_order(req)
 
+        # Shiprocket sometimes returns 200 OK with `order_id: null` when
+        # the pickup nickname doesn't match any saved pickup location in
+        # their portal. Treat that as a failure so the admin sees a clear
+        # error instead of a row that says "SR# null".
+        sr_oid = result.get("order_id") or result.get("shiprocket_order_id")
+        sr_sid = result.get("shipment_id")
+        if sr_oid in (None, "", "null", "None") or sr_sid in (None, "", "null", "None"):
+            err = (
+                f"Shiprocket returned a blank shipment for pickup '{pickup_nickname}'. "
+                f"Most likely the pickup nickname is not registered in Shiprocket "
+                f"for seller_id={seller_id or '(none)'}. Add the pickup address in the seller profile "
+                f"and re-push."
+            )
+            logger.error(f"[shiprocket] null shipment for {order.get('order_number')} pickup={pickup_nickname}: raw={result}")
+            return {"success": False, "error": err, **result}
+
         return {"success": True, **result}
 
     except Exception as e:
         logger.error(f"Error creating Shiprocket shipment: {str(e)}")
         return {"success": False, "error": str(e)}
+
+
+async def create_shiprocket_shipments_multi(order: dict) -> dict:
+    """Split an order into per-supplier shipments and push each one to
+    Shiprocket independently. Returns a normalized envelope:
+
+        {
+          "success": True,
+          "count": N,
+          "shipments": [
+             {
+               "seller_id": "...",
+               "seller_company": "...",
+               "items_count": 3,
+               "subtotal": 12450.0,
+               "success": True,
+               "order_id": "1340...",
+               "shipment_id": 1336...,
+               "awb_code": "...",
+               "courier_name": "...",
+               "pushed_at": "2026-..."
+             },
+             ...
+           ]
+        }
+
+    If a single shipment fails the others still go through; failed ones
+    carry `success: False` and an `error` field. The overall envelope's
+    `success` is True if at least one shipment succeeded.
+    """
+    items = order.get("items", []) or []
+    if not items:
+        return {"success": False, "error": "Order has no items"}
+
+    # Group items by seller_id (preserving insertion order for stable suffixes)
+    seller_groups: dict = {}
+    seller_order: list = []
+    for it in items:
+        sid = (it.get("seller_id") or "").strip() or "_unknown"
+        if sid not in seller_groups:
+            seller_groups[sid] = []
+            seller_order.append(sid)
+        seller_groups[sid].append(it)
+
+    # Single-supplier short-circuit — no suffix, behaves exactly like the
+    # legacy single-shipment push so nothing existing breaks.
+    if len(seller_order) == 1:
+        only_sid = seller_order[0]
+        seller_doc = None
+        if only_sid and only_sid != "_unknown":
+            seller_doc = await db.sellers.find_one({"id": only_sid}, {"_id": 0, "company_name": 1, "name": 1}) or {}
+        result = await create_shiprocket_shipment(order)
+        single = {
+            "seller_id": only_sid if only_sid != "_unknown" else "",
+            "seller_company": (seller_doc or {}).get("company_name") or (seller_doc or {}).get("name") or "",
+            "items_count": len(items),
+            "subtotal": round(sum(float(i.get("price_per_meter", 0)) * float(i.get("quantity", 1)) for i in items), 2),
+            "success": bool(result.get("success")),
+            "order_id": str(result.get("order_id") or "") if result.get("order_id") is not None else "",
+            "shipment_id": result.get("shipment_id"),
+            "awb_code": result.get("awb_code", ""),
+            "courier_name": result.get("courier_name", ""),
+            "vertical": result.get("vertical", "courier"),
+            "error": result.get("error", ""),
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return {"success": single["success"], "count": 1, "shipments": [single]}
+
+    # Multi-supplier — one shipment per seller.
+    logger.info(f"[shiprocket-multi] order={order.get('order_number')} splitting into {len(seller_order)} supplier shipments")
+    suffixes = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    shipments: list = []
+    any_success = False
+    for idx, sid in enumerate(seller_order):
+        seller_items = seller_groups[sid]
+        seller_doc = None
+        if sid and sid != "_unknown":
+            seller_doc = await db.sellers.find_one({"id": sid}, {"_id": 0, "company_name": 1, "name": 1}) or {}
+        suffix = suffixes[idx] if idx < len(suffixes) else f"{idx + 1}"
+        subtotal = round(sum(float(i.get("price_per_meter", 0)) * float(i.get("quantity", 1)) for i in seller_items), 2)
+        try:
+            res = await create_shiprocket_shipment(
+                order,
+                items_override=seller_items,
+                seller_override=sid if sid != "_unknown" else None,
+                order_id_suffix=suffix,
+            )
+        except Exception as e:
+            logger.exception(f"[shiprocket-multi] supplier {sid} push raised: {e}")
+            res = {"success": False, "error": str(e)}
+        shipment = {
+            "seller_id": sid if sid != "_unknown" else "",
+            "seller_company": (seller_doc or {}).get("company_name") or (seller_doc or {}).get("name") or "",
+            "suffix": suffix,
+            "items_count": len(seller_items),
+            "subtotal": subtotal,
+            "success": bool(res.get("success")),
+            "order_id": str(res.get("order_id") or "") if res.get("order_id") is not None else "",
+            "shipment_id": res.get("shipment_id"),
+            "awb_code": res.get("awb_code", ""),
+            "courier_name": res.get("courier_name", ""),
+            "vertical": res.get("vertical", "courier"),
+            "error": res.get("error", ""),
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        shipments.append(shipment)
+        if shipment["success"]:
+            any_success = True
+
+    return {
+        "success": any_success,
+        "count": len(shipments),
+        "shipments": shipments,
+        "error": "" if any_success else "; ".join(s.get("error", "") for s in shipments if not s["success"]),
+    }
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -1148,8 +1317,10 @@ async def admin_push_to_shiprocket(order_id: str, force: bool = False):
     Shiprocket IDs unless `force=true` is passed (which creates a new SR
     shipment — useful only if the original SR record was deleted).
 
-    Matches the auth pattern of /status and /cancel endpoints in this
-    router — frontend admin layout is route-protected.
+    Multi-supplier orders create one Shiprocket shipment per seller.
+    The summary is persisted on `order.shiprocket_shipments[]` and the
+    first shipment's IDs are mirrored to the top-level fields for
+    backward compatibility with the existing UI / webhook handlers.
     """
     order = await db.orders.find_one(
         {"$or": [{"id": order_id}, {"order_number": order_id}]},
@@ -1158,50 +1329,62 @@ async def admin_push_to_shiprocket(order_id: str, force: bool = False):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    # Short-circuit if already pushed
-    if not force and order.get("shiprocket_order_id"):
+    # Short-circuit if already pushed (multi-supplier — check the array first)
+    existing_shipments = order.get("shiprocket_shipments") or []
+    if not force and (existing_shipments or order.get("shiprocket_order_id")):
         return {
             "success": True,
             "already_pushed": True,
+            "count": len(existing_shipments) or 1,
+            "shipments": existing_shipments,
             "shiprocket_order_id": order.get("shiprocket_order_id"),
             "shipment_id": order.get("shiprocket_shipment_id"),
             "message": "Order is already in Shiprocket",
         }
 
-    result = await create_shiprocket_shipment(order)
-    if not result.get("success"):
-        # Surface the underlying error so the admin can fix the order
-        # (e.g. missing pincode, address too short, etc.) and retry.
+    multi_result = await create_shiprocket_shipments_multi(order)
+    if not multi_result.get("success"):
+        # All shipments failed — surface the underlying error.
         raise HTTPException(
             status_code=502,
-            detail=result.get("error") or "Shiprocket push failed",
+            detail=multi_result.get("error") or "Shiprocket push failed",
         )
 
-    # Persist the new SR identifiers on the order doc so future webhooks
-    # can match this order back.
-    sr_order_id = result.get("order_id") or result.get("shiprocket_order_id")
-    shipment_id = result.get("shipment_id")
+    shipments = multi_result["shipments"]
+    first_ok = next((s for s in shipments if s["success"]), shipments[0])
+
     set_fields = {
-        "shiprocket_order_id": str(sr_order_id) if sr_order_id is not None else None,
-        "shiprocket_shipment_id": shipment_id,
+        "shiprocket_shipments": shipments,
+        "shiprocket_pushed": True,
+        "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+        # Backward-compat: mirror the first successful shipment's IDs onto
+        # the legacy single-shipment fields so existing UI/webhook code
+        # continues to work for single-supplier orders unchanged.
+        "shiprocket_order_id": first_ok.get("order_id") or None,
+        "shiprocket_shipment_id": first_ok.get("shipment_id"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    if result.get("awb_code"):
-        set_fields["awb_code"] = result["awb_code"]
-    if result.get("courier_name"):
-        set_fields["courier_name"] = result["courier_name"]
+    if first_ok.get("awb_code"):
+        set_fields["awb_code"] = first_ok["awb_code"]
+    if first_ok.get("courier_name"):
+        set_fields["courier_name"] = first_ok["courier_name"]
 
     await db.orders.update_one({"id": order["id"]}, {"$set": set_fields})
-    logger.info(f"[shiprocket] manual push ok · order={order.get('order_number')} sr={sr_order_id} shipment={shipment_id}")
+    logger.info(
+        f"[shiprocket] manual push · order={order.get('order_number')} "
+        f"shipments={multi_result['count']} ok={sum(1 for s in shipments if s['success'])}"
+    )
 
     return {
         "success": True,
         "already_pushed": False,
-        "shiprocket_order_id": str(sr_order_id) if sr_order_id is not None else None,
-        "shipment_id": shipment_id,
-        "awb_code": result.get("awb_code") or "",
-        "courier_name": result.get("courier_name") or "",
-        "message": "Order pushed to Shiprocket successfully",
+        "count": multi_result["count"],
+        "shipments": shipments,
+        "shiprocket_order_id": first_ok.get("order_id"),
+        "shipment_id": first_ok.get("shipment_id"),
+        "awb_code": first_ok.get("awb_code") or "",
+        "courier_name": first_ok.get("courier_name") or "",
+        "message": f"Pushed {sum(1 for s in shipments if s['success'])}/{multi_result['count']} shipments to Shiprocket",
     }
 
 

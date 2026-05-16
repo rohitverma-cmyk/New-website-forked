@@ -91,18 +91,23 @@ const AdminOrders = () => {
 
   const handlePushToShiprocket = async (force = false) => {
     if (!selectedOrder) return;
-    if (force && !window.confirm("Force re-push will create a duplicate shipment in Shiprocket. Proceed only if the original SR record was deleted. Continue?")) return;
+    if (force && !window.confirm("Force re-push will create duplicate shipments in Shiprocket. Proceed only if the original SR record was deleted. Continue?")) return;
     setPushingShiprocket(true);
     try {
       const { data } = await pushOrderToShiprocket(selectedOrder.id, force);
+      const okCount = (data.shipments || []).filter((s) => s.success).length;
+      const totalCount = data.count || (data.shipments || []).length || 1;
       if (data.already_pushed && !force) {
-        toast.info(`Already in Shiprocket (SR #${data.shiprocket_order_id})`);
-      } else {
-        toast.success(`Pushed to Shiprocket · SR #${data.shiprocket_order_id}${data.awb_code ? ` · AWB ${data.awb_code}` : ""}`);
+        toast.info(`Already in Shiprocket · ${totalCount} shipment${totalCount > 1 ? "s" : ""}`);
+      } else if (okCount === totalCount) {
+        toast.success(`Pushed ${okCount}/${totalCount} shipment${totalCount > 1 ? "s" : ""} to Shiprocket`);
+      } else if (okCount > 0) {
+        toast.warning(`Pushed ${okCount}/${totalCount} — ${totalCount - okCount} failed. Check supplier details.`);
       }
       // Refresh the order list and patch the modal's selectedOrder so the badge updates
       setSelectedOrder((prev) => prev ? {
         ...prev,
+        shiprocket_shipments: data.shipments || prev.shiprocket_shipments,
         shiprocket_order_id: data.shiprocket_order_id,
         shiprocket_shipment_id: data.shipment_id,
         awb_code: data.awb_code || prev.awb_code,
@@ -401,7 +406,82 @@ const AdminOrders = () => {
               </div>
               <div className="p-6 space-y-6">
                 <div><h3 className="font-medium mb-3">Customer</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><p className="font-medium">{selectedOrder.customer?.name}</p>{selectedOrder.customer?.company && <p className="text-gray-600">{selectedOrder.customer.company}</p>}<div className="flex items-center gap-2 text-sm text-gray-600"><Mail size={14} />{selectedOrder.customer?.email}</div><div className="flex items-center gap-2 text-sm text-gray-600"><Phone size={14} />{selectedOrder.customer?.phone}</div><div className="flex items-start gap-2 text-sm text-gray-600"><MapPin size={14} className="mt-0.5 flex-shrink-0" /><span>{selectedOrder.customer?.address}, {selectedOrder.customer?.city}, {selectedOrder.customer?.state} {selectedOrder.customer?.pincode}</span></div></div></div>
-                <div><h3 className="font-medium mb-3">Items</h3><div className="border rounded-lg divide-y">{selectedOrder.items?.map((item, idx) => (<div key={idx} className="p-4 flex gap-4">{item.image_url && <img src={item.image_url} alt={item.fabric_name} className="w-16 h-16 object-cover rounded" />}<div className="flex-1"><p className="font-medium">{item.fabric_name}</p><p className="text-sm text-gray-500">{item.category_name}</p><div className="mt-1 flex gap-3 text-sm"><span className={`px-2 py-0.5 rounded text-xs ${item.order_type === "sample" ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"}`}>{item.order_type}</span><span className="text-gray-600">{item.quantity}m x ₹{item.price_per_meter}/m</span></div></div><div className="text-right"><p className="font-medium">₹{(item.quantity * item.price_per_meter).toLocaleString()}</p></div></div>))}</div></div>
+                {(() => {
+                  // Group items by seller_id so multi-supplier orders show
+                  // each supplier's slice (items + subtotal + SR shipment).
+                  const groups = [];
+                  const byId = new Map();
+                  (selectedOrder.items || []).forEach((it, idx) => {
+                    const sid = (it.seller_id || "_unknown").trim?.() || it.seller_id || "_unknown";
+                    if (!byId.has(sid)) {
+                      const g = { seller_id: sid === "_unknown" ? "" : sid, seller_company: it.seller_company || "", items: [], subtotal: 0 };
+                      byId.set(sid, g);
+                      groups.push(g);
+                    }
+                    const grp = byId.get(sid);
+                    grp.items.push({ ...it, _idx: idx });
+                    grp.subtotal += Number(it.quantity || 0) * Number(it.price_per_meter || 0);
+                  });
+                  // Attach SR shipment info (if persisted as array)
+                  const srMap = new Map();
+                  (selectedOrder.shiprocket_shipments || []).forEach((sh) => {
+                    srMap.set(sh.seller_id || "", sh);
+                  });
+                  return (
+                    <div>
+                      <h3 className="font-medium mb-3">
+                        Items <span className="text-gray-400 text-xs font-normal">({groups.length} supplier{groups.length > 1 ? "s" : ""})</span>
+                      </h3>
+                      {groups.map((g, gi) => {
+                        const sr = srMap.get(g.seller_id);
+                        return (
+                          <div key={g.seller_id || `g-${gi}`} className="border rounded-lg mb-3 overflow-hidden" data-testid={`order-supplier-${g.seller_id || gi}`}>
+                            <div className="bg-emerald-50 px-4 py-2 flex items-center justify-between text-xs border-b">
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-emerald-800">
+                                  {g.seller_company || "(Supplier unknown)"}
+                                </span>
+                                <span className="text-emerald-600">·</span>
+                                <span className="text-emerald-700">{g.items.length} item{g.items.length > 1 ? "s" : ""}</span>
+                                <span className="text-emerald-600">·</span>
+                                <span className="text-emerald-700 font-medium">₹{g.subtotal.toLocaleString()}</span>
+                              </div>
+                              {sr ? (
+                                sr.success ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white text-emerald-700 text-[11px] font-medium">
+                                    <Truck size={11} /> SR #{sr.order_id}{sr.awb_code ? ` · AWB ${sr.awb_code}` : ""}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 text-red-700 text-[11px] font-medium" title={sr.error || ""}>
+                                    <AlertTriangle size={11} /> Push failed
+                                  </span>
+                                )
+                              ) : null}
+                            </div>
+                            <div className="divide-y">
+                              {g.items.map((item) => (
+                                <div key={item._idx} className="p-4 flex gap-4">
+                                  {item.image_url && <img src={item.image_url} alt={item.fabric_name} className="w-16 h-16 object-cover rounded" />}
+                                  <div className="flex-1">
+                                    <p className="font-medium">{item.fabric_name}</p>
+                                    <p className="text-sm text-gray-500">{item.category_name}</p>
+                                    <div className="mt-1 flex gap-3 text-sm">
+                                      <span className={`px-2 py-0.5 rounded text-xs ${item.order_type === "sample" ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"}`}>{item.order_type}</span>
+                                      <span className="text-gray-600">{item.quantity}m × ₹{item.price_per_meter}/m</span>
+                                    </div>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className="font-medium">₹{(item.quantity * item.price_per_meter).toLocaleString()}</p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
                 <div><h3 className="font-medium mb-3">Payment</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><div className="flex justify-between"><span className="text-gray-600">Subtotal</span><span>₹{selectedOrder.subtotal?.toLocaleString()}</span></div><div className="flex justify-between"><span className="text-gray-600">GST</span><span>₹{selectedOrder.tax?.toLocaleString()}</span></div>{selectedOrder.packaging_charge > 0 ? (<><div className="flex justify-between"><span className="text-gray-600">Packaging</span><span>₹{selectedOrder.packaging_charge?.toLocaleString()}</span></div><div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_only_charge?.toLocaleString()}</span></div></>) : selectedOrder.logistics_charge > 0 && <div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_charge?.toLocaleString()}</span></div>}{selectedOrder.discount > 0 && <div className="flex justify-between text-emerald-600"><span>Discount</span><span>-₹{selectedOrder.discount?.toLocaleString()}</span></div>}<div className="flex justify-between pt-2 border-t font-semibold"><span>Total</span><span className="text-emerald-600">₹{selectedOrder.total?.toLocaleString()}</span></div><div className="flex justify-between pt-2 text-sm"><span className="text-gray-600">Method</span><span className="font-medium">{selectedOrder.payment_method === 'credit' ? 'Locofast Credit' : 'Razorpay'}</span></div></div></div>
 
                 <div><h3 className="font-medium mb-3">Commission & Seller Payout</h3><div className="bg-amber-50 rounded-lg p-4 border border-amber-200 space-y-2"><div className="flex justify-between text-sm"><span className="text-gray-600">Vendor</span><span className="font-semibold text-amber-800" data-testid="order-detail-vendor-name">{selectedOrder.seller_company || selectedOrder.items?.[0]?.seller_company || '—'}</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Commission Rate</span><span className="font-semibold text-amber-600">{selectedOrder.commission_pct || 5}%</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Commission Amount</span><span className="font-medium text-amber-700">₹{(selectedOrder.commission_amount || 0).toLocaleString()}</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Rule Applied</span><span className="text-xs text-gray-500">{selectedOrder.commission_rule || 'default'}</span></div><div className="flex justify-between pt-2 border-t border-amber-200"><span className="text-emerald-700 font-semibold">Seller Payout</span><span className="text-emerald-700 font-bold">₹{(selectedOrder.seller_payout || 0).toLocaleString()}</span></div>{selectedOrder.pickup_address_id && (<div className="pt-2 border-t border-amber-200"><p className="text-xs text-gray-600 mb-1">Pickup (this order)</p><p className="text-xs text-amber-800">Custom pickup address selected for this order</p></div>)}</div></div>
@@ -416,7 +496,39 @@ const AdminOrders = () => {
                   {selectedOrder.brand_id && !selectedOrder.linked_invoice && <a href={`/admin/brands/${selectedOrder.brand_id}/financials`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 text-purple-600 hover:bg-purple-50 rounded-lg text-sm" title="Upload E-way Bill via Financials"><Receipt size={16} />Add E-way Bill</a>}
 
                   {/* Shiprocket push — visible for every order. Shows current state + push/re-push controls. */}
-                  {selectedOrder.shiprocket_order_id ? (
+                  {(selectedOrder.shiprocket_shipments?.length > 0) ? (
+                    <div className="flex items-center gap-2" data-testid="admin-order-sr-status">
+                      {(() => {
+                        const ships = selectedOrder.shiprocket_shipments;
+                        const ok = ships.filter((s) => s.success).length;
+                        const total = ships.length;
+                        const allOk = ok === total;
+                        return (
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium ${
+                              allOk ? "bg-emerald-50 text-emerald-700" : ok > 0 ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"
+                            }`}
+                            title={ships.map((s) => `${s.seller_company || s.seller_id || "?"}: ${s.success ? `SR #${s.order_id}` : (s.error || "failed")}`).join("\n")}
+                            data-testid="admin-order-sr-vertical-badge"
+                          >
+                            <Truck size={14} />
+                            {total > 1 ? `${ok}/${total} shipments` : (
+                              ships[0].success ? `Shiprocket #${ships[0].order_id}` : "Push failed"
+                            )}
+                          </span>
+                        );
+                      })()}
+                      <button
+                        onClick={() => handlePushToShiprocket(true)}
+                        disabled={pushingShiprocket}
+                        className="px-2 py-2 text-amber-600 hover:bg-amber-50 rounded-lg disabled:opacity-50 text-xs"
+                        title="Force re-push all shipments (creates duplicates in Shiprocket)"
+                        data-testid="admin-order-sr-repush"
+                      >
+                        {pushingShiprocket ? <Loader2 size={14} className="animate-spin" /> : "Re-push"}
+                      </button>
+                    </div>
+                  ) : selectedOrder.shiprocket_order_id ? (
                     <div className="flex items-center gap-2" data-testid="admin-order-sr-status">
                       <span
                         className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium ${
