@@ -4,7 +4,7 @@ import AdminLayout from "../../components/admin/AdminLayout";
 import BulkCreditUpload from "../../components/admin/BulkCreditUpload";
 import SetCreditByGstModal from "../../components/admin/SetCreditByGstModal";
 import OrderEmailAudit from "../../components/admin/OrderEmailAudit";
-import { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket } from "../../lib/api";
+import { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket, getOrderSellerCommissions } from "../../lib/api";
 import { toast } from "sonner";
 
 const statusConfig = {
@@ -58,6 +58,23 @@ const AdminOrders = () => {
   const [markPayOpen, setMarkPayOpen] = useState(false);
   const [markPayForm, setMarkPayForm] = useState({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" });
   const [markPayBusy, setMarkPayBusy] = useState(false);
+  // Per-seller commission breakdown for the open order
+  const [sellerComms, setSellerComms] = useState(null);
+
+  // Fetch per-seller commissions whenever the selected order changes
+  useEffect(() => {
+    if (!selectedOrder?.id) { setSellerComms(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getOrderSellerCommissions(selectedOrder.id);
+        if (!cancelled) setSellerComms(res.data);
+      } catch {
+        if (!cancelled) setSellerComms(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedOrder?.id]);
 
   useEffect(() => { fetchOrders(); fetchStats(); }, [statusFilter]);
   useEffect(() => { if (activeTab === "credit") fetchWallets(); }, [activeTab]);
@@ -510,7 +527,65 @@ const AdminOrders = () => {
                 })()}
                 <div><h3 className="font-medium mb-3">Payment</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><div className="flex justify-between"><span className="text-gray-600">Subtotal</span><span>₹{selectedOrder.subtotal?.toLocaleString()}</span></div><div className="flex justify-between"><span className="text-gray-600">GST</span><span>₹{selectedOrder.tax?.toLocaleString()}</span></div>{selectedOrder.packaging_charge > 0 ? (<><div className="flex justify-between"><span className="text-gray-600">Packaging</span><span>₹{selectedOrder.packaging_charge?.toLocaleString()}</span></div><div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_only_charge?.toLocaleString()}</span></div></>) : selectedOrder.logistics_charge > 0 && <div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_charge?.toLocaleString()}</span></div>}{selectedOrder.discount > 0 && <div className="flex justify-between text-emerald-600"><span>Discount</span><span>-₹{selectedOrder.discount?.toLocaleString()}</span></div>}<div className="flex justify-between pt-2 border-t font-semibold"><span>Total</span><span className="text-emerald-600">₹{selectedOrder.total?.toLocaleString()}</span></div><div className="flex justify-between pt-2 text-sm"><span className="text-gray-600">Method</span><span className="font-medium">{selectedOrder.payment_method === 'credit' ? 'Locofast Credit' : 'Razorpay'}</span></div></div></div>
 
-                <div><h3 className="font-medium mb-3">Commission & Seller Payout</h3><div className="bg-amber-50 rounded-lg p-4 border border-amber-200 space-y-2"><div className="flex justify-between text-sm"><span className="text-gray-600">Vendor</span><span className="font-semibold text-amber-800" data-testid="order-detail-vendor-name">{selectedOrder.seller_company || selectedOrder.items?.[0]?.seller_company || '—'}</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Commission Rate</span><span className="font-semibold text-amber-600">{selectedOrder.commission_pct || 5}%</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Commission Amount</span><span className="font-medium text-amber-700">₹{(selectedOrder.commission_amount || 0).toLocaleString()}</span></div><div className="flex justify-between text-sm"><span className="text-gray-600">Rule Applied</span><span className="text-xs text-gray-500">{selectedOrder.commission_rule || 'default'}</span></div><div className="flex justify-between pt-2 border-t border-amber-200"><span className="text-emerald-700 font-semibold">Seller Payout</span><span className="text-emerald-700 font-bold">₹{(selectedOrder.seller_payout || 0).toLocaleString()}</span></div>{selectedOrder.pickup_address_id && (<div className="pt-2 border-t border-amber-200"><p className="text-xs text-gray-600 mb-1">Pickup (this order)</p><p className="text-xs text-amber-800">Custom pickup address selected for this order</p></div>)}</div></div>
+                <div>
+                  <h3 className="font-medium mb-3 flex items-center gap-2">
+                    Commission &amp; Seller Payout
+                    {sellerComms?.sellers?.length > 1 && (
+                      <span className="text-[11px] font-normal px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200">
+                        {sellerComms.sellers.length} suppliers
+                      </span>
+                    )}
+                    {sellerComms?.paid === false && sellerComms?.sellers?.[0]?.source === "preview" && (
+                      <span className="text-[10px] font-medium text-amber-600 uppercase tracking-wide">Preview · locks in on payment</span>
+                    )}
+                  </h3>
+                  {sellerComms?.sellers?.length ? (
+                    <div className="space-y-2">
+                      {sellerComms.sellers.map((sc, idx) => (
+                        <div key={sc.seller_id || idx} className="bg-amber-50 rounded-lg p-4 border border-amber-200" data-testid={`order-commission-${sc.seller_id || idx}`}>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-semibold text-amber-900 truncate" data-testid="order-detail-vendor-name">{sc.seller_company || "—"}</span>
+                              <span className="text-[11px] text-amber-700">· {sc.items_count} item{sc.items_count > 1 ? "s" : ""}</span>
+                            </div>
+                            {sc.status && sc.status !== "preview" && (
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium uppercase tracking-wide ${sc.status === "paid" ? "bg-emerald-100 text-emerald-700" : "bg-gray-100 text-gray-600"}`}>{sc.status}</span>
+                            )}
+                          </div>
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                            <div className="flex justify-between"><span className="text-gray-600">Gross subtotal</span><span className="font-medium">₹{Number(sc.gross_subtotal || 0).toLocaleString()}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">Commission %</span><span className="font-semibold text-amber-700">{sc.commission_pct_weighted || 0}%</span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">Commission ₹</span><span className="font-medium text-amber-700">−₹{Number(sc.commission_total || 0).toLocaleString()}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">+ GST on comm</span><span className="text-amber-700">−₹{Number(sc.gst_on_commission || 0).toLocaleString()} <span className="text-[10px] text-gray-400">@{sc.commission_gst_pct || 18}%</span></span></div>
+                          </div>
+                          <div className="flex justify-between mt-2 pt-2 border-t border-amber-200">
+                            <span className="text-emerald-700 font-semibold text-sm">Net payable to supplier</span>
+                            <span className="text-emerald-700 font-bold text-sm">₹{Number(sc.net_payable || 0).toLocaleString()}</span>
+                          </div>
+                        </div>
+                      ))}
+                      {sellerComms.sellers.length > 1 && (
+                        <div className="bg-gray-50 rounded-lg px-4 py-2 flex justify-between text-sm">
+                          <span className="text-gray-600">Total commission (Locofast)</span>
+                          <span className="font-semibold text-amber-700">₹{Number(sellerComms.sellers.reduce((sum, s) => sum + (s.commission_total || 0), 0)).toLocaleString()}</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="bg-amber-50 rounded-lg p-4 border border-amber-200 space-y-2">
+                      <div className="flex justify-between text-sm"><span className="text-gray-600">Vendor</span><span className="font-semibold text-amber-800" data-testid="order-detail-vendor-name">{selectedOrder.seller_company || selectedOrder.items?.[0]?.seller_company || '—'}</span></div>
+                      <div className="flex justify-between text-sm"><span className="text-gray-600">Commission Rate</span><span className="font-semibold text-amber-600">{selectedOrder.commission_pct || 5}%</span></div>
+                      <div className="flex justify-between text-sm"><span className="text-gray-600">Commission Amount</span><span className="font-medium text-amber-700">₹{(selectedOrder.commission_amount || 0).toLocaleString()}</span></div>
+                      <div className="flex justify-between pt-2 border-t border-amber-200"><span className="text-emerald-700 font-semibold">Seller Payout</span><span className="text-emerald-700 font-bold">₹{(selectedOrder.seller_payout || 0).toLocaleString()}</span></div>
+                    </div>
+                  )}
+                  {selectedOrder.pickup_address_id && (
+                    <div className="pt-2 mt-2 border-t border-gray-200">
+                      <p className="text-xs text-gray-600 mb-1">Pickup (this order)</p>
+                      <p className="text-xs text-amber-800">Custom pickup address selected for this order</p>
+                    </div>
+                  )}
+                </div>
                 {selectedOrder.cancellation_reason && <div className="bg-red-50 border border-red-200 rounded-lg p-4"><p className="text-red-700 font-medium flex items-center gap-2"><AlertTriangle size={16} />Cancelled: {selectedOrder.cancellation_reason === 'stock_out' ? 'Stock Out' : selectedOrder.cancellation_reason === 'credit_limit' ? 'Lack of Credit Limit' : selectedOrder.cancellation_reason}</p></div>}
                 <OrderEmailAudit orderId={selectedOrder.id} orderNumber={selectedOrder.order_number} />
               </div>

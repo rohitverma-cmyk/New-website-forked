@@ -381,6 +381,91 @@ async def mark_payout_paid(
     return {"success": True, "payout": final}
 
 
+@router.get("/orders/{order_id}/seller-commissions")
+async def get_order_seller_commissions(order_id: str):
+    """Return per-seller commission + payout breakdown for an order.
+    Used by the Admin order detail panel to show commission split when
+    an order has items from multiple suppliers.
+
+    Pulls from `vendor_payouts` (materialized when payment_status flips
+    to paid). For unpaid orders we compute a preview on-the-fly using
+    current commission rules, so admin sees what each supplier WILL
+    earn before money moves.
+    """
+    from auth_helpers import db as _db
+    order = await _db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    rows = []
+    # Materialized rows first (most accurate — locked-in at payment time)
+    async for p in _db.vendor_payouts.find({"order_id": order["id"]}, {"_id": 0}):
+        rows.append({
+            "seller_id": p.get("seller_id", ""),
+            "seller_company": p.get("seller_company", ""),
+            "items_count": len(p.get("items", [])),
+            "gross_subtotal": p.get("gross_subtotal", 0),
+            "commission_pct_weighted": _weighted_pct(p),
+            "commission_total": p.get("commission_total", 0),
+            "gst_on_commission": p.get("gst_on_commission", 0),
+            "commission_gst_pct": p.get("commission_gst_pct", 18),
+            "net_payable": p.get("net_payable", 0),
+            "status": p.get("status", "pending"),
+            "source": "materialized",
+        })
+    if rows:
+        return {"order_number": order.get("order_number"), "paid": order.get("payment_status") == "paid", "sellers": rows}
+
+    # Preview path — order isn't paid yet, compute live.
+    by_seller: dict = {}
+    for it in (order.get("items") or []):
+        sid = (it.get("seller_id") or "").strip()
+        if not sid:
+            continue
+        by_seller.setdefault(sid, []).append(it)
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+    for sid, items in by_seller.items():
+        seller = await _db.sellers.find_one({"id": sid}, {"_id": 0, "company_name": 1, "name": 1}) or {}
+        gross = 0.0
+        comm_total = 0.0
+        for it in items:
+            qty = float(it.get("quantity", 0) or 0)
+            rate = float(it.get("price_per_meter", 0) or 0)
+            line_gross = qty * rate
+            pct = await _resolve_commission(sid, it.get("fabric_id", ""), it.get("category_id", ""))
+            comm_total += round(line_gross * pct / 100.0, 2)
+            gross += line_gross
+        gst_on_comm = round(comm_total * comm_gst_pct / 100.0, 2)
+        invoice_value = round(gross * (1 + goods_gst_pct / 100.0), 2)
+        weighted = round((comm_total / gross * 100.0), 2) if gross else 0
+        rows.append({
+            "seller_id": sid,
+            "seller_company": seller.get("company_name") or seller.get("name") or "—",
+            "items_count": len(items),
+            "gross_subtotal": round(gross, 2),
+            "commission_pct_weighted": weighted,
+            "commission_total": round(comm_total, 2),
+            "gst_on_commission": gst_on_comm,
+            "commission_gst_pct": comm_gst_pct,
+            "net_payable": round(invoice_value - comm_total - gst_on_comm, 2),
+            "status": "preview",
+            "source": "preview",
+        })
+    return {"order_number": order.get("order_number"), "paid": False, "sellers": rows}
+
+
+def _weighted_pct(payout: dict) -> float:
+    """Weighted commission % across items in a materialized payout."""
+    gross = float(payout.get("gross_subtotal", 0) or 0)
+    comm = float(payout.get("commission_total", 0) or 0)
+    if not gross:
+        return 0.0
+    return round(comm / gross * 100.0, 2)
+
+
 @router.post("/payouts/{payout_id}/recalculate")
 async def recalculate_payout(
     payout_id: str,
