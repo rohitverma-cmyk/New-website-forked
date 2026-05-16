@@ -54,6 +54,10 @@ const AdminOrders = () => {
   const [showSetByGst, setShowSetByGst] = useState(false);
   // Push-to-Shiprocket state (per-order spinner)
   const [pushingShiprocket, setPushingShiprocket] = useState(false);
+  // Per-supplier push picker
+  const [srPickerOpen, setSrPickerOpen] = useState(false);
+  const [srPickerSelected, setSrPickerSelected] = useState([]);
+  const [srPickerForce, setSrPickerForce] = useState(false);
   // Mark-as-Paid (manual payment status override) state
   const [markPayOpen, setMarkPayOpen] = useState(false);
   const [markPayForm, setMarkPayForm] = useState({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" });
@@ -130,6 +134,48 @@ const AdminOrders = () => {
       toast.error(e?.response?.data?.detail || "Failed to update payment status");
     }
     setMarkPayBusy(false);
+  };
+
+  // Compute the suppliers on the open order — used by the push picker
+  const orderSuppliers = (() => {
+    if (!selectedOrder) return [];
+    const byId = new Map();
+    (selectedOrder.items || []).forEach((it) => {
+      const sid = (it.seller_id || "").trim();
+      if (!byId.has(sid)) byId.set(sid, { seller_id: sid, seller_company: it.seller_company || "", items_count: 0, subtotal: 0 });
+      const g = byId.get(sid);
+      g.items_count += 1;
+      g.subtotal += Number(it.quantity || 0) * Number(it.price_per_meter || 0);
+    });
+    const shipMap = new Map((selectedOrder.shiprocket_shipments || []).map((s) => [s.seller_id || "", s]));
+    return Array.from(byId.values()).map((g) => ({ ...g, shipment: shipMap.get(g.seller_id) || null }));
+  })();
+
+  const openPushPicker = () => {
+    setSrPickerSelected([]);
+    setSrPickerForce(false);
+    setSrPickerOpen(true);
+  };
+
+  const handlePushSelectedSuppliers = async () => {
+    if (!selectedOrder) return;
+    if (srPickerSelected.length === 0) { toast.error("Pick at least one supplier"); return; }
+    setPushingShiprocket(true);
+    try {
+      const { data } = await pushOrderToShiprocket(selectedOrder.id, srPickerForce, srPickerSelected);
+      const newOnes = data.pushed_in_this_call || [];
+      const ok = newOnes.filter((s) => s.success).length;
+      const tot = newOnes.length;
+      if (ok === tot) toast.success(`Pushed ${ok}/${tot} supplier shipment${tot > 1 ? "s" : ""}`);
+      else if (ok > 0) toast.warning(`Pushed ${ok}/${tot} — ${tot - ok} failed`);
+      else toast.error("All selected shipments failed. Check supplier pickup nicknames.");
+      setSelectedOrder((prev) => prev ? { ...prev, shiprocket_shipments: data.shipments, shiprocket_order_id: data.shiprocket_order_id, shiprocket_shipment_id: data.shipment_id, awb_code: data.awb_code || prev.awb_code, courier_name: data.courier_name || prev.courier_name } : prev);
+      setSrPickerOpen(false);
+      fetchOrders();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Push failed");
+    }
+    setPushingShiprocket(false);
   };
 
   const handlePushToShiprocket = async (force = false) => {
@@ -629,13 +675,13 @@ const AdminOrders = () => {
                         );
                       })()}
                       <button
-                        onClick={() => handlePushToShiprocket(true)}
+                        onClick={() => orderSuppliers.length > 1 ? openPushPicker() : handlePushToShiprocket(true)}
                         disabled={pushingShiprocket}
                         className="px-2 py-2 text-amber-600 hover:bg-amber-50 rounded-lg disabled:opacity-50 text-xs"
-                        title="Force re-push all shipments (creates duplicates in Shiprocket)"
+                        title={orderSuppliers.length > 1 ? "Choose which suppliers to push" : "Force re-push (creates duplicates in Shiprocket)"}
                         data-testid="admin-order-sr-repush"
                       >
-                        {pushingShiprocket ? <Loader2 size={14} className="animate-spin" /> : "Re-push"}
+                        {pushingShiprocket ? <Loader2 size={14} className="animate-spin" /> : (orderSuppliers.length > 1 ? "Push…" : "Re-push")}
                       </button>
                     </div>
                   ) : selectedOrder.shiprocket_order_id ? (
@@ -666,11 +712,12 @@ const AdminOrders = () => {
                     </div>
                   ) : (
                     <button
-                      onClick={() => handlePushToShiprocket(false)}
+                      onClick={() => orderSuppliers.length > 1 ? openPushPicker() : handlePushToShiprocket(false)}
                       disabled={pushingShiprocket || selectedOrder.status === 'cancelled'}
                       className="flex items-center gap-2 px-4 py-2 text-indigo-600 hover:bg-indigo-50 rounded-lg disabled:opacity-50"
                       data-testid="admin-order-sr-push"
                       title={(() => {
+                        if (orderSuppliers.length > 1) return `Choose which of the ${orderSuppliers.length} supplier shipments to push`;
                         const isBulk = (selectedOrder.items || []).length > 0 && (selectedOrder.items || []).every(it => (it.order_type || '').toLowerCase() === 'production');
                         return isBulk
                           ? "Create LTL freight shipment in Shiprocket Cargo (B2B)"
@@ -679,6 +726,7 @@ const AdminOrders = () => {
                     >
                       {pushingShiprocket ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
                       {(() => {
+                        if (orderSuppliers.length > 1) return `Push to Shiprocket (${orderSuppliers.length} suppliers)`;
                         const isBulk = (selectedOrder.items || []).length > 0 && (selectedOrder.items || []).every(it => (it.order_type || '').toLowerCase() === 'production');
                         return isBulk ? "Push to Cargo (B2B)" : "Push to Shiprocket";
                       })()}
@@ -767,6 +815,102 @@ const AdminOrders = () => {
           onSuccess={fetchWallets}
           existingWallets={wallets}
         />
+
+        {/* ===== SHIPROCKET SUPPLIER PICKER ===== */}
+        {srPickerOpen && selectedOrder && (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" data-testid="sr-picker-modal" onClick={() => !pushingShiprocket && setSrPickerOpen(false)}>
+            <div className="bg-white rounded-xl w-full max-w-lg max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="p-5 border-b flex items-center justify-between flex-shrink-0">
+                <div>
+                  <h3 className="font-semibold text-gray-900">Push to Shiprocket</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Order {selectedOrder.order_number} · pick which supplier shipments to push</p>
+                </div>
+                <button onClick={() => !pushingShiprocket && setSrPickerOpen(false)} className="p-1 text-gray-400 hover:text-gray-600" disabled={pushingShiprocket}><X size={18} /></button>
+              </div>
+
+              <div className="p-5 space-y-2 overflow-y-auto flex-1">
+                {orderSuppliers.map((s, idx) => {
+                  const sh = s.shipment;
+                  const alreadyOk = sh && sh.success;
+                  const previouslyFailed = sh && sh.success === false;
+                  const isSelected = srPickerSelected.includes(s.seller_id);
+                  const disabled = alreadyOk && !srPickerForce;
+                  return (
+                    <label
+                      key={s.seller_id || idx}
+                      className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition ${
+                        disabled ? "opacity-50 cursor-not-allowed bg-gray-50" :
+                        isSelected ? "bg-blue-50 border-blue-300" : "bg-white border-gray-200 hover:border-blue-300"
+                      }`}
+                      data-testid={`sr-picker-row-${s.seller_id || idx}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        disabled={disabled}
+                        onChange={(e) => {
+                          if (e.target.checked) setSrPickerSelected([...srPickerSelected, s.seller_id]);
+                          else setSrPickerSelected(srPickerSelected.filter((x) => x !== s.seller_id));
+                        }}
+                        className="mt-1"
+                        data-testid={`sr-picker-check-${s.seller_id || idx}`}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-medium text-gray-900 truncate">{s.seller_company || "(Unknown supplier)"}</p>
+                          {alreadyOk && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-100 text-emerald-700">
+                              Already pushed · SR #{sh.order_id}
+                            </span>
+                          )}
+                          {previouslyFailed && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-red-100 text-red-700" title={sh.error || ""}>
+                              Previous push failed
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {s.items_count} item{s.items_count > 1 ? "s" : ""} · ₹{Number(s.subtotal || 0).toLocaleString()}
+                        </p>
+                        {previouslyFailed && sh.error && (
+                          <p className="text-[11px] text-red-600 mt-1 italic">{sh.error}</p>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })}
+
+                <label className="flex items-center gap-2 mt-3 pt-3 border-t text-xs text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={srPickerForce}
+                    onChange={(e) => setSrPickerForce(e.target.checked)}
+                    data-testid="sr-picker-force"
+                  />
+                  <span><strong className="text-amber-700">Force re-push</strong> already-pushed suppliers (creates duplicate shipments in Shiprocket — use only if SR records were deleted)</span>
+                </label>
+              </div>
+
+              <div className="p-4 border-t flex items-center justify-between gap-2 flex-shrink-0 bg-gray-50">
+                <p className="text-xs text-gray-500">
+                  {srPickerSelected.length === 0 ? "Select at least one supplier" : `${srPickerSelected.length} of ${orderSuppliers.length} selected`}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setSrPickerOpen(false)} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg" disabled={pushingShiprocket}>Cancel</button>
+                  <button
+                    onClick={handlePushSelectedSuppliers}
+                    disabled={pushingShiprocket || srPickerSelected.length === 0}
+                    className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1"
+                    data-testid="sr-picker-confirm"
+                  >
+                    {pushingShiprocket && <Loader2 size={14} className="animate-spin" />}
+                    Push {srPickerSelected.length || ""} shipment{srPickerSelected.length === 1 ? "" : "s"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ===== MARK AS PAID MODAL ===== */}
         {markPayOpen && selectedOrder && (

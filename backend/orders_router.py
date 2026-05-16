@@ -2,7 +2,7 @@
 Orders Router - Handles order creation, payment, and management
 Phase 1: Razorpay Integration + Order Management
 """
-from fastapi import APIRouter, HTTPException, Depends, Request, Query
+from fastapi import APIRouter, HTTPException, Depends, Request, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 from typing import List, Optional
@@ -1190,37 +1190,24 @@ async def create_shiprocket_shipment(order: dict, items_override: Optional[List[
         return {"success": False, "error": str(e)}
 
 
-async def create_shiprocket_shipments_multi(order: dict) -> dict:
+async def create_shiprocket_shipments_multi(order: dict, only_seller_ids: Optional[List[str]] = None) -> dict:
     """Split an order into per-supplier shipments and push each one to
-    Shiprocket independently. Returns a normalized envelope:
+    Shiprocket independently. Returns a normalized envelope.
 
-        {
-          "success": True,
-          "count": N,
-          "shipments": [
-             {
-               "seller_id": "...",
-               "seller_company": "...",
-               "items_count": 3,
-               "subtotal": 12450.0,
-               "success": True,
-               "order_id": "1340...",
-               "shipment_id": 1336...,
-               "awb_code": "...",
-               "courier_name": "...",
-               "pushed_at": "2026-..."
-             },
-             ...
-           ]
-        }
-
-    If a single shipment fails the others still go through; failed ones
-    carry `success: False` and an `error` field. The overall envelope's
-    `success` is True if at least one shipment succeeded.
+    `only_seller_ids` (optional): if provided, ONLY these suppliers'
+    shipments are pushed. Everything else is left alone. Used by the
+    admin picker UI so the operator chooses which slices to push.
     """
     items = order.get("items", []) or []
     if not items:
         return {"success": False, "error": "Order has no items"}
+
+    # Normalize filter — empty/None means "no filter, push everything"
+    filter_ids = None
+    if only_seller_ids is not None:
+        filter_ids = {str(s).strip() for s in only_seller_ids if str(s).strip()}
+        if not filter_ids:
+            return {"success": False, "error": "No suppliers selected"}
 
     # Group items by seller_id (preserving insertion order for stable suffixes)
     seller_groups: dict = {}
@@ -1232,9 +1219,17 @@ async def create_shiprocket_shipments_multi(order: dict) -> dict:
             seller_order.append(sid)
         seller_groups[sid].append(it)
 
-    # Single-supplier short-circuit — no suffix, behaves exactly like the
-    # legacy single-shipment push so nothing existing breaks.
-    if len(seller_order) == 1:
+    # Apply selection filter
+    if filter_ids is not None:
+        seller_order = [sid for sid in seller_order if sid in filter_ids]
+        if not seller_order:
+            return {"success": False, "error": "Selected suppliers not found on this order"}
+
+    # Single-supplier short-circuit (only when there's truly one supplier overall,
+    # NOT when the filter narrows to one — picker-driven push always uses suffixes
+    # so existing SR records keep their unique reference IDs).
+    use_legacy_single = (filter_ids is None and len(seller_order) == 1)
+    if use_legacy_single:
         only_sid = seller_order[0]
         seller_doc = None
         if only_sid and only_sid != "_unknown":
@@ -1311,17 +1306,35 @@ async def create_shiprocket_shipments_multi(order: dict) -> dict:
 #  orders that aren't on the auto-push path, etc.)
 # ────────────────────────────────────────────────────────────────────
 @router.post("/admin/{order_id}/push-to-shiprocket")
-async def admin_push_to_shiprocket(order_id: str, force: bool = False):
-    """Admin-only — manually push an order to Shiprocket. Idempotent by
-    default: re-pushing an already-pushed order returns the existing
-    Shiprocket IDs unless `force=true` is passed (which creates a new SR
-    shipment — useful only if the original SR record was deleted).
+async def admin_push_to_shiprocket(
+    order_id: str,
+    force: bool = False,
+    payload: Optional[dict] = Body(default=None),
+):
+    """Admin-only — manually push an order to Shiprocket.
 
-    Multi-supplier orders create one Shiprocket shipment per seller.
-    The summary is persisted on `order.shiprocket_shipments[]` and the
-    first shipment's IDs are mirrored to the top-level fields for
-    backward compatibility with the existing UI / webhook handlers.
+    Body (optional):
+      {
+        "seller_ids": ["...", "..."]   // only push these supplier shipments
+      }
+
+    Behavior:
+      • Idempotent by default: re-pushing returns the existing Shiprocket
+        IDs UNLESS `force=true` is passed.
+      • If `seller_ids` is provided, ONLY those supplier shipments are
+        pushed. Already-pushed shipments in the same order remain
+        untouched in `shiprocket_shipments[]` (we merge by seller_id).
+      • Multi-supplier orders without `seller_ids` push every supplier
+        in one go (legacy behaviour).
     """
+    selected_seller_ids: Optional[List[str]] = None
+    if payload and isinstance(payload, dict):
+        raw = payload.get("seller_ids")
+        if isinstance(raw, list):
+            selected_seller_ids = [str(s).strip() for s in raw if str(s).strip()]
+            if not selected_seller_ids:
+                raise HTTPException(status_code=400, detail="seller_ids is empty")
+
     order = await db.orders.find_one(
         {"$or": [{"id": order_id}, {"order_number": order_id}]},
         {"_id": 0},
@@ -1329,9 +1342,12 @@ async def admin_push_to_shiprocket(order_id: str, force: bool = False):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    # Short-circuit if already pushed (multi-supplier — check the array first)
     existing_shipments = order.get("shiprocket_shipments") or []
-    if not force and (existing_shipments or order.get("shiprocket_order_id")):
+
+    # Short-circuit ONLY if no picker and not forcing:
+    # - selected_seller_ids = None means "push all suppliers" — the picker
+    #   case always wants to attempt the named suppliers regardless.
+    if not force and selected_seller_ids is None and (existing_shipments or order.get("shiprocket_order_id")):
         return {
             "success": True,
             "already_pushed": True,
@@ -1342,16 +1358,33 @@ async def admin_push_to_shiprocket(order_id: str, force: bool = False):
             "message": "Order is already in Shiprocket",
         }
 
-    multi_result = await create_shiprocket_shipments_multi(order)
+    # Block re-pushing already-pushed suppliers unless force=true
+    if selected_seller_ids and not force and existing_shipments:
+        already_ok = {s.get("seller_id") for s in existing_shipments if s.get("success")}
+        blocked = [sid for sid in selected_seller_ids if sid in already_ok]
+        if blocked:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{len(blocked)} supplier(s) already pushed — toggle 'force re-push' to create duplicates",
+            )
+
+    multi_result = await create_shiprocket_shipments_multi(order, only_seller_ids=selected_seller_ids)
     if not multi_result.get("success"):
-        # All shipments failed — surface the underlying error.
         raise HTTPException(
             status_code=502,
             detail=multi_result.get("error") or "Shiprocket push failed",
         )
 
-    shipments = multi_result["shipments"]
-    first_ok = next((s for s in shipments if s["success"]), shipments[0])
+    new_shipments = multi_result["shipments"]
+
+    # MERGE new shipments into existing ones (by seller_id) so the picker
+    # path doesn't wipe out previously successful supplier shipments.
+    merged_by_sid: dict = {s.get("seller_id", ""): s for s in existing_shipments}
+    for s in new_shipments:
+        merged_by_sid[s.get("seller_id", "")] = s  # overwrite — newer push wins
+    shipments = list(merged_by_sid.values())
+
+    first_ok = next((s for s in shipments if s.get("success")), shipments[0])
 
     set_fields = {
         "shiprocket_shipments": shipments,
@@ -1370,21 +1403,24 @@ async def admin_push_to_shiprocket(order_id: str, force: bool = False):
         set_fields["courier_name"] = first_ok["courier_name"]
 
     await db.orders.update_one({"id": order["id"]}, {"$set": set_fields})
+    new_ok = sum(1 for s in new_shipments if s["success"])
     logger.info(
         f"[shiprocket] manual push · order={order.get('order_number')} "
-        f"shipments={multi_result['count']} ok={sum(1 for s in shipments if s['success'])}"
+        f"requested={len(new_shipments)} new_ok={new_ok} "
+        f"{'picker' if selected_seller_ids else 'all'} force={force}"
     )
 
     return {
         "success": True,
         "already_pushed": False,
-        "count": multi_result["count"],
-        "shipments": shipments,
+        "count": len(new_shipments),
+        "shipments": shipments,  # full merged list — UI shows the complete picture
+        "pushed_in_this_call": new_shipments,
         "shiprocket_order_id": first_ok.get("order_id"),
         "shipment_id": first_ok.get("shipment_id"),
         "awb_code": first_ok.get("awb_code") or "",
         "courier_name": first_ok.get("courier_name") or "",
-        "message": f"Pushed {sum(1 for s in shipments if s['success'])}/{multi_result['count']} shipments to Shiprocket",
+        "message": f"Pushed {new_ok}/{len(new_shipments)} shipment{'s' if len(new_shipments) > 1 else ''}",
     }
 
 
