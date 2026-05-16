@@ -15,6 +15,56 @@ export default function MAccount() {
   const [saving, setSaving] = useState(false);
   const [gstVerified, setGstVerified] = useState(false);
   const [gstVerifying, setGstVerifying] = useState(false);
+  // Email-change flow state
+  const [showEmailChange, setShowEmailChange] = useState(false);
+  const [emailChangeStage, setEmailChangeStage] = useState("new"); // 'new' | 'otp'
+  const [newEmailInput, setNewEmailInput] = useState("");
+  const [otpInput, setOtpInput] = useState("");
+  const [emailChangeBusy, setEmailChangeBusy] = useState(false);
+
+  const API_URL = process.env.REACT_APP_BACKEND_URL;
+
+  const requestEmailChangeOtp = async () => {
+    const ne = newEmailInput.trim().toLowerCase();
+    if (!ne || !ne.includes("@")) { toast.error("Enter a valid email"); return; }
+    setEmailChangeBusy(true);
+    try {
+      const r = await fetch(`${API_URL}/api/customer/email-change/request-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_email: ne }),
+      });
+      const data = await r.json();
+      if (!r.ok) { toast.error(data?.detail || "Couldn't send code"); setEmailChangeBusy(false); return; }
+      toast.success("Code sent to " + ne);
+      setEmailChangeStage("otp");
+    } catch { toast.error("Network error. Try again."); }
+    setEmailChangeBusy(false);
+  };
+
+  const verifyEmailChange = async () => {
+    if (otpInput.length !== 6) { toast.error("Enter the 6-digit code"); return; }
+    setEmailChangeBusy(true);
+    try {
+      const r = await fetch(`${API_URL}/api/customer/email-change/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_email: newEmailInput.trim().toLowerCase(), otp: otpInput }),
+      });
+      const data = await r.json();
+      if (!r.ok) { toast.error(data?.detail || "Couldn't verify"); setEmailChangeBusy(false); return; }
+      toast.success("Email updated successfully");
+      // Persist new token + customer
+      localStorage.setItem("lf_customer_token", data.token);
+      updateCustomer(data.customer);
+      setForm((f) => ({ ...f, email: data.customer.email }));
+      setShowEmailChange(false);
+      setEmailChangeStage("new");
+      setNewEmailInput("");
+      setOtpInput("");
+    } catch { toast.error("Network error. Try again."); }
+    setEmailChangeBusy(false);
+  };
 
   // Phone-only accounts get a synthetic email — we detect and handle them
   // the same way the desktop does (prompt to add a real email).
@@ -334,10 +384,23 @@ export default function MAccount() {
           </div>
         )}
 
-        <FieldLabel style={{ marginTop: 12 }}>Email{isPhoneOnly ? " · add one to receive invoices" : ""}</FieldLabel>
-        <Input value={form.email} onChange={(v) => setForm({ ...form, email: v })} placeholder="you@company.com" type="email" error={errors.email} data-testid="m-account-email" />
-        {form.email && (customer?.email || "").toLowerCase() !== form.email.toLowerCase() && !isPhoneOnly && (
-          <p className="m-caption" style={{ marginTop: 6 }}>Changing email will sign you out — log in again with the new one.</p>
+        <FieldLabel style={{ marginTop: 12 }}>
+          Email{isPhoneOnly ? " · add one to receive invoices" : ""}
+          {!isPhoneOnly && customer?.email && (
+            <button
+              type="button"
+              onClick={() => setShowEmailChange(true)}
+              className="m-link"
+              style={{ marginLeft: 8, fontSize: 11, color: "var(--m-primary)", fontWeight: 600, textDecoration: "underline" }}
+              data-testid="m-change-email-btn"
+            >
+              Change email
+            </button>
+          )}
+        </FieldLabel>
+        <Input value={form.email} onChange={(v) => setForm({ ...form, email: v })} placeholder="you@company.com" type="email" error={errors.email} data-testid="m-account-email" disabled={!isPhoneOnly && !!customer?.email} />
+        {form.email && (customer?.email || "").toLowerCase() !== form.email.toLowerCase() && !isPhoneOnly && customer?.email && (
+          <p className="m-caption" style={{ marginTop: 6 }}>To change your email, tap "Change email" above — we'll verify the new address.</p>
         )}
 
         <FieldLabel style={{ marginTop: 12 }}>Full name *</FieldLabel>
@@ -363,6 +426,62 @@ export default function MAccount() {
             <Input value={form.pincode} onChange={(v) => setForm({ ...form, pincode: v })} placeholder="6-digit" inputMode="numeric" error={errors.pincode} />
           </div>
         </div>
+      </BottomSheet>
+
+      {/* Change-email Bottom Sheet (OTP-verified) */}
+      <BottomSheet
+        open={showEmailChange}
+        onClose={() => { setShowEmailChange(false); setEmailChangeStage("new"); setNewEmailInput(""); setOtpInput(""); }}
+        title={emailChangeStage === "new" ? "Change your email" : "Enter the 6-digit code"}
+        footer={
+          <button
+            type="button"
+            className="m-btn m-btn-primary"
+            style={{ width: "100%" }}
+            disabled={emailChangeBusy}
+            onClick={emailChangeStage === "new" ? requestEmailChangeOtp : verifyEmailChange}
+            data-testid="m-email-change-submit"
+          >
+            {emailChangeBusy ? (emailChangeStage === "new" ? "Sending…" : "Verifying…") : (emailChangeStage === "new" ? "Send code" : "Verify & change")}
+          </button>
+        }
+      >
+        {emailChangeStage === "new" ? (
+          <>
+            <p className="m-caption" style={{ marginBottom: 12 }}>
+              We'll send a 6-digit code to your <strong>new</strong> email address. Once verified, your login email will be updated everywhere.
+            </p>
+            <FieldLabel>Current email</FieldLabel>
+            <div className="m-card" style={{ padding: "12px", border: "1px solid var(--m-border)", background: "var(--m-bg)", marginBottom: 12 }}>
+              <span style={{ fontSize: 14, color: "var(--m-ink-3)" }}>{customer?.email}</span>
+            </div>
+            <FieldLabel>New email *</FieldLabel>
+            <Input value={newEmailInput} onChange={setNewEmailInput} placeholder="new@brand.com" type="email" data-testid="m-email-change-new" />
+          </>
+        ) : (
+          <>
+            <p className="m-caption" style={{ marginBottom: 12 }}>
+              We've sent a 6-digit code to <strong>{newEmailInput}</strong>. Enter it below.
+            </p>
+            <FieldLabel>Verification code</FieldLabel>
+            <Input
+              value={otpInput}
+              onChange={(v) => setOtpInput(v.replace(/\D/g, "").slice(0, 6))}
+              placeholder="123456"
+              inputMode="numeric"
+              type="tel"
+              data-testid="m-email-change-otp"
+            />
+            <button
+              type="button"
+              onClick={() => { setEmailChangeStage("new"); setOtpInput(""); }}
+              className="m-link"
+              style={{ marginTop: 10, fontSize: 12, color: "var(--m-primary)", textDecoration: "underline", border: "none", background: "transparent", padding: 0, cursor: "pointer" }}
+            >
+              Use a different email
+            </button>
+          </>
+        )}
       </BottomSheet>
     </div>
   );

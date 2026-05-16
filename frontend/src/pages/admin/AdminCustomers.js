@@ -78,6 +78,36 @@ const AdminCustomers = () => {
   const [form, setForm] = useState(EMPTY_FORM);
   const [creating, setCreating] = useState(false);
   const [gstVerifying, setGstVerifying] = useState(false);
+  // Email-change modal state
+  const [emailEditOpen, setEmailEditOpen] = useState(false);
+  const [emailEditForm, setEmailEditForm] = useState({ new_email: "", reason: "" });
+  const [emailEditBusy, setEmailEditBusy] = useState(false);
+
+  const handleAdminChangeEmail = async () => {
+    if (!detail?.customer?.id) return;
+    const ne = emailEditForm.new_email.trim().toLowerCase();
+    if (!ne || !ne.includes("@")) { toast.error("Enter a valid email"); return; }
+    if (ne === (detail.customer.email || "").toLowerCase()) { toast.error("That's already the current email"); return; }
+    setEmailEditBusy(true);
+    try {
+      const token = localStorage.getItem("locofast_token");
+      const r = await fetch(`${API_URL}/api/admin/customers/${detail.customer.id}/email`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_email: ne, reason: emailEditForm.reason }),
+      });
+      const data = await r.json();
+      if (!r.ok) { toast.error(data?.detail || "Failed to change email"); setEmailEditBusy(false); return; }
+      toast.success("Email updated. Customer will see this on next login.");
+      setEmailEditOpen(false);
+      // Refresh detail + list
+      setDetail({ ...detail, customer: data.customer });
+      fetchCustomers();
+    } catch {
+      toast.error("Network error. Please try again.");
+    }
+    setEmailEditBusy(false);
+  };
   const [gstVerified, setGstVerified] = useState(false);
   const [gstError, setGstError] = useState("");
 
@@ -381,7 +411,19 @@ const AdminCustomers = () => {
                   <h3 className="font-semibold mb-3">Profile</h3>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-3 text-sm">
                     <div><p className="text-xs uppercase tracking-wide text-gray-500">Name</p><p className="font-medium mt-0.5">{detail.customer.name || "—"}</p></div>
-                    <div><p className="text-xs uppercase tracking-wide text-gray-500">Email</p><p className="font-medium mt-0.5 break-all">{detail.customer.email || "—"}</p></div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-2">
+                        Email
+                        <button
+                          onClick={() => { setEmailEditForm({ new_email: detail.customer.email || "", reason: "" }); setEmailEditOpen(true); }}
+                          className="text-[10px] text-blue-600 hover:text-blue-800 font-medium underline"
+                          data-testid="admin-edit-customer-email"
+                        >
+                          Change
+                        </button>
+                      </p>
+                      <p className="font-medium mt-0.5 break-all">{detail.customer.email || "—"}</p>
+                    </div>
                     <div><p className="text-xs uppercase tracking-wide text-gray-500">Phone</p><p className="font-medium mt-0.5">{detail.customer.phone || "—"}{detail.customer.phone_verified && <CheckCircle2 className="inline w-3.5 h-3.5 ml-1 text-emerald-600" />}</p></div>
                     <div><p className="text-xs uppercase tracking-wide text-gray-500">Company</p><p className="font-medium mt-0.5">{detail.customer.company || "—"}</p></div>
                     <div><p className="text-xs uppercase tracking-wide text-gray-500">GSTIN</p><p className="font-medium mt-0.5 font-mono text-xs">{detail.customer.gstin || "—"}{detail.customer.gst_verified ? <CheckCircle2 className="inline w-3.5 h-3.5 ml-1 text-emerald-600" /> : detail.customer.gstin ? <XCircle className="inline w-3.5 h-3.5 ml-1 text-amber-500" /> : null}</p></div>
@@ -534,6 +576,51 @@ const AdminCustomers = () => {
                 <Button type="submit" disabled={creating} data-testid="cc-submit">{creating ? "Creating…" : "Create customer"}</Button>
               </DialogFooter>
             </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Change-email Dialog (admin instant override) */}
+        <Dialog open={emailEditOpen} onOpenChange={setEmailEditOpen}>
+          <DialogContent className="max-w-md" data-testid="admin-change-email-modal">
+            <DialogHeader>
+              <DialogTitle>Change customer email</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+                <strong>Warning:</strong> The customer's active sessions will be invalidated and they'll have to log in again. A courtesy email will be sent to the OLD address.
+              </div>
+              <div>
+                <Label className="text-xs">Current email</Label>
+                <p className="font-mono text-sm text-gray-600 break-all">{detail?.customer?.email}</p>
+              </div>
+              <div>
+                <Label htmlFor="aec-new" className="text-xs">New email *</Label>
+                <Input
+                  id="aec-new"
+                  data-testid="admin-change-email-new"
+                  type="email"
+                  value={emailEditForm.new_email}
+                  onChange={(e) => setEmailEditForm({ ...emailEditForm, new_email: e.target.value })}
+                  placeholder="new@brand.com"
+                />
+              </div>
+              <div>
+                <Label htmlFor="aec-reason" className="text-xs">Reason (for audit log)</Label>
+                <Input
+                  id="aec-reason"
+                  data-testid="admin-change-email-reason"
+                  value={emailEditForm.reason}
+                  onChange={(e) => setEmailEditForm({ ...emailEditForm, reason: e.target.value })}
+                  placeholder="e.g. Customer requested via support ticket #1234"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setEmailEditOpen(false)} disabled={emailEditBusy}>Cancel</Button>
+              <Button type="button" disabled={emailEditBusy} onClick={handleAdminChangeEmail} data-testid="admin-change-email-submit">
+                {emailEditBusy ? "Updating…" : "Change email"}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

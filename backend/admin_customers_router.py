@@ -209,3 +209,115 @@ async def create_customer(
     await db.customers.insert_one(doc)
     doc.pop("_id", None)
     return {"success": True, "customer_id": new_id, "customer": doc}
+
+
+
+class AdminEmailChangePayload(BaseModel):
+    new_email: EmailStr
+    reason: str = ""
+
+
+@router.put("/{customer_id}/email")
+async def admin_change_customer_email(
+    customer_id: str,
+    payload: AdminEmailChangePayload,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Admin-only — change a customer's login email instantly.
+
+    Side-effects mirror the customer-side OTP flow:
+      • Hard-block on duplicate (another customer already owns the email)
+      • Propagate to orders.customer.email, customer_queries.email,
+        brand_invoices.customer_email, shared_carts.customer_email
+      • Append-only audit on `customers.email_change_history[]`
+      • Courtesy email to the OLD address so the customer knows
+
+    NOTE: The customer's existing JWTs become invalid since the email
+    they encode no longer matches the customer's record. They will be
+    bounced to login next time they hit an authed endpoint.
+    """
+    new_email = str(payload.new_email).strip().lower()
+
+    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    old_email = (customer.get("email") or "").lower()
+    if old_email == new_email:
+        raise HTTPException(status_code=400, detail="That's already this customer's email")
+
+    # Hard block on duplicate
+    other = await db.customers.find_one({"email": new_email}, {"_id": 0, "id": 1})
+    if other and other.get("id") != customer_id:
+        raise HTTPException(status_code=409, detail="This email is already linked to another customer")
+
+    now = datetime.now(timezone.utc)
+    audit_entry = {
+        "from": old_email,
+        "to": new_email,
+        "at": now.isoformat(),
+        "by_admin": admin.get("email", ""),
+        "reason": payload.reason or "",
+    }
+
+    await db.customers.update_one(
+        {"id": customer_id},
+        {
+            "$set": {
+                "email": new_email,
+                "updated_at": now.isoformat(),
+            },
+            "$push": {
+                "email_change_history": audit_entry,
+                "previous_emails": old_email,
+            },
+        },
+    )
+
+    # Propagate to denormalised email refs across collections
+    await db.orders.update_many(
+        {"customer.email": old_email},
+        {"$set": {"customer.email": new_email, "updated_at": now.isoformat()}},
+    )
+    collection_names = await db.list_collection_names()
+    if "customer_queries" in collection_names:
+        await db.customer_queries.update_many(
+            {"email": old_email},
+            {"$set": {"email": new_email}},
+        )
+    if "brand_invoices" in collection_names:
+        await db.brand_invoices.update_many(
+            {"customer_email": old_email},
+            {"$set": {"customer_email": new_email}},
+        )
+    if "shared_carts" in collection_names:
+        await db.shared_carts.update_many(
+            {"customer_email": old_email},
+            {"$set": {"customer_email": new_email}},
+        )
+
+    # Courtesy email to old address (best-effort, never blocks)
+    try:
+        import os
+        import resend  # type: ignore
+        api_key = os.environ.get("RESEND_API_KEY")
+        if api_key:
+            resend.api_key = api_key
+            sender = os.environ.get("SENDER_EMAIL", "noreply@locofast.com")
+            resend.Emails.send({
+                "from": f"Locofast <{sender}>",
+                "to": [old_email],
+                "subject": "Your Locofast login email has been updated",
+                "html": (
+                    f"<div style='font-family:Inter,sans-serif;max-width:480px;margin:auto;padding:32px'>"
+                    f"<h2 style='font-size:20px;font-weight:600;margin:0 0 8px'>Your login email was updated</h2>"
+                    f"<p style='color:#475569'>Your Locofast account login email has been changed to <strong>{new_email}</strong> by Locofast support.</p>"
+                    f"<p style='color:#475569'>If this wasn't expected, please reply to this email immediately.</p>"
+                    f"</div>"
+                ),
+            })
+    except Exception:
+        pass
+
+    fresh = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    return {"success": True, "customer": fresh, "audit": audit_entry}

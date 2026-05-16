@@ -167,6 +167,188 @@ async def send_otp(data: SendOTPRequest):
     return {"message": "OTP sent to your email", "email": email}
 
 
+class EmailChangeRequestOTP(BaseModel):
+    new_email: EmailStr
+
+
+class EmailChangeVerify(BaseModel):
+    new_email: EmailStr
+    otp: str
+
+
+@router.post("/email-change/request-otp")
+async def request_email_change_otp(data: EmailChangeRequestOTP, request: Request):
+    """Step 1 of the email-change flow.
+    Customer enters their NEW email; we send a 6-digit OTP to that new
+    address. They confirm the code in step 2.
+
+    Guards:
+      • Hard-block if another customer already owns the new email.
+      • Hard-block if the OTP is requested for the same email they're
+        already on (no-op).
+      • Same per-email rate limit as the standard login OTP.
+    """
+    payload = get_current_customer(request)
+    new_email = str(data.new_email).strip().lower()
+    if new_email == payload["email"].lower():
+        raise HTTPException(status_code=400, detail="That's already your email")
+
+    # Hard block on duplicate
+    existing = await db.customers.find_one({"email": new_email}, {"_id": 0, "id": 1})
+    if existing and existing.get("id") != payload.get("sub"):
+        raise HTTPException(status_code=409, detail="This email is already linked to another account")
+
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(minutes=OTP_RATE_LIMIT)).isoformat()
+    recent_count = await db.customer_otps.count_documents({
+        "email": new_email,
+        "created_at": {"$gte": cutoff},
+        "purpose": "email_change",
+    })
+    if recent_count >= OTP_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a few minutes.")
+
+    otp = str(random.randint(100000, 999999))
+    await db.customer_otps.insert_one({
+        "email": new_email,
+        "otp": otp,
+        "used": False,
+        "purpose": "email_change",
+        "old_email": payload["email"].lower(),
+        "customer_id": payload.get("sub", ""),
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=OTP_EXPIRY_MINUTES)).isoformat(),
+    })
+
+    if RESEND_API_KEY:
+        try:
+            await asyncio.to_thread(resend.Emails.send, {
+                "from": f"Locofast <{SENDER_EMAIL}>",
+                "to": [new_email],
+                "subject": f"Confirm your new Locofast email: {otp}",
+                "html": f"""
+                <div style="font-family: Inter, system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 24px;">
+                    <h2 style="font-size: 24px; font-weight: 600; margin: 0 0 8px;">Confirm your new email</h2>
+                    <p style="color: #64748b; margin: 0 0 32px;">You requested to change your Locofast login email to <strong>{new_email}</strong>. Enter this code in the app to finish:</p>
+                    <div style="background: #f8fafc; border: 2px solid #e2e8f0; border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 32px;">
+                        <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #1e293b;">{otp}</span>
+                    </div>
+                    <p style="color: #94a3b8; font-size: 14px; margin: 0;">This code expires in {OTP_EXPIRY_MINUTES} minutes. If you didn't request this, you can safely ignore this email — your account stays as-is.</p>
+                </div>
+                """,
+            })
+            logger.info(f"[email-change] OTP sent to {new_email} for customer {payload.get('email')}")
+        except Exception as e:
+            logger.error(f"[email-change] OTP send failed: {e}")
+            raise HTTPException(status_code=500, detail="Couldn't send verification email. Try again shortly.")
+    else:
+        logger.warning(f"[email-change] No Resend API key — OTP for {new_email}: {otp}")
+
+    return {"success": True, "message": f"Verification code sent to {new_email}"}
+
+
+@router.post("/email-change/verify")
+async def verify_email_change_otp(data: EmailChangeVerify, request: Request):
+    """Step 2 of the email-change flow.
+    Customer enters the OTP they received on the NEW address. On
+    success: update `customers.email` everywhere it's referenced and
+    issue a fresh JWT carrying the new email.
+    """
+    payload = get_current_customer(request)
+    new_email = str(data.new_email).strip().lower()
+    otp = (data.otp or "").strip()
+    if not otp:
+        raise HTTPException(status_code=400, detail="OTP is required")
+
+    now = datetime.now(timezone.utc)
+    otp_doc = await db.customer_otps.find_one({
+        "email": new_email,
+        "otp": otp,
+        "used": False,
+        "purpose": "email_change",
+        "expires_at": {"$gte": now.isoformat()},
+    })
+    if not otp_doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+    if otp_doc.get("customer_id") and otp_doc["customer_id"] != payload.get("sub"):
+        raise HTTPException(status_code=400, detail="This code belongs to a different account")
+
+    # Final duplicate check (covers race condition since request-otp step)
+    other = await db.customers.find_one({"email": new_email}, {"_id": 0, "id": 1})
+    if other and other.get("id") != payload.get("sub"):
+        raise HTTPException(status_code=409, detail="This email is already linked to another account")
+
+    await db.customer_otps.update_one({"_id": otp_doc["_id"]}, {"$set": {"used": True}})
+
+    old_email = payload["email"].lower()
+    # Update customer doc + propagate to all references
+    current = await db.customers.find_one({"id": payload.get("sub")}, {"_id": 0, "previous_emails": 1}) or {}
+    await db.customers.update_one(
+        {"id": payload.get("sub")},
+        {"$set": {
+            "email": new_email,
+            "updated_at": now.isoformat(),
+            "previous_emails": (current.get("previous_emails") or []) + [old_email],
+        }},
+    )
+    await _propagate_customer_email_change(payload.get("sub"), old_email, new_email)
+
+    # Send courtesy notice to OLD email so the customer knows the change happened
+    if RESEND_API_KEY:
+        try:
+            await asyncio.to_thread(resend.Emails.send, {
+                "from": f"Locofast <{SENDER_EMAIL}>",
+                "to": [old_email],
+                "subject": "Your Locofast login email has been changed",
+                "html": f"""
+                <div style="font-family: Inter, system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 24px;">
+                    <h2 style="font-size: 22px; font-weight: 600;">Your login email was changed</h2>
+                    <p style="color: #475569;">Your Locofast account login email has been updated to <strong>{new_email}</strong>.</p>
+                    <p style="color: #475569;">If this wasn't you, please reply to this email immediately.</p>
+                </div>
+                """,
+            })
+        except Exception as e:
+            logger.warning(f"[email-change] courtesy email to old address failed: {e}")
+
+    # Issue a fresh JWT carrying the new email
+    new_token = create_customer_token(new_email, payload.get("sub"), (payload.get("phone") or ""))
+    customer = await db.customers.find_one({"id": payload.get("sub")}, {"_id": 0})
+    logger.info(f"[email-change] {old_email} → {new_email} (customer {payload.get('sub')})")
+    return {"success": True, "token": new_token, "customer": customer}
+
+
+async def _propagate_customer_email_change(customer_id: str, old_email: str, new_email: str) -> None:
+    """Update every collection that pins the customer by email so past
+    orders, RFQs, invoices and audit logs keep working with the new
+    address. Past invoice PDFs (already generated) are untouched.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    # 1. Orders — customer.email is denormalised on every order
+    await db.orders.update_many(
+        {"customer.email": old_email},
+        {"$set": {"customer.email": new_email, "updated_at": now}},
+    )
+    # 2. Customer queries / RFQs
+    if "customer_queries" in await db.list_collection_names():
+        await db.customer_queries.update_many(
+            {"email": old_email},
+            {"$set": {"email": new_email}},
+        )
+    # 3. Brand invoices (raised against this customer's email)
+    if "brand_invoices" in await db.list_collection_names():
+        await db.brand_invoices.update_many(
+            {"customer_email": old_email},
+            {"$set": {"customer_email": new_email}},
+        )
+    # 4. Cart sessions
+    if "shared_carts" in await db.list_collection_names():
+        await db.shared_carts.update_many(
+            {"customer_email": old_email},
+            {"$set": {"customer_email": new_email}},
+        )
+
+
 @router.post("/verify-otp")
 async def verify_otp(data: VerifyOTPRequest):
     """Verify OTP and return JWT token. Creates customer profile if new."""
