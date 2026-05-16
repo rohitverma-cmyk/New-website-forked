@@ -10,9 +10,15 @@ const HIDE_TOPBAR = [
   "/m/login",
   "/m/fabric/",
 ];
+// Pages that have their own sticky bottom action bar — hiding the tab bar
+// avoids two stacked bottom bars and gives the page full vertical real-estate.
 const HIDE_TABS = [
   "/m/login",
   "/m/checkout",
+  "/m/fabric/",
+  "/m/order-confirmation/",
+  "/m/orders/", // /m/orders/:id  (the listing /m/orders keeps tabs)
+  "/m/rfq/",    // /m/rfq/:id     (the listing /m/rfq keeps tabs)
 ];
 
 export default function MobileLayout() {
@@ -28,8 +34,16 @@ export default function MobileLayout() {
     };
   }, []);
 
+  // Hide tabs if route matches any prefix AND has additional path segments.
+  // (A bare `/m/orders` listing keeps the tabs; `/m/orders/<id>` hides them.)
   const hideTopbar = HIDE_TOPBAR.some((p) => location.pathname.startsWith(p));
-  const hideTabs = HIDE_TABS.some((p) => location.pathname.startsWith(p));
+  const hideTabs = HIDE_TABS.some((p) => {
+    if (p.endsWith("/")) {
+      // prefix rule — must have a trailing segment beyond the prefix
+      return location.pathname.startsWith(p) && location.pathname.length > p.length;
+    }
+    return location.pathname === p || location.pathname.startsWith(p + "/");
+  });
 
   return (
     <div className="m-app">

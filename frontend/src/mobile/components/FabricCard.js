@@ -23,7 +23,7 @@ export default function FabricCard({ fabric, variant = "rail" }) {
   const url = getFabricUrl(fabric);
 
   // "rail" variant: 78% viewport width, horizontal scroll. "grid" variant: full width, vertical list.
-  const widthStyle = variant === "rail" ? { width: "78vw", maxWidth: 320 } : { width: "100%" };
+  const widthStyle = variant === "rail" ? { width: "min(78vw, 280px)", maxWidth: 320 } : { width: "100%" };
 
   // Use a real <Link> (anchor tag) rather than a <button onClick={navigate()}>.
   // Anchors give us native iOS click handling, long-press → "Open in new
@@ -116,7 +116,7 @@ export default function FabricCard({ fabric, variant = "rail" }) {
 }
 
 export function FabricCardSkeleton({ variant = "rail" }) {
-  const w = variant === "rail" ? "78vw" : "100%";
+  const w = variant === "rail" ? "min(78vw, 280px)" : "100%";
   return (
     <div className="m-card" style={{ width: w, maxWidth: 320, overflow: "hidden" }}>
       <div className="m-skeleton" style={{ height: variant === "rail" ? 160 : 200, borderRadius: 0 }} />

@@ -100,10 +100,49 @@ const LogoCard = ({ brand }) => {
   );
 };
 
-const BrandTicker = ({ compact = false }) => {
+const BrandTicker = ({ compact = false, mobile = false }) => {
   // Duplicate the list so the marquee animation loops seamlessly
   // (single set would create a visible jump at the end).
   const doubled = useMemo(() => [...BRANDS, ...BRANDS], []);
+
+  // Mobile variant — slim, no big heading, smaller logo cards.
+  if (mobile) {
+    return (
+      <div className="relative w-full overflow-hidden py-4 bg-white border-y border-gray-100" data-testid="brand-ticker-section">
+        <p className="text-center text-[10px] font-semibold tracking-[0.18em] text-[#2563EB] uppercase mb-3 px-4">
+          Trusted by global brand networks
+        </p>
+        <div className="relative">
+          <div className="pointer-events-none absolute inset-y-0 left-0 w-10 bg-gradient-to-r from-white to-transparent z-10" />
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-10 bg-gradient-to-l from-white to-transparent z-10" />
+          <div className="flex animate-marquee" style={{ width: "max-content" }}>
+            {doubled.map((b, i) => (
+              <div
+                key={`${b.slug}-${i}`}
+                className="flex-shrink-0 w-28 h-14 mx-2 bg-white rounded-lg border border-gray-100 flex items-center justify-center px-3"
+                data-testid={`brand-mini-${b.slug}`}
+              >
+                {buildLogoUrl(b.domain) ? (
+                  <img src={buildLogoUrl(b.domain)} alt={b.name} loading="lazy" className="max-h-8 max-w-full object-contain grayscale" />
+                ) : (
+                  <span className="text-[13px] font-extrabold whitespace-nowrap" style={{ color: b.color, fontWeight: b.weight, fontStyle: b.italic ? "italic" : "normal", letterSpacing: b.tracking || "-0.01em" }}>
+                    {b.name}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+        <style>{`
+          @keyframes locofast-marquee {
+            0%   { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+          }
+          .animate-marquee { animation: locofast-marquee 35s linear infinite; }
+        `}</style>
+      </div>
+    );
+  }
 
   // Compact mode = embedded inside the hero (dark gradient bg). Renders
   // a minimal marquee with no section wrapper, no title, smaller cards.

@@ -124,7 +124,7 @@ export default function MHome() {
        * mobile-issue list). We reuse the shared component; the marquee
        * animation handles overflow on narrow viewports automatically. */}
       <section style={{ marginTop: 22 }}>
-        <BrandTicker />
+        <BrandTicker mobile />
       </section>
 
       {/* Categories rail */}

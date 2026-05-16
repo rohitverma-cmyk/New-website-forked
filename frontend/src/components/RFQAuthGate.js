@@ -289,12 +289,14 @@ export default function RFQAuthGate({ children, dense = false, title = "Sign in 
       {/* Auth card — bottom-sheet on mobile (`dense`), centered on desktop. */}
       {dense ? (
         <>
-          <style>{`@keyframes lf-sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }`}</style>
+          <style>{`@keyframes lf-sheet-up { from { transform: translateX(-50%) translateY(100%); } to { transform: translateX(-50%) translateY(0); } }`}</style>
           <div
             style={{
               position: "fixed",
-              left: 0,
-              right: 0,
+              left: "50%",
+              transform: "translateX(-50%)",
+              width: "100%",
+              maxWidth: 480,
               bottom: 0,
               zIndex: 100,
               background: "#fff",
