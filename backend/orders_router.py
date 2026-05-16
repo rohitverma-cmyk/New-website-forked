@@ -1095,6 +1095,45 @@ async def create_shiprocket_shipment(order: dict, items_override: Optional[List[
         if not pickup_nickname:
             pickup_nickname = await _ensure_vendor_pickup_nickname(seller_doc or {})
 
+        # ── Validate pickup nickname against Shiprocket's actual list ──
+        # SR happily returns 200 with `order_id: null` when the nickname doesn't
+        # match any registered pickup location (case-sensitive, whitespace
+        # sensitive). Pre-flight the call so admins get a precise error
+        # ("you sent X, here are the N options actually registered") instead
+        # of the cryptic "SR# null" loop.
+        try:
+            from shiprocket.services.pickup import PickupService  # type: ignore
+            headers_for_list = await auth_service.get_auth_headers_async()
+            async with httpx.AsyncClient(timeout=20) as client:
+                pl_service = PickupService(client, headers_for_list)
+                pl_response = await pl_service.get_pickup_locations()
+            sr_addrs = (pl_response or {}).get("data", {}).get("shipping_address", []) or []
+            sr_nicknames = [str(a.get("pickup_location") or "").strip() for a in sr_addrs]
+            sr_nicknames_norm = {n.lower(): n for n in sr_nicknames if n}
+            sent_norm = (pickup_nickname or "").strip().lower()
+            if sr_nicknames_norm and sent_norm not in sr_nicknames_norm:
+                # See if a near-match exists (case/whitespace insensitive)
+                close = next((n for k, n in sr_nicknames_norm.items() if k.replace(" ", "") == sent_norm.replace(" ", "")), None)
+                hint = (
+                    f"\n→ Closest registered match in Shiprocket: '{close}'. Use exactly this string on the seller's pickup_addresses[].shiprocket_nickname."
+                    if close else
+                    f"\n→ Available nicknames in your Shiprocket account ({len(sr_nicknames)}): {', '.join(sr_nicknames[:8])}{('...' if len(sr_nicknames) > 8 else '')}"
+                )
+                err = (
+                    f"Pickup nickname '{pickup_nickname}' is NOT registered in Shiprocket for "
+                    f"seller_id={seller_id or '(none)'}. Shiprocket nicknames are case + whitespace sensitive.{hint}"
+                )
+                logger.error(f"[shiprocket] pickup mismatch for {order.get('order_number')}: sent='{pickup_nickname}' available={sr_nicknames[:10]}")
+                return {"success": False, "error": err, "available_pickup_nicknames": sr_nicknames}
+            # Use the SR-side casing if there's a case-only diff
+            if sent_norm in sr_nicknames_norm and sr_nicknames_norm[sent_norm] != pickup_nickname:
+                logger.info(f"[shiprocket] using SR-side cased nickname '{sr_nicknames_norm[sent_norm]}' (was '{pickup_nickname}')")
+                pickup_nickname = sr_nicknames_norm[sent_norm]
+        except Exception as e:
+            # If the pre-flight fails for any reason (network, auth), don't
+            # block the push — fall through and let SR itself handle it.
+            logger.warning(f"[shiprocket] pickup list pre-flight failed (non-fatal): {e}")
+
         # ── Resolve shipping address (Ship-To) ──
         # Use the explicit ship_to when present, else fall back to billing.
         ship_name = ship_to.get("name") or customer.get("name", "") or "Customer"
@@ -1174,13 +1213,18 @@ async def create_shiprocket_shipment(order: dict, items_override: Optional[List[
         sr_oid = result.get("order_id") or result.get("shiprocket_order_id")
         sr_sid = result.get("shipment_id")
         if sr_oid in (None, "", "null", "None") or sr_sid in (None, "", "null", "None"):
+            # Pickup nickname pre-flight passed (it matched Shiprocket's list)
+            # yet SR returned blank. Other root causes at this point:
+            #   • pincode/serviceability — destination not reachable
+            #   • billing/shipping payload validation (e.g. missing phone)
+            #   • the seller's pickup is registered but not VERIFIED in SR
             err = (
-                f"Shiprocket returned a blank shipment for pickup '{pickup_nickname}'. "
-                f"Most likely the pickup nickname is not registered in Shiprocket "
-                f"for seller_id={seller_id or '(none)'}. Add the pickup address in the seller profile "
-                f"and re-push."
+                f"Shiprocket accepted the request but returned a blank shipment for pickup '{pickup_nickname}'. "
+                f"Possible causes: (1) the destination pincode {ship_pin or '?'} isn't serviceable, "
+                f"(2) the pickup is registered but not VERIFIED in your Shiprocket panel (open SR → Settings → Pickup → confirm 'Verified' badge), "
+                f"(3) a missing required field in the order. seller_id={seller_id or '(none)'}."
             )
-            logger.error(f"[shiprocket] null shipment for {order.get('order_number')} pickup={pickup_nickname}: raw={result}")
+            logger.error(f"[shiprocket] blank shipment despite valid pickup for {order.get('order_number')} pickup={pickup_nickname}: raw={result}")
             return {"success": False, "error": err, **result}
 
         return {"success": True, **result}
