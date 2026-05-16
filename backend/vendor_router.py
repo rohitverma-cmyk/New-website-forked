@@ -185,23 +185,42 @@ async def get_current_vendor(credentials: HTTPAuthorizationCredentials = Depends
 
 @router.post("/login")
 async def vendor_login(data: VendorLogin):
-    """Vendor login with email and password"""
+    """Unified vendor login. If the email isn't a seller, falls back to
+    the Supplier Manager table so SMs can sign in from the same screen."""
     seller = await db.sellers.find_one({'contact_email': data.email, 'is_active': True})
-    
+
     if not seller:
+        # Fall back to Supplier Manager auth — same login URL, different role.
+        from supplier_manager_router import try_supplier_manager_login
+        sm_response = await try_supplier_manager_login(data.email, data.password)
+        if sm_response:
+            return sm_response
         raise HTTPException(status_code=401, detail='Invalid email or password')
-    
+
     # Check for password (can be stored as 'password_hash' or 'password')
     password_hash = seller.get('password_hash') or seller.get('password', '')
     if not password_hash:
+        # Vendor record exists but has no password set — still try the SM table
+        # in case the same email is registered there too (rare but supported).
+        from supplier_manager_router import try_supplier_manager_login
+        sm_response = await try_supplier_manager_login(data.email, data.password)
+        if sm_response:
+            return sm_response
         raise HTTPException(status_code=401, detail='Vendor account not set up. Please contact admin.')
-    
+
     if not bcrypt.checkpw(data.password.encode('utf-8'), password_hash.encode('utf-8')):
+        # Vendor password didn't match — last-chance fallback to SM table
+        # (covers the case where a single email is a seller + an SM with different passwords).
+        from supplier_manager_router import try_supplier_manager_login
+        sm_response = await try_supplier_manager_login(data.email, data.password)
+        if sm_response:
+            return sm_response
         raise HTTPException(status_code=401, detail='Invalid email or password')
-    
+
     token = create_vendor_token(seller['id'], data.email)
-    
+
     return {
+        'role': 'vendor',
         'token': token,
         'vendor': VendorResponse(
             id=seller['id'],

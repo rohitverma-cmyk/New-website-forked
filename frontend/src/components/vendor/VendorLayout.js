@@ -1,11 +1,12 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Layers, Package, ShoppingCart, MessageSquare, LogOut, ArrowLeft, IndianRupee } from "lucide-react";
+import { LayoutDashboard, Layers, Package, ShoppingCart, MessageSquare, LogOut, ArrowLeft, IndianRupee, Users } from "lucide-react";
 import { useVendorAuth } from "../../context/VendorAuthContext";
 
 const VendorLayout = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const { vendor, logout } = useVendorAuth();
+  const actingAsSm = JSON.parse(localStorage.getItem("lf_acting_as_sm") || "null");
 
   const navItems = [
     { path: "/vendor", label: "Dashboard", icon: LayoutDashboard },
@@ -17,7 +18,18 @@ const VendorLayout = ({ children }) => {
 
   const handleLogout = () => {
     logout();
+    // Clean any SM impersonation traces too
+    localStorage.removeItem("lf_acting_as_sm");
     navigate("/vendor/login");
+  };
+
+  const exitActingAs = () => {
+    // Drop the impersonation vendor JWT and bounce back to the SM picker.
+    localStorage.removeItem("vendor_token");
+    localStorage.removeItem("vendor_data");
+    localStorage.removeItem("lf_acting_as_sm");
+    logout();
+    navigate("/supplier-manager/vendors");
   };
 
   const isActive = (path) => {
@@ -88,6 +100,23 @@ const VendorLayout = ({ children }) => {
 
       {/* Main Content */}
       <main className="flex-1 overflow-auto">
+        {actingAsSm && (
+          <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center justify-between gap-3" data-testid="sm-acting-banner">
+            <div className="flex items-center gap-2 text-amber-900 text-sm">
+              <Users size={16} className="flex-shrink-0" />
+              <span>
+                You are <strong>acting as {vendor?.company_name || "vendor"}</strong> on behalf of Supplier Manager <strong>{actingAsSm.name || actingAsSm.email}</strong>.
+              </span>
+            </div>
+            <button
+              onClick={exitActingAs}
+              className="text-xs font-medium px-3 py-1.5 rounded-md border border-amber-300 bg-white hover:bg-amber-100 text-amber-900"
+              data-testid="sm-exit-acting"
+            >
+              Switch vendor
+            </button>
+          </div>
+        )}
         {children}
       </main>
     </div>

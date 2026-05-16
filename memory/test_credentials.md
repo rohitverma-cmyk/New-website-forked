@@ -90,6 +90,16 @@ c.admin_otps.update_one({'id': '<otp_request_id>'}, {'$set': {'code_hash': bcryp
 ```
 Then use `123456` as the OTP. Applies to `purpose`: `brand_credit_upload` AND `brand_sample_credit_adjust`.
 
+## Supplier Manager (acts on behalf of mapped vendors)
+- Email: supplier.manager@locofast.com
+- Password: sm@2026
+- Login URL: /vendor/login (unified — same as vendors; backend detects role)
+- After login → /supplier-manager/vendors → pick a vendor to act as
+- Mapped vendors (seed): KALLAM TEXTILES LIMITED (LS-GD6VB), Macrosoft (LS-IQOLO)
+- Admin CRUD: /admin/supplier-managers
+- Permissions: can do everything a vendor can — inventory, RFQ quotes, orders, invoice uploads. The vendor JWT minted via `/api/supplier-manager/impersonate/{seller_id}` carries `acting_as_sm` for audit.
+- Acting-as banner: yellow strip at top of vendor portal + "Switch vendor" pill to return to picker
+
 ## Locofast Support Placeholder
 - Email: support@locofast.com (env: `LOCOFAST_SUPPORT_EMAIL`)
 - Phone: +91 120 4938200 (env: `LOCOFAST_SUPPORT_PHONE`)

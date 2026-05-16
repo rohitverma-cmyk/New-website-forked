@@ -589,6 +589,8 @@ app.include_router(supplier_router)
 app.include_router(orders_router.router)
 app.include_router(email_router.router)
 app.include_router(vendor_router.router)
+from supplier_manager_router import router as supplier_manager_router
+app.include_router(supplier_manager_router)
 app.include_router(coupon_router.router, prefix="/api")
 app.include_router(cloudinary_router.router)
 app.include_router(rfq_router.router)

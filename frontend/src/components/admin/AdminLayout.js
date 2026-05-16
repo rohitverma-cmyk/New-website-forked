@@ -30,6 +30,7 @@ const AdminLayout = ({ children }) => {
     { path: "/admin/articles", label: "Articles", icon: Palette },
     { path: "/admin/categories", label: "Categories", icon: FolderOpen },
     { path: "/admin/sellers", label: "Sellers", icon: Building2 },
+    { path: "/admin/supplier-managers", label: "Supplier Managers", icon: Users },
     { path: "/admin/brands", label: "Enterprises", icon: Briefcase },
     { path: "/admin/account-managers", label: "Acc. Managers", icon: Users },
     { path: "/admin/reviews", label: "Reviews", icon: MessageSquare },
