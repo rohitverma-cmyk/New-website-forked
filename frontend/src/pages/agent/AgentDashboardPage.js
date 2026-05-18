@@ -70,6 +70,18 @@ const AgentDashboardPage = () => {
   const [sharing, setSharing] = useState(false);
   const [dispatchCountry, setDispatchCountry] = useState("india");
   const [usdRate, setUsdRate] = useState(null);
+
+  // "Send invite to customer" modal — opens when an agent taps Share
+  // next to a shared cart. Asks for phone + email, autofills name from
+  // an existing customer record when the phone matches.
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteCart, setInviteCart] = useState(null);
+  const [inviteForm, setInviteForm] = useState({
+    phone: "", email: "", customer_name: "", customer_id: "", phone_normalized: "",
+  });
+  const [inviteLookup, setInviteLookup] = useState({ checking: false, exists: null, message: "" });
+  const [inviteSending, setInviteSending] = useState(false);
+
   // Inline credit-limit checker (India only). Lets the agent confirm
   // a buyer's GSTIN has an approved credit line before sharing the cart.
   const [creditCheck, setCreditCheck] = useState({ gst: "", loading: false, balance: null, company: "", error: "" });
@@ -397,6 +409,114 @@ Locofast Online Services`,
     window.location.href = mailto;
     toast.success("Opening your email client…");
   };
+
+  // ── Server-side WhatsApp + Email invite flow ────────────────────────
+  // Agent enters customer's WhatsApp number → we look it up. If found,
+  // their name auto-fills; if not, the agent has to type the name.
+  // Backend pushes a WhatsApp text via Gupshup AND a Resend email with
+  // the cart link, then stamps the cart with customer info for audit.
+  const openInviteModal = (sc) => {
+    setInviteCart(sc);
+    const prefillEmail = sc.customer_email && !sc.customer_email.endsWith("@phone.locofast.local")
+      ? sc.customer_email : "";
+    setInviteForm({
+      phone: sc.customer_phone || "",
+      email: prefillEmail,
+      customer_name: sc.customer_name || "",
+      customer_id: "",
+      phone_normalized: "",
+    });
+    setInviteLookup({ checking: false, exists: null, message: "" });
+    setInviteOpen(true);
+  };
+
+  // Auto-lookup as the agent finishes typing the phone. We debounce on
+  // the 10-digit boundary so we don't spam the API on every keystroke.
+  const lookupCustomerByPhone = async (phone) => {
+    const cleaned = (phone || "").replace(/\D/g, "");
+    if (cleaned.length < 10) {
+      setInviteLookup({ checking: false, exists: null, message: "" });
+      return;
+    }
+    setInviteLookup({ checking: true, exists: null, message: "" });
+    try {
+      const res = await fetch(`${API}/api/agent/customer-lookup?phone=${encodeURIComponent(phone)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        setInviteLookup({ checking: false, exists: null, message: "Lookup failed" });
+        return;
+      }
+      const d = await res.json();
+      if (!d.valid_phone) {
+        setInviteLookup({ checking: false, exists: false, message: "Enter a valid 10-digit Indian mobile" });
+        return;
+      }
+      if (d.exists) {
+        setInviteForm((p) => ({
+          ...p,
+          customer_name: d.name || p.customer_name,
+          email: p.email || d.email || "",
+          customer_id: d.customer_id || "",
+          phone_normalized: d.normalized_phone || "",
+        }));
+        setInviteLookup({ checking: false, exists: true, message: `Customer on file: ${d.name || "(unnamed)"}` });
+      } else {
+        setInviteForm((p) => ({ ...p, customer_id: "", phone_normalized: d.normalized_phone || "" }));
+        setInviteLookup({ checking: false, exists: false, message: "New customer — please add their name" });
+      }
+    } catch (err) {
+      setInviteLookup({ checking: false, exists: null, message: "Lookup failed" });
+    }
+  };
+
+  const sendInviteToCustomer = async () => {
+    if (!inviteCart) return;
+    const phoneClean = (inviteForm.phone || "").replace(/\D/g, "");
+    if (phoneClean.length < 10) { toast.error("Enter a valid 10-digit mobile number"); return; }
+    if (inviteLookup.exists === false && !inviteForm.customer_name.trim()) {
+      toast.error("Customer name is required for new numbers");
+      return;
+    }
+    if (inviteForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteForm.email.trim())) {
+      toast.error("Enter a valid email or leave it blank");
+      return;
+    }
+    setInviteSending(true);
+    try {
+      const res = await fetch(`${API}/api/agent/shared-cart/${inviteCart.id || inviteCart.token}/send-invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          phone: inviteForm.phone.trim(),
+          email: inviteForm.email.trim() || null,
+          customer_name: inviteForm.customer_name.trim() || null,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        toast.error(d?.detail || "Couldn't send invite");
+        setInviteSending(false);
+        return;
+      }
+      const waOk = d.whatsapp?.success;
+      const emOk = d.email?.success;
+      const emSkipped = d.email?.skipped;
+      if (waOk && emOk) toast.success("Sent · WhatsApp + Email delivered");
+      else if (waOk && emSkipped) toast.success("Sent · WhatsApp delivered (no email provided)");
+      else if (waOk) toast.warning("WhatsApp sent · Email failed — link copied to clipboard");
+      else if (emOk) toast.warning("Email sent · WhatsApp failed — link copied to clipboard");
+      else toast.error(`Couldn't send · WhatsApp: ${d.whatsapp?.error || "fail"}`);
+      try { navigator.clipboard.writeText(d.share_url); } catch {}
+      setInviteOpen(false);
+      fetchSharedCarts();
+    } catch (err) {
+      toast.error("Network error — please retry");
+    } finally {
+      setInviteSending(false);
+    }
+  };
+
 
   const handleDeleteSharedCart = async (cart) => {
     const label = `${cart.items?.length || 0} item${(cart.items?.length || 0) !== 1 ? "s" : ""}`;
@@ -1155,20 +1275,12 @@ Locofast Online Services`,
                         </div>
                         <div className="flex gap-2 flex-wrap">
                           <button
-                            onClick={() => shareViaWhatsApp(sc)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50"
-                            data-testid={`agent-share-whatsapp-${sc.token}`}
-                            title="Share via WhatsApp"
+                            onClick={() => openInviteModal(sc)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#2563EB] rounded-lg hover:bg-blue-700"
+                            data-testid={`agent-share-invite-${sc.token}`}
+                            title="Send WhatsApp + Email to customer"
                           >
-                            <MessageCircle size={14} />WhatsApp
-                          </button>
-                          <button
-                            onClick={() => shareViaEmail(sc)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50"
-                            data-testid={`agent-share-email-${sc.token}`}
-                            title="Share via Email"
-                          >
-                            <Mail size={14} />Email
+                            <Send size={14} />Share with Customer
                           </button>
                           <button onClick={() => copyLink(sc.token)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#2563EB] border border-blue-200 rounded-lg hover:bg-blue-50"><Copy size={14} />Copy Link</button>
                           <a href={`/shared-cart/${sc.token}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"><ExternalLink size={14} />Open</a>
@@ -1379,6 +1491,97 @@ Locofast Online Services`,
         onClose={() => setShowCatalogueModal(false)}
         fabricIds={catalogueFabricIds}
       />
+
+      {/* Send-invite modal: WhatsApp + Email push to a customer */}
+      {inviteOpen && inviteCart && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !inviteSending && setInviteOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()} data-testid="agent-invite-modal">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Share cart with customer</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{inviteCart.items?.length || 0} item{(inviteCart.items?.length || 0) !== 1 ? "s" : ""} · sent via WhatsApp + Email</p>
+              </div>
+              <button onClick={() => !inviteSending && setInviteOpen(false)} className="text-gray-400 hover:text-gray-600 disabled:opacity-50" disabled={inviteSending}><X size={20} /></button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Customer WhatsApp number <span className="text-red-500">*</span></label>
+                <div className="flex items-center gap-2">
+                  <span className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-600">+91</span>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    autoFocus
+                    value={inviteForm.phone}
+                    onChange={(e) => {
+                      const v = e.target.value.replace(/\D/g, "").slice(0, 10);
+                      setInviteForm({ ...inviteForm, phone: v });
+                      lookupCustomerByPhone(v);
+                    }}
+                    placeholder="98765 43210"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:outline-none"
+                    data-testid="invite-phone"
+                  />
+                </div>
+                {inviteLookup.checking && <p className="text-xs text-gray-400 mt-1">Looking up…</p>}
+                {!inviteLookup.checking && inviteLookup.message && (
+                  <p className={`text-xs mt-1 ${inviteLookup.exists ? "text-emerald-600" : "text-amber-600"}`} data-testid="invite-lookup-status">
+                    {inviteLookup.exists ? "✓ " : ""}{inviteLookup.message}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Customer name {inviteLookup.exists === false && <span className="text-red-500">*</span>}
+                  {inviteLookup.exists === true && <span className="text-xs text-gray-400 font-normal"> (auto-filled)</span>}
+                </label>
+                <input
+                  type="text"
+                  value={inviteForm.customer_name}
+                  onChange={(e) => setInviteForm({ ...inviteForm, customer_name: e.target.value })}
+                  placeholder={inviteLookup.exists === false ? "Required — they're new on Locofast" : "Name"}
+                  disabled={inviteLookup.exists === true}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:outline-none disabled:bg-gray-50 disabled:text-gray-700"
+                  data-testid="invite-name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Customer email <span className="text-gray-400 font-normal">(optional)</span></label>
+                <input
+                  type="email"
+                  value={inviteForm.email}
+                  onChange={(e) => setInviteForm({ ...inviteForm, email: e.target.value })}
+                  placeholder="name@company.com"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:outline-none"
+                  data-testid="invite-email"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">If provided, we also email the cart link.</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={() => setInviteOpen(false)}
+                disabled={inviteSending}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={sendInviteToCustomer}
+                disabled={inviteSending || (inviteForm.phone || "").length < 10}
+                className="flex-1 px-4 py-2 bg-[#2563EB] text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                data-testid="invite-send"
+              >
+                {inviteSending ? <><Loader2 size={14} className="animate-spin" /> Sending…</> : <><Send size={14} /> Send</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

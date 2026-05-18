@@ -56,6 +56,60 @@ def _build_otp_message(otp_code: str) -> str:
     )
 
 
+async def send_whatsapp_text(destination_phone_e164: str, message: str) -> dict:
+    """Send a free-form text message via Gupshup Enterprise Gateway.
+
+    Returns dict with `success: bool`, `message_id: str|None`, `error: str|None`.
+    Identical wire format to `send_whatsapp_otp` — the only difference is the
+    caller composes the full body (multi-line allowed).
+    """
+    userid = os.environ.get("GUPSHUP_USERID", "").strip()
+    password = os.environ.get("GUPSHUP_PASSWORD", "")
+
+    if not userid or not password:
+        return {"success": False, "error": "Gupshup credentials not configured"}
+
+    send_to = destination_phone_e164 if destination_phone_e164.startswith("+") else "+" + destination_phone_e164
+
+    payload = {
+        "userid": userid,
+        "password": password,
+        "method": "SendMessage",
+        "send_to": send_to,
+        "msg_type": "TEXT",
+        "v": "1.1",
+        "format": "json",
+        "msg": message,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                GUPSHUP_GATEWAY_URL,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data=payload,
+            )
+        try:
+            body = r.json()
+        except Exception:
+            body = {"raw": r.text}
+        resp = (body.get("response") or {}) if isinstance(body, dict) else {}
+        status_str = str(resp.get("status", "")).lower()
+        msg_id = resp.get("id")
+        details = resp.get("details") or ""
+        if r.status_code in range(200, 300) and status_str == "success" and msg_id:
+            logger.info(f"Gupshup text sent → {send_to}: id={msg_id}")
+            return {"success": True, "message_id": msg_id, "raw": body}
+        err_msg = details or body.get("message") or f"Gupshup error (HTTP {r.status_code})"
+        logger.error(f"Gupshup send-text failed (status={r.status_code}): {body}")
+        return {"success": False, "error": err_msg, "raw": body}
+    except httpx.TimeoutException:
+        return {"success": False, "error": "Gupshup request timed out"}
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Gupshup send-text exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def send_whatsapp_otp(destination_phone_e164: str, otp_code: str) -> dict:
     """
     Send a 6-digit OTP via Gupshup Enterprise Gateway (WhatsApp channel

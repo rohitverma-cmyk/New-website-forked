@@ -345,6 +345,190 @@ async def upload_payment_proof(file: UploadFile = File(...), request: Request = 
     return {"url": url, "filename": filename}
 
 
+# ==================== CUSTOMER LOOKUP + SHARED-CART INVITE ====================
+
+class SendCartInviteRequest(BaseModel):
+    phone: str
+    email: EmailStr | None = None
+    customer_name: str | None = None  # Required only when phone is not on file
+
+
+@router.get("/customer-lookup")
+async def agent_customer_lookup(phone: str, request: Request):
+    """Agent helper: check if `phone` is a known Locofast customer. Returns
+    `{ exists: bool, name, email, company }` so the agent UI can autofill
+    the customer name when sending a curated cart invite."""
+    get_current_agent(request)
+    from gupshup_service import normalize_indian_phone
+    valid, e164 = normalize_indian_phone(phone or "")
+    if not valid:
+        return {"exists": False, "valid_phone": False}
+    cust = await db.customers.find_one({"phone": e164}, {"_id": 0, "id": 1, "name": 1, "email": 1, "company": 1, "phone": 1})
+    if not cust:
+        return {"exists": False, "valid_phone": True, "normalized_phone": e164}
+    # Synthetic phone-only emails — hide from the agent so they don't paste
+    # a `@phone.locofast.local` placeholder into the email field.
+    em = cust.get("email", "") or ""
+    if em.endswith("@phone.locofast.local"):
+        em = ""
+    return {
+        "exists": True,
+        "valid_phone": True,
+        "normalized_phone": e164,
+        "customer_id": cust.get("id"),
+        "name": cust.get("name") or "",
+        "email": em,
+        "company": cust.get("company") or "",
+    }
+
+
+@router.post("/shared-cart/{cart_id}/send-invite")
+async def send_shared_cart_invite(cart_id: str, data: SendCartInviteRequest, request: Request):
+    """Send the shared-cart link to the customer via WhatsApp + Email.
+
+    Resolves the customer by phone first:
+      - if the phone is already in `db.customers`, we use that record (and
+        ignore the `customer_name` field — the existing name wins).
+      - if not, the agent MUST pass `customer_name` so we can stamp it on
+        the cart and create a lightweight customer doc for future lookups.
+
+    Both WhatsApp + Email are best-effort: a partial send (e.g. email OK,
+    WhatsApp failed) still returns 200 with per-channel diagnostics so the
+    agent can decide whether to retry.
+    """
+    payload = get_current_agent(request)
+    from gupshup_service import normalize_indian_phone, send_whatsapp_text
+
+    cart = await db.shared_carts.find_one(
+        {"$or": [{"id": cart_id}, {"token": cart_id}], "agent_email": payload["email"]},
+        {"_id": 0},
+    )
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+    if cart.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Cart already converted to an order — invite not sent.")
+
+    valid, phone_e164 = normalize_indian_phone(data.phone or "")
+    if not valid:
+        raise HTTPException(status_code=400, detail="Enter a valid 10-digit Indian mobile number")
+
+    customer_email = (data.email or "").strip().lower() if data.email else ""
+
+    # Resolve / create customer
+    cust = await db.customers.find_one({"phone": phone_e164}, {"_id": 0})
+    was_existing = bool(cust)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if cust:
+        customer_name = cust.get("name") or (data.customer_name or "").strip()
+        if not cust.get("email") and customer_email:
+            # Backfill email if the existing record only had a placeholder
+            current = cust.get("email") or ""
+            if not current or current.endswith("@phone.locofast.local"):
+                await db.customers.update_one(
+                    {"id": cust["id"]},
+                    {"$set": {"email": customer_email, "updated_at": now_iso}},
+                )
+    else:
+        customer_name = (data.customer_name or "").strip()
+        if not customer_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Customer name is required (this number isn't on file yet)",
+            )
+        # Create lightweight customer so we can find them next time the
+        # agent looks up this phone.
+        new_id = str(uuid.uuid4())
+        placeholder_email = customer_email or f"phone+{phone_e164}@phone.locofast.local"
+        await db.customers.insert_one({
+            "id": new_id,
+            "email": placeholder_email,
+            "name": customer_name,
+            "phone": phone_e164,
+            "phone_verified": False,
+            "company": "",
+            "gstin": "",
+            "address": "", "city": "", "state": "", "pincode": "",
+            "created_via": "agent_shared_cart",
+            "created_by_agent_email": payload["email"],
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+        cust = {"id": new_id, "email": placeholder_email, "name": customer_name, "phone": phone_e164}
+
+    # Stamp the cart with the resolved customer (so the listing UI shows
+    # who it was sent to, and so a later "Resend" picks up the same data).
+    cart_update = {
+        "customer_phone": phone_e164,
+        "customer_name": customer_name,
+        "last_invited_at": now_iso,
+    }
+    if customer_email:
+        cart_update["customer_email"] = customer_email
+    await db.shared_carts.update_one({"id": cart["id"]}, {"$set": cart_update})
+
+    # Compose the share message — kept short, both channels share copy.
+    base_url = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") or "https://locofast.com"
+    share_url = f"{base_url}/shared-cart/{cart['token']}"
+    item_count = len(cart.get("items") or [])
+    subtotal = sum(
+        (float(i.get("quantity") or 0)) * (float(i.get("price_per_meter") or 0))
+        for i in (cart.get("items") or [])
+    )
+    agent_name = cart.get("agent_name") or payload.get("name") or "your Locofast agent"
+
+    wa_body = (
+        f"Hi {customer_name or 'there'},\n\n"
+        f"I've curated a fabric cart for you on Locofast — {item_count} item{'s' if item_count != 1 else ''} ready to review.\n\n"
+        + (f"Indicative subtotal: Rs {subtotal:,.0f} (excl. GST, logistics & packaging).\n\n" if subtotal > 0 else "")
+        + f"Place the order here:\n{share_url}\n\n"
+        f"— {agent_name}\nLocofast Online Services"
+    )
+
+    wa_result = await send_whatsapp_text(phone_e164, wa_body)
+
+    # Email send (best-effort)
+    email_result = {"success": False, "skipped": True}
+    if customer_email and RESEND_API_KEY:
+        try:
+            params = {
+                "from": f"Locofast <{SENDER_EMAIL}>",
+                "to": [customer_email],
+                "subject": "Your curated fabric cart from Locofast",
+                "html": f"""
+                <div style="font-family: Inter, system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+                    <h2 style="font-size: 20px; font-weight: 600; margin: 0 0 12px;">Your curated fabric cart</h2>
+                    <p style="color: #475569; line-height: 1.5;">Hi {customer_name or 'there'},</p>
+                    <p style="color: #475569; line-height: 1.5;">{agent_name} has prepared a cart of <strong>{item_count} item{'s' if item_count != 1 else ''}</strong> for you on Locofast.</p>
+                    {f'<p style="color:#475569;line-height:1.5;">Indicative subtotal: <strong>Rs {subtotal:,.0f}</strong> (excl. GST, logistics &amp; packaging).</p>' if subtotal > 0 else ''}
+                    <p style="margin: 24px 0;"><a href="{share_url}" style="display: inline-block; background: #2563EB; color: #fff; padding: 12px 22px; border-radius: 10px; text-decoration: none; font-weight: 600;">Review &amp; Place Order</a></p>
+                    <p style="color: #94a3b8; font-size: 12px;">The link is private to you and valid for 7 days. Reply to this email with any questions.</p>
+                </div>
+                """,
+            }
+            resend.Emails.send(params)
+            email_result = {"success": True, "skipped": False}
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Resend send-invite failed for {customer_email}: {e}")
+            email_result = {"success": False, "skipped": False, "error": str(e)}
+    elif not customer_email:
+        email_result = {"success": False, "skipped": True, "reason": "no_email_provided"}
+
+    return {
+        "success": bool(wa_result.get("success") or email_result.get("success")),
+        "customer": {
+            "id": cust.get("id"),
+            "phone": phone_e164,
+            "name": customer_name,
+            "email": customer_email or cust.get("email", ""),
+            "was_existing": was_existing,
+        },
+        "whatsapp": wa_result,
+        "email": email_result,
+        "share_url": share_url,
+    }
+
+
+
 
 # ==================== PUBLIC SHARED CART (no auth) ====================
 
