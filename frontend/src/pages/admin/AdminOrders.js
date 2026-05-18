@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
-import { Package, Clock, CheckCircle, Truck, XCircle, Search, RefreshCw, ChevronDown, Mail, Phone, MapPin, Eye, FileText, Receipt, Wallet, Upload, Pencil, Ban, X, AlertTriangle, Send, Loader2, Plus } from "lucide-react";
+import { Package, Clock, CheckCircle, Truck, XCircle, Search, RefreshCw, RotateCw, ChevronDown, Mail, Phone, MapPin, Eye, FileText, Receipt, Wallet, Upload, Pencil, Ban, X, AlertTriangle, Send, Loader2, Plus } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import BulkCreditUpload from "../../components/admin/BulkCreditUpload";
 import SetCreditByGstModal from "../../components/admin/SetCreditByGstModal";
 import OrderEmailAudit from "../../components/admin/OrderEmailAudit";
 import { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket, getOrderSellerCommissions } from "../../lib/api";
 import { toast } from "sonner";
+
+const API_URL = process.env.REACT_APP_BACKEND_URL;
 
 const statusConfig = {
   payment_pending: { label: "Payment Pending", color: "bg-yellow-100 text-yellow-700", icon: Clock },
@@ -64,8 +66,17 @@ const AdminOrders = () => {
   const [markPayBusy, setMarkPayBusy] = useState(false);
   // Per-seller commission breakdown for the open order
   const [sellerComms, setSellerComms] = useState(null);
+  const [commResyncBusy, setCommResyncBusy] = useState(false);
 
   // Fetch per-seller commissions whenever the selected order changes
+  const fetchSellerComms = async (orderId) => {
+    try {
+      const res = await getOrderSellerCommissions(orderId);
+      setSellerComms(res.data);
+    } catch {
+      setSellerComms(null);
+    }
+  };
   useEffect(() => {
     if (!selectedOrder?.id) { setSellerComms(null); return; }
     let cancelled = false;
@@ -79,6 +90,39 @@ const AdminOrders = () => {
     })();
     return () => { cancelled = true; };
   }, [selectedOrder?.id]);
+
+  // Resync commission for THIS order — re-materializes pending payouts
+  // for every supplier in the order using the current rule chain
+  // (item stamp → order stamp → live rules), then refreshes the
+  // per-seller breakdown card so the admin sees the new figure.
+  const handleOrderResyncCommission = async () => {
+    if (!selectedOrder?.id) return;
+    if (!window.confirm(`Resync commission for ${selectedOrder.order_number || selectedOrder.id}?\n\nRecomputes pending payouts using the latest rules. Paid payouts are left untouched.`)) return;
+    setCommResyncBusy(true);
+    const t = toast.loading("Resyncing commission for this order…");
+    try {
+      const token = localStorage.getItem("locofast_token");
+      const res = await fetch(`${API_URL}/api/orders/${selectedOrder.id}/resync-commission`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed");
+      if (data.updated > 0) {
+        toast.success(`${data.updated} supplier payout${data.updated !== 1 ? "s" : ""} updated`, { id: t });
+      } else if (data.skipped_paid > 0) {
+        toast.warning(`Already paid · skipped (${data.skipped_paid})`, { id: t });
+      } else {
+        toast.success("Already up-to-date", { id: t });
+      }
+      await fetchSellerComms(selectedOrder.id);
+    } catch (e) {
+      toast.error(e.message || "Failed", { id: t });
+    } finally {
+      setCommResyncBusy(false);
+    }
+  };
+
 
   useEffect(() => { fetchOrders(); fetchStats(); }, [statusFilter]);
   useEffect(() => { if (activeTab === "credit") fetchWallets(); }, [activeTab]);
@@ -574,17 +618,29 @@ const AdminOrders = () => {
                 <div><h3 className="font-medium mb-3">Payment</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><div className="flex justify-between"><span className="text-gray-600">Order Value</span><span>₹{selectedOrder.subtotal?.toLocaleString()}</span></div>{selectedOrder.packaging_charge > 0 ? (<><div className="flex justify-between"><span className="text-gray-600">Packaging</span><span>₹{selectedOrder.packaging_charge?.toLocaleString()}</span></div><div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_only_charge?.toLocaleString()}</span></div></>) : selectedOrder.logistics_charge > 0 && <div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_charge?.toLocaleString()}</span></div>}<div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-dashed border-gray-200"><span>Gross Value</span><span>₹{(Number(selectedOrder.subtotal||0) + Number(selectedOrder.packaging_charge||0) + Number(selectedOrder.logistics_only_charge||selectedOrder.logistics_charge||0)).toLocaleString(undefined,{minimumFractionDigits:2})}</span></div><div className="flex justify-between"><span className="text-gray-600">GST</span><span>₹{selectedOrder.tax?.toLocaleString()}</span></div>{selectedOrder.discount > 0 && <div className="flex justify-between text-emerald-600"><span>Discount</span><span>-₹{selectedOrder.discount?.toLocaleString()}</span></div>}<div className="flex justify-between pt-2 border-t font-semibold"><span>Total Invoice Value</span><span className="text-emerald-600">₹{selectedOrder.total?.toLocaleString()}</span></div><div className="flex justify-between pt-2 text-sm"><span className="text-gray-600">Method</span><span className="font-medium">{selectedOrder.payment_method === 'credit' ? 'Locofast Credit' : 'Razorpay'}</span></div></div></div>
 
                 <div>
-                  <h3 className="font-medium mb-3 flex items-center gap-2">
-                    Commission &amp; Seller Payout
-                    {sellerComms?.sellers?.length > 1 && (
-                      <span className="text-[11px] font-normal px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200">
-                        {sellerComms.sellers.length} suppliers
-                      </span>
-                    )}
-                    {sellerComms?.paid === false && sellerComms?.sellers?.[0]?.source === "preview" && (
-                      <span className="text-[10px] font-medium text-amber-600 uppercase tracking-wide">Preview · locks in on payment</span>
-                    )}
-                  </h3>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-medium flex items-center gap-2">
+                      Commission &amp; Seller Payout
+                      {sellerComms?.sellers?.length > 1 && (
+                        <span className="text-[11px] font-normal px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200">
+                          {sellerComms.sellers.length} suppliers
+                        </span>
+                      )}
+                      {sellerComms?.paid === false && sellerComms?.sellers?.[0]?.source === "preview" && (
+                        <span className="text-[10px] font-medium text-amber-600 uppercase tracking-wide">Preview · locks in on payment</span>
+                      )}
+                    </h3>
+                    <button
+                      onClick={handleOrderResyncCommission}
+                      disabled={commResyncBusy || !sellerComms?.sellers?.length}
+                      className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Recompute commission on this order's pending payouts using current rules"
+                      data-testid="order-resync-commission-btn"
+                    >
+                      <RotateCw size={11} className={commResyncBusy ? "animate-spin" : ""} />
+                      {commResyncBusy ? "Resyncing…" : "Resync"}
+                    </button>
+                  </div>
                   {sellerComms?.sellers?.length ? (
                     <div className="space-y-2">
                       {sellerComms.sellers.map((sc, idx) => (

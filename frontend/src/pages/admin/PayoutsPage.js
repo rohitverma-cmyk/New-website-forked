@@ -81,6 +81,25 @@ const PayoutsPage = () => {
     }
   };
 
+  const handleBackfillCommission = async () => {
+    if (!window.confirm("Resync commission on all PENDING payouts using current rules?\n\nThis recomputes commission + net payable from the order stamp (or live rules if missing). Paid payouts are skipped.")) return;
+    const t = toast.loading("Resyncing commission on pending payouts…");
+    try {
+      const res = await authedFetch("/api/payouts/backfill-commission", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed");
+      const changed = data.updated || 0;
+      if (changed === 0) {
+        toast.success(`No changes · ${data.unchanged} already correct, ${data.skipped_paid} paid (skipped)`, { id: t });
+      } else {
+        toast.success(`${changed} payout${changed !== 1 ? "s" : ""} updated · ${data.unchanged} unchanged, ${data.skipped_paid} paid (skipped)`, { id: t });
+      }
+      fetchDashboard();
+    } catch (e) {
+      toast.error(e.message || "Failed", { id: t });
+    }
+  };
+
   const tilesUI = [
     { id: "pending", label: "Pending", color: "amber", icon: Clock, ...tiles.pending },
     { id: "processing", label: "Processing", color: "blue", icon: RotateCw, ...tiles.processing },
@@ -97,14 +116,24 @@ const PayoutsPage = () => {
               Calculate and settle dues to sellers. {viewerRole === "accounts" && <span className="inline-flex items-center gap-1 px-2 py-0.5 ml-2 bg-blue-50 text-blue-700 rounded-full text-[11px] font-medium">Accounts mode</span>}
             </p>
           </div>
-          <button
-            onClick={handleMaterialize}
-            className="flex items-center gap-2 px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
-            data-testid="payouts-rescan-btn"
-            title="Re-scan all paid orders for missing payouts"
-          >
-            <RotateCw size={14} /> Re-scan orders
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleBackfillCommission}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100"
+              data-testid="payouts-resync-commission-btn"
+              title="Recompute commission on all pending payouts using current rules"
+            >
+              <RotateCw size={14} /> Resync Commission
+            </button>
+            <button
+              onClick={handleMaterialize}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+              data-testid="payouts-rescan-btn"
+              title="Re-scan all paid orders for missing payouts"
+            >
+              <RotateCw size={14} /> Re-scan orders
+            </button>
+          </div>
         </div>
 
         {/* Tiles */}
