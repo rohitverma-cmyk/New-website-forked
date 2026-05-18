@@ -74,22 +74,36 @@ def _is_super_admin(user: dict) -> bool:
 # ─────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────
-async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str = "", category_name: str = "") -> float:
+async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str = "", category_name: str = "", pattern: str = "") -> float:
     """Look up the CURRENT commission % for a fabric/seller/category.
-    Order of resolution (most-specific wins):
-      1. Vendor rule (rule_type=vendor, vendor_id matches seller_id)
-      2. Category rule (rule_type=category, category_name matches)
-      3. Platform default (5%)
 
-    Matches the schema used by /admin/commission-rules CRUD and the
-    create-order calculator (`commission_router.calculate_commission`):
-    rules use `vendor_id` (not seller_id) and `is_active` (not active).
-    The previous version of this function queried the wrong field names
-    so it never matched ANY rule and always returned 5%.
+    Resolution order (most-specific wins) — must mirror the checkout-time
+    calculator in `commission_router.calculate_commission`:
+      1. Vendor rule (rule_type=vendor, vendor_id matches seller_id)
+      2. Category + Pattern (rule_type=category_pattern)
+      3. Category (rule_type=category)
+      4. Platform default (5%)
+
+    If `category_name` / `pattern` weren't stamped on the order item
+    (common for agent-created carts / RFQ accepts / brand-credit orders),
+    we lazy-load the fabric document and read them from there. Without
+    this lookup, category-level rules silently never match.
     """
     from auth_helpers import db as _db
 
-    # Vendor-specific
+    # Backfill category_name + pattern from the fabric doc when missing.
+    if (not category_name or not pattern) and fabric_id:
+        fab = await _db.fabrics.find_one(
+            {"id": fabric_id},
+            {"_id": 0, "category_name": 1, "category": 1, "pattern": 1, "design_pattern": 1},
+        )
+        if fab:
+            if not category_name:
+                category_name = (fab.get("category_name") or fab.get("category") or "").strip()
+            if not pattern:
+                pattern = (fab.get("pattern") or fab.get("design_pattern") or "").strip()
+
+    # 1. Vendor-specific
     rule = await _db.commission_rules.find_one(
         {"rule_type": "vendor", "vendor_id": seller_id, "is_active": True},
         {"_id": 0, "commission_pct": 1},
@@ -97,7 +111,21 @@ async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str =
     if rule:
         return float(rule["commission_pct"])
 
-    # Category-specific (case-insensitive match)
+    # 2. Category + Pattern (case-insensitive)
+    if category_name and pattern:
+        rule = await _db.commission_rules.find_one(
+            {
+                "rule_type": "category_pattern",
+                "category_name": {"$regex": f"^{re.escape(category_name)}$", "$options": "i"},
+                "pattern": {"$regex": f"^{re.escape(pattern)}$", "$options": "i"},
+                "is_active": True,
+            },
+            {"_id": 0, "commission_pct": 1},
+        )
+        if rule:
+            return float(rule["commission_pct"])
+
+    # 3. Category-specific
     if category_name:
         rule = await _db.commission_rules.find_one(
             {
@@ -200,6 +228,7 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
                     it.get("fabric_id", ""),
                     it.get("category_id", ""),
                     it.get("category_name", ""),
+                    it.get("pattern", ""),
                 )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             line_breakdown.append({
@@ -540,11 +569,6 @@ async def resync_order_commission(
         }
 
     goods_gst_pct, comm_gst_pct = _gst_rates()
-    order_pct_raw = order.get("commission_pct")
-    try:
-        order_pct = float(order_pct_raw) if order_pct_raw is not None else None
-    except (TypeError, ValueError):
-        order_pct = None
 
     skipped_paid = 0
     updated_payouts: List[dict] = []
@@ -567,6 +591,10 @@ async def resync_order_commission(
             qty = float(it.get("quantity", 0) or 0)
             rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
             line_gross = qty * rate
+            # Resync intentionally bypasses the stale `order.commission_pct`
+            # stamp (which may have been written by the broken pre-fix
+            # calculator) and re-resolves from the live rules table. Only
+            # honour an explicit per-item stamp if present.
             item_pct_raw = it.get("commission_pct")
             try:
                 item_pct = float(item_pct_raw) if item_pct_raw is not None else None
@@ -574,14 +602,13 @@ async def resync_order_commission(
                 item_pct = None
             if item_pct is not None:
                 comm_pct = item_pct
-            elif order_pct is not None:
-                comm_pct = order_pct
             else:
                 comm_pct = await _resolve_commission(
                     sid,
                     it.get("fabric_id", ""),
                     it.get("category_id", ""),
                     it.get("category_name", ""),
+                    it.get("pattern", ""),
                 )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             new_lines.append({
@@ -687,13 +714,7 @@ async def backfill_pending_payouts_commission(user=Depends(get_current_accounts_
             skipped_no_order += 1
             continue
 
-        # Same priority chain as materialize: item stamp → order stamp → resolver
-        order_pct_raw = order.get("commission_pct")
-        try:
-            order_pct = float(order_pct_raw) if order_pct_raw is not None else None
-        except (TypeError, ValueError):
-            order_pct = None
-
+        # Resync bypasses the stale order stamp — re-resolves from live rules.
         sid = p["seller_id"]
         order_items = [it for it in (order.get("items") or []) if (it.get("seller_id") or "") == sid]
         # Fall back to the items snapshot stored on the payout if the
@@ -708,6 +729,10 @@ async def backfill_pending_payouts_commission(user=Depends(get_current_accounts_
             qty = float(it.get("quantity", 0) or 0)
             rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
             line_gross = qty * rate
+            # Resync intentionally bypasses the stale `order.commission_pct`
+            # stamp (which may have been written by the broken pre-fix
+            # calculator) and re-resolves from the live rules table. Only
+            # honour an explicit per-item stamp if present.
             item_pct_raw = it.get("commission_pct")
             try:
                 item_pct = float(item_pct_raw) if item_pct_raw is not None else None
@@ -715,14 +740,13 @@ async def backfill_pending_payouts_commission(user=Depends(get_current_accounts_
                 item_pct = None
             if item_pct is not None:
                 comm_pct = item_pct
-            elif order_pct is not None:
-                comm_pct = order_pct
             else:
                 comm_pct = await _resolve_commission(
                     sid,
                     it.get("fabric_id", ""),
                     it.get("category_id", ""),
                     it.get("category_name", ""),
+                    it.get("pattern", ""),
                 )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             new_lines.append({

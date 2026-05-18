@@ -63,8 +63,25 @@ async def calculate_commission(order_data: dict, items: list) -> dict:
     subtotal = sum(item.get("quantity", 0) * item.get("price_per_meter", 0) for item in items)
     total_meters = sum(item.get("quantity", 0) for item in items)
     seller_id = items[0].get("seller_id", "") if items else ""
-    category_name = items[0].get("category_name", "") if items else ""
+    category_name = (items[0].get("category_name", "") if items else "") or ""
     pattern = (items[0].get("pattern", "") if items else "") or ""
+
+    # If items don't carry category_name / pattern (older shapes from
+    # agent-created carts, RFQ accept flows, brand credit orders…), pull
+    # them from the fabric document so category-level rules still match.
+    if (not category_name or not pattern) and items:
+        fab_id = items[0].get("fabric_id", "")
+        if fab_id:
+            fab = await db.fabrics.find_one(
+                {"id": fab_id},
+                {"_id": 0, "category_name": 1, "category_id": 1, "category": 1, "pattern": 1, "design_pattern": 1},
+            )
+            if fab:
+                if not category_name:
+                    category_name = (fab.get("category_name") or fab.get("category") or "").strip()
+                if not pattern:
+                    pattern = (fab.get("pattern") or fab.get("design_pattern") or "").strip()
+
     is_rfq = order_data.get("source") == "rfq"
 
     rules = await db.commission_rules.find({"is_active": True}, {"_id": 0}).to_list(500)
