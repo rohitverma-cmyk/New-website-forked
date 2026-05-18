@@ -534,6 +534,10 @@ async def send_shared_cart_invite(cart_id: str, data: SendCartInviteRequest, req
                     f'<li style="padding:6px 0;color:#64748b;font-size:13px;">'
                     f'+ {overflow} more item{"s" if overflow != 1 else ""}</li>'
                 )
+            # CC the agent who sent it so they have a paper-trail of every
+            # outbound invite (and can re-share the same email thread if
+            # the customer replies on email).
+            agent_email_cc = (cart.get("agent_email") or payload.get("email") or "").strip().lower()
             params = {
                 "from": f"Locofast <{SENDER_EMAIL}>",
                 "to": [customer_email],
@@ -552,8 +556,12 @@ async def send_shared_cart_invite(cart_id: str, data: SendCartInviteRequest, req
                 </div>
                 """,
             }
+            # Only set cc when it's a real, non-empty address and not the
+            # same as the recipient — Resend errors on dup recipients.
+            if agent_email_cc and agent_email_cc != customer_email:
+                params["cc"] = [agent_email_cc]
             resend.Emails.send(params)
-            email_result = {"success": True, "skipped": False}
+            email_result = {"success": True, "skipped": False, "cc": params.get("cc") or []}
         except Exception as e:  # noqa: BLE001
             logger.error(f"Resend send-invite failed for {customer_email}: {e}")
             email_result = {"success": False, "skipped": False, "error": str(e)}
