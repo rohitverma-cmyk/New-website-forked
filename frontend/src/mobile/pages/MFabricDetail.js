@@ -109,7 +109,7 @@ export default function MFabricDetail() {
   };
 
   return (
-    <div style={{ paddingBottom: 16 }}>
+    <div style={{ paddingBottom: 120 }}>
       {/* Custom transparent app bar overlay */}
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 100, paddingTop: "env(safe-area-inset-top, 0px)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 14px" }}>
@@ -286,11 +286,17 @@ export default function MFabricDetail() {
       {/* Sticky bottom CTAs.
        * In-stock: [ Quote ] [ Sample ] [ Book Bulk ]
        * Out of stock: single full-width [ Request a Quote ] — we hide
-       * the smaller Quote pill so we don't show two RFQ CTAs at once. */}
+       * the smaller Quote pill so we don't show two RFQ CTAs at once.
+       *
+       * NOTE: Tab bar is hidden on this page (HIDE_TABS in MobileLayout)
+       * so the CTA bar sits flush with the viewport bottom. z-index lifted
+       * above the PWA install banner (90) so taps never get hijacked. */}
       <div style={{
-        position: "fixed", left: 0, right: 0, bottom: "calc(var(--m-tab-h) + env(safe-area-inset-bottom, 0px))",
+        position: "fixed", left: "50%", transform: "translateX(-50%)",
+        bottom: 0, width: "100%", maxWidth: "var(--m-frame, 480px)",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
         background: "var(--m-surface)", borderTop: "1px solid var(--m-border)",
-        padding: "10px 16px", display: "flex", gap: 10, zIndex: 50,
+        padding: "10px 16px", display: "flex", gap: 10, zIndex: 100,
         boxShadow: "0 -4px 20px rgba(15,27,45,0.06)",
       }}>
         {canBook ? (

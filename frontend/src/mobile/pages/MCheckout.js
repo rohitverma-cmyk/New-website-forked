@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronLeft, MapPin, Shield, CreditCard, Lock, Package, ArrowRight, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
+import axios from "axios";
 import { useCustomerAuth } from "../../context/CustomerAuthContext";
 import SavedAddressPicker from "../../components/SavedAddressPicker";
 import RFQAuthGate from "../../components/RFQAuthGate";
@@ -53,29 +54,44 @@ function MCheckoutInner() {
   });
   const [addrErrors, setAddrErrors] = useState({});
 
-  // Load fabric + (optional) profile prefill
+  // Load fabric + (optional) profile prefill + saved-address fallback.
+  // Many customers fill their address per-order on desktop without ever
+  // editing the profile, so the profile doc has empty address fields.
+  // For those users we fall back to the most-recent shipping address
+  // we have on file (derived from past orders) so mobile checkout never
+  // re-asks for details the customer has already provided.
   useEffect(() => {
     if (authLoading || !fabricId) return;
     let alive = true;
     (async () => {
       try {
-        // Profile fetch is best-effort — guests have no token and we just
-        // skip the prefill. Order creation works for both authed + guest.
         const fRes = await getFabric(fabricId);
         const pRes = token ? await getCustomerProfile(token).catch(() => null) : null;
+        let savedAddrs = [];
+        if (token) {
+          try {
+            const sRes = await axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/customer/saved-addresses`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            savedAddrs = Array.isArray(sRes.data) ? sRes.data : [];
+          } catch {}
+        }
         if (!alive) return;
         setFabric(fRes.data);
         const c = pRes?.data || customer || {};
         if (token && c && updateCustomer) updateCustomer(c);
+        // Pick the most recent saved address as fallback when the
+        // customer profile has no address-on-file.
+        const fallback = savedAddrs[0] || {};
         setAddr({
-          name: c.name || "",
-          phone: c.phone || "",
+          name: c.name || fallback.name || "",
+          phone: c.phone || fallback.phone || "",
           email: c.email || "",
-          address: c.address || "",
-          city: c.city || "",
-          state: c.state || "",
-          pincode: c.pincode || "",
-          gst_number: c.gstin || "",
+          address: c.address || fallback.address || "",
+          city: c.city || fallback.city || "",
+          state: c.state || fallback.state || "",
+          pincode: c.pincode || fallback.pincode || "",
+          gst_number: c.gstin || fallback.gst_number || "",
         });
       } catch (err) {
         setError(err?.response?.data?.detail || "Couldn't load checkout");
@@ -375,11 +391,15 @@ function MCheckoutInner() {
         <span className="m-chip"><Package size={12} /> Dispatch SLA</span>
       </div>
 
-      {/* Sticky pay button */}
+      {/* Sticky pay button — z-index 100 sits above the install banner (90)
+       * so taps always reach the button on iOS / Android. Constrained to
+       * the mobile frame so the bar matches the page chrome. */}
       <div style={{
-        position: "fixed", left: 0, right: 0, bottom: "env(safe-area-inset-bottom, 0px)",
+        position: "fixed", left: "50%", transform: "translateX(-50%)",
+        bottom: 0, width: "100%", maxWidth: "var(--m-frame, 480px)",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
         background: "var(--m-surface)", borderTop: "1px solid var(--m-border)",
-        padding: "12px 16px", display: "flex", gap: 12, alignItems: "center", zIndex: 50,
+        padding: "12px 16px", display: "flex", gap: 12, alignItems: "center", zIndex: 100,
         boxShadow: "0 -4px 20px rgba(15,27,45,0.06)",
       }}>
         <div style={{ flex: 1 }}>

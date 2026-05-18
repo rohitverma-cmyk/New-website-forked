@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { Download, X } from "lucide-react";
 
+// Pages that have their own sticky bottom action bar — suppressing the
+// install banner here prevents it from overlapping the page's primary
+// CTAs (e.g. "Book Bulk" on /m/fabric/:id, "Pay" on /m/checkout). The
+// banner re-appears as soon as the user navigates away.
+const SUPPRESS_PREFIXES = ["/m/fabric/", "/m/checkout", "/m/rfq/", "/m/order"];
+
 export default function InstallPrompt() {
+  const location = useLocation();
+  const suppressed = SUPPRESS_PREFIXES.some((p) => location.pathname.startsWith(p));
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [visible, setVisible] = useState(false);
   const [iosHint, setIosHint] = useState(false);
@@ -43,7 +52,7 @@ export default function InstallPrompt() {
     localStorage.setItem("lf_pwa_dismiss", String(Date.now()));
   };
 
-  if (!visible) return null;
+  if (!visible || suppressed) return null;
 
   return (
     <div className="m-install-banner" role="region" aria-label="Install app">
