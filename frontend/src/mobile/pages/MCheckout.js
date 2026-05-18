@@ -163,15 +163,23 @@ function MCheckoutInner() {
       const orderData = {
         items: [{
           fabric_id: fabric.id,
-          fabric_slug: fabric.slug,
           fabric_name: fabric.name,
-          fabric_image: fabricImage || "",
+          fabric_code: fabric.code || "",
+          category_name: fabric.category_name || fabric.category || "",
+          pattern: fabric.pattern || fabric.design_pattern || "",
+          seller_id: fabric.seller_id || "",
+          seller_company: fabric.seller_company || "",
+          // Backend schema uses `price_per_meter`; sending the wrong key
+          // (e.g. `rate_per_meter`) causes a Pydantic 422 → Razorpay
+          // never opens because order creation fails before launch.
+          price_per_meter: rate,
           quantity: qty,
-          rate_per_meter: rate,
           order_type: orderType,
-          color: color || "",
-          color_hex: colorHex || "",
+          image_url: fabricImage || "",
+          hsn_code: fabric.hsn_code || "",
           dispatch_timeline: orderType === "sample" ? "48-72 hours" : (fabric.dispatch_timeline || "15-20 days"),
+          color_name: color || "",
+          color_hex: colorHex || "",
         }],
         customer: {
           name: addr.name.trim(),
@@ -245,7 +253,18 @@ function MCheckoutInner() {
       });
       rzp.open();
     } catch (err) {
-      const msg = err?.response?.data?.detail || err.message || "Couldn't place order";
+      // FastAPI 422 returns `detail` as a list of dicts (Pydantic errors).
+      // Rendering that as a React child crashes with error #31. Coerce
+      // to a readable string before showing the toast.
+      const raw = err?.response?.data?.detail;
+      let msg;
+      if (Array.isArray(raw)) {
+        msg = raw.map((e) => `${(e.loc || []).join(".")}: ${e.msg}`).join("; ") || "Validation failed";
+      } else if (typeof raw === "string") {
+        msg = raw;
+      } else {
+        msg = err.message || "Couldn't place order";
+      }
       toast.error(msg);
       setSubmitting(false);
     }
