@@ -590,6 +590,13 @@ Compliance fix — per Schedule II of the CGST Act, packaging and logistics char
 - MAccount now has parity with desktop `/account`: Orders + Queries + RFQ stat cards, Company auto-fill, phone-only nudge, inline edit-sheet validation, Email field.
 - Architectural rules in `/app/frontend/src/mobile/README.md` — never touch `src/pages/` for mobile work.
 
+### Mobile Checkout Funnel Hardening (Feb 18, 2026)
+- **Sticky CTA z-index lifted 50→100** on MFabricDetail and MCheckout so the PWA install banner (z90) can no longer hijack taps. Was the root cause of "Buy sample / Book Bulk does nothing" on production.
+- **CTA bar flush with viewport bottom**: removed the unused 64px tab-bar reservation on fabric detail (tabs are already hidden) — `bottom: 0; padding-bottom: env(safe-area-inset-bottom, 0px)`.
+- **PWA InstallPrompt suppressed** on `/m/fabric/*`, `/m/checkout`, `/m/rfq/*`, `/m/order*` to avoid any overlay-on-CTA race condition.
+- **Mobile checkout auto-fills from saved addresses**: when the customer profile doc has empty `address/city/state/pincode` (common for users who only filled address per-order on desktop), MCheckout now falls back to `/api/customer/saved-addresses[0]` for the prefill — no more re-asking for shipping details already captured on desktop.
+- Fixed-bar centering uses `left:50%; transform:translateX(-50%); width:100%; max-width:480px` so the bar matches the mobile frame on wider viewports.
+
 
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
