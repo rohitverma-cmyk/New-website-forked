@@ -719,7 +719,13 @@ const CheckoutPage = () => {
         },
         notes: {
           order_id: orderInfo.order_id,
-          fabric_name: fabric.name
+          // For multi-item cart checkout `fabric` is null — fall back to
+          // a summary string. The old code did `fabric.name` directly
+          // which threw "Cannot read properties of null (reading 'name')"
+          // → Razorpay INIT_FAILED on every multi-item order.
+          fabric_name: fabric?.name || (cartItems[0]?.fabric_name
+            ? `${cartItems[0].fabric_name}${cartItems.length > 1 ? ` +${cartItems.length - 1} more` : ""}`
+            : "Cart checkout"),
         },
         theme: {
           color: "#2563EB"
