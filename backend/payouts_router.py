@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 import uuid
 import logging
 import os
+import re
 import jwt
 
 import auth_helpers
@@ -73,34 +74,42 @@ def _is_super_admin(user: dict) -> bool:
 # ─────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────
-async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str = "") -> float:
+async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str = "", category_name: str = "") -> float:
     """Look up the CURRENT commission % for a fabric/seller/category.
     Order of resolution (most-specific wins):
-      1. Rule keyed on (seller_id, fabric_id)
-      2. Rule keyed on (seller_id, category_id)
-      3. Rule keyed on (seller_id) only
-      4. Platform default (5%)
+      1. Vendor rule (rule_type=vendor, vendor_id matches seller_id)
+      2. Category rule (rule_type=category, category_name matches)
+      3. Platform default (5%)
+
+    Matches the schema used by /admin/commission-rules CRUD and the
+    create-order calculator (`commission_router.calculate_commission`):
+    rules use `vendor_id` (not seller_id) and `is_active` (not active).
+    The previous version of this function queried the wrong field names
+    so it never matched ANY rule and always returned 5%.
     """
     from auth_helpers import db as _db
+
+    # Vendor-specific
     rule = await _db.commission_rules.find_one(
-        {"seller_id": seller_id, "fabric_id": fabric_id, "active": True},
+        {"rule_type": "vendor", "vendor_id": seller_id, "is_active": True},
         {"_id": 0, "commission_pct": 1},
     )
     if rule:
         return float(rule["commission_pct"])
-    if category_id:
+
+    # Category-specific (case-insensitive match)
+    if category_name:
         rule = await _db.commission_rules.find_one(
-            {"seller_id": seller_id, "category_id": category_id, "fabric_id": "", "active": True},
+            {
+                "rule_type": "category",
+                "category_name": {"$regex": f"^{re.escape(category_name)}$", "$options": "i"},
+                "is_active": True,
+            },
             {"_id": 0, "commission_pct": 1},
         )
         if rule:
             return float(rule["commission_pct"])
-    rule = await _db.commission_rules.find_one(
-        {"seller_id": seller_id, "fabric_id": "", "category_id": "", "active": True},
-        {"_id": 0, "commission_pct": 1},
-    )
-    if rule:
-        return float(rule["commission_pct"])
+
     return 5.0  # platform default
 
 
@@ -149,6 +158,17 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
 
     now = datetime.now(timezone.utc).isoformat()
     results: List[dict] = []
+
+    # Source-of-truth commission %: prefer the value stamped on the order
+    # at checkout time (so payout matches the booking confirmation the
+    # customer saw). Only fall back to per-item / resolver lookups when
+    # the order doesn't have one stamped (very old orders).
+    order_commission_pct = order.get("commission_pct")
+    try:
+        order_commission_pct = float(order_commission_pct) if order_commission_pct is not None else None
+    except (TypeError, ValueError):
+        order_commission_pct = None
+
     for sid, items in by_seller.items():
         if sid in existing:
             results.append(existing[sid])
@@ -161,7 +181,26 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
             qty = float(it.get("quantity", 0) or 0)
             rate = float(it.get("price_per_meter", 0) or 0)
             line_gross = qty * rate
-            comm_pct = await _resolve_commission(sid, it.get("fabric_id", ""), it.get("category_id", ""))
+            # Resolution priority (most-trusted first):
+            #  1. Per-item stamp (item.commission_pct) — future-proof
+            #  2. Order-level stamp (set by commission_router at checkout)
+            #  3. Live rule resolver against db.commission_rules
+            item_pct = it.get("commission_pct")
+            try:
+                item_pct = float(item_pct) if item_pct is not None else None
+            except (TypeError, ValueError):
+                item_pct = None
+            if item_pct is not None:
+                comm_pct = item_pct
+            elif order_commission_pct is not None:
+                comm_pct = order_commission_pct
+            else:
+                comm_pct = await _resolve_commission(
+                    sid,
+                    it.get("fabric_id", ""),
+                    it.get("category_id", ""),
+                    it.get("category_name", ""),
+                )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             line_breakdown.append({
                 "fabric_id": it.get("fabric_id", ""),
@@ -487,6 +526,135 @@ async def recalculate_payout(
     fresh = await materialize_payouts_for_order(order)
     seller_payout = next((p for p in fresh if p["seller_id"] == payout["seller_id"]), None)
     return {"success": True, "payout": seller_payout}
+
+
+@router.post("/payouts/backfill-commission")
+async def backfill_pending_payouts_commission(user=Depends(get_current_accounts_or_admin)):
+    """One-shot backfill: recompute commission + net_payable on every
+    PENDING vendor_payout using the new resolution chain (item stamp →
+    order stamp → live rules). Paid payouts are skipped.
+
+    Idempotent — safe to re-run. Returns per-payout diff so the user can
+    audit which rows changed.
+    """
+    from auth_helpers import db as _db
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+
+    updated = 0
+    unchanged = 0
+    skipped_paid = 0
+    skipped_no_order = 0
+    diffs: List[dict] = []
+
+    async for p in _db.vendor_payouts.find({}, {"_id": 0}):
+        if p.get("status") == "paid":
+            skipped_paid += 1
+            continue
+        order = await _db.orders.find_one({"id": p["order_id"]}, {"_id": 0})
+        if not order:
+            skipped_no_order += 1
+            continue
+
+        # Same priority chain as materialize: item stamp → order stamp → resolver
+        order_pct_raw = order.get("commission_pct")
+        try:
+            order_pct = float(order_pct_raw) if order_pct_raw is not None else None
+        except (TypeError, ValueError):
+            order_pct = None
+
+        sid = p["seller_id"]
+        order_items = [it for it in (order.get("items") or []) if (it.get("seller_id") or "") == sid]
+        # Fall back to the items snapshot stored on the payout if the
+        # parent order's items list was groomed/migrated.
+        if not order_items:
+            order_items = p.get("items") or []
+
+        new_lines = []
+        new_gross = 0.0
+        new_comm = 0.0
+        for it in order_items:
+            qty = float(it.get("quantity", 0) or 0)
+            rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
+            line_gross = qty * rate
+            item_pct_raw = it.get("commission_pct")
+            try:
+                item_pct = float(item_pct_raw) if item_pct_raw is not None else None
+            except (TypeError, ValueError):
+                item_pct = None
+            if item_pct is not None:
+                comm_pct = item_pct
+            elif order_pct is not None:
+                comm_pct = order_pct
+            else:
+                comm_pct = await _resolve_commission(
+                    sid,
+                    it.get("fabric_id", ""),
+                    it.get("category_id", ""),
+                    it.get("category_name", ""),
+                )
+            line_comm = round(line_gross * comm_pct / 100.0, 2)
+            new_lines.append({
+                "fabric_id": it.get("fabric_id", ""),
+                "fabric_name": it.get("fabric_name", ""),
+                "fabric_code": it.get("fabric_code", ""),
+                "quantity": qty,
+                "rate": rate,
+                "gross": round(line_gross, 2),
+                "commission_pct": comm_pct,
+                "commission_amount": line_comm,
+                "net": round(line_gross - line_comm, 2),
+            })
+            new_gross += line_gross
+            new_comm += line_comm
+
+        new_gross = round(new_gross, 2)
+        new_comm = round(new_comm, 2)
+        gst_on_goods = round(new_gross * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(new_gross + gst_on_goods, 2)
+        gst_on_commission = round(new_comm * comm_gst_pct / 100.0, 2)
+        advances = float(p.get("advances_applied", 0) or 0)
+        net_payable = round(supplier_invoice_value - new_comm - gst_on_commission - advances, 2)
+
+        old_comm = float(p.get("commission_total", 0) or 0)
+        changed = abs(old_comm - new_comm) > 0.01
+
+        if changed:
+            await _db.vendor_payouts.update_one(
+                {"id": p["id"]},
+                {"$set": {
+                    "items": new_lines,
+                    "gross_subtotal": new_gross,
+                    "commission_total": new_comm,
+                    "commission_gst_pct": comm_gst_pct,
+                    "gst_on_commission": gst_on_commission,
+                    "goods_gst_pct": goods_gst_pct,
+                    "gst_on_goods": gst_on_goods,
+                    "supplier_invoice_value": supplier_invoice_value,
+                    "net_payable": net_payable,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+            updated += 1
+            diffs.append({
+                "payout_id": p["id"],
+                "order_number": p.get("order_number", ""),
+                "seller_company": p.get("seller_company", ""),
+                "old_commission": old_comm,
+                "new_commission": new_comm,
+                "old_net_payable": float(p.get("net_payable", 0) or 0),
+                "new_net_payable": net_payable,
+            })
+        else:
+            unchanged += 1
+
+    return {
+        "success": True,
+        "updated": updated,
+        "unchanged": unchanged,
+        "skipped_paid": skipped_paid,
+        "skipped_no_order": skipped_no_order,
+        "diffs": diffs[:200],  # cap response size for huge backfills
+    }
 
 
 @router.post("/payouts/recalculate-unpaid-gst")
