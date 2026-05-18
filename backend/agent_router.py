@@ -469,16 +469,46 @@ async def send_shared_cart_invite(cart_id: str, data: SendCartInviteRequest, req
     # Compose the share message — kept short, both channels share copy.
     base_url = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") or "https://locofast.com"
     share_url = f"{base_url}/shared-cart/{cart['token']}"
-    item_count = len(cart.get("items") or [])
+    cart_items = cart.get("items") or []
+    item_count = len(cart_items)
     subtotal = sum(
         (float(i.get("quantity") or 0)) * (float(i.get("price_per_meter") or 0))
-        for i in (cart.get("items") or [])
+        for i in cart_items
     )
     agent_name = cart.get("agent_name") or payload.get("name") or "your Locofast agent"
+
+    # Itemized breakdown — show every fabric with quantity + order type.
+    # WhatsApp gets a plain-text bullet list; email gets an HTML <ul>.
+    # Long carts (>8 items) get truncated with a "+N more" line so the
+    # message stays within reasonable WhatsApp render limits.
+    MAX_PREVIEW = 8
+    preview = cart_items[:MAX_PREVIEW]
+    overflow = item_count - len(preview)
+
+    def _fmt_qty(it):
+        q = it.get("quantity") or 0
+        try:
+            q_num = float(q)
+            q_str = f"{int(q_num)}" if q_num == int(q_num) else f"{q_num:g}"
+        except Exception:
+            q_str = str(q)
+        return f"{q_str}m"
+
+    wa_items_lines = []
+    for it in preview:
+        name = (it.get("fabric_name") or "Fabric").strip()
+        qty_str = _fmt_qty(it)
+        otype = (it.get("order_type") or "bulk").strip().lower()
+        tag = "Sample" if otype == "sample" else "Bulk"
+        wa_items_lines.append(f"• {name} — {qty_str} ({tag})")
+    if overflow > 0:
+        wa_items_lines.append(f"• +{overflow} more item{'s' if overflow != 1 else ''}")
+    wa_items_block = "\n".join(wa_items_lines)
 
     wa_body = (
         f"Hi {customer_name or 'there'},\n\n"
         f"I've curated a fabric cart for you on Locofast — {item_count} item{'s' if item_count != 1 else ''} ready to review.\n\n"
+        + (f"{wa_items_block}\n\n" if wa_items_block else "")
         + (f"Indicative subtotal: Rs {subtotal:,.0f} (excl. GST, logistics & packaging).\n\n" if subtotal > 0 else "")
         + f"Place the order here:\n{share_url}\n\n"
         f"— {agent_name}\nLocofast Online Services"
@@ -490,15 +520,32 @@ async def send_shared_cart_invite(cart_id: str, data: SendCartInviteRequest, req
     email_result = {"success": False, "skipped": True}
     if customer_email and RESEND_API_KEY:
         try:
+            email_items_html = "".join(
+                f'<li style="padding:6px 0;border-bottom:1px solid #eef2f7;color:#1e293b;">'
+                f'<strong>{(it.get("fabric_name") or "Fabric").strip()}</strong>'
+                f' — {_fmt_qty(it)} '
+                f'<span style="color:#64748b;font-size:12px;">'
+                f'({"Sample" if (it.get("order_type") or "bulk").strip().lower() == "sample" else "Bulk"})'
+                f'</span></li>'
+                for it in preview
+            )
+            if overflow > 0:
+                email_items_html += (
+                    f'<li style="padding:6px 0;color:#64748b;font-size:13px;">'
+                    f'+ {overflow} more item{"s" if overflow != 1 else ""}</li>'
+                )
             params = {
                 "from": f"Locofast <{SENDER_EMAIL}>",
                 "to": [customer_email],
                 "subject": "Your curated fabric cart from Locofast",
                 "html": f"""
-                <div style="font-family: Inter, system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+                <div style="font-family: Inter, system-ui, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 24px;">
                     <h2 style="font-size: 20px; font-weight: 600; margin: 0 0 12px;">Your curated fabric cart</h2>
                     <p style="color: #475569; line-height: 1.5;">Hi {customer_name or 'there'},</p>
                     <p style="color: #475569; line-height: 1.5;">{agent_name} has prepared a cart of <strong>{item_count} item{'s' if item_count != 1 else ''}</strong> for you on Locofast.</p>
+                    <ul style="list-style:none;padding:0;margin:16px 0;border-top:1px solid #eef2f7;">
+                        {email_items_html}
+                    </ul>
                     {f'<p style="color:#475569;line-height:1.5;">Indicative subtotal: <strong>Rs {subtotal:,.0f}</strong> (excl. GST, logistics &amp; packaging).</p>' if subtotal > 0 else ''}
                     <p style="margin: 24px 0;"><a href="{share_url}" style="display: inline-block; background: #2563EB; color: #fff; padding: 12px 22px; border-radius: 10px; text-decoration: none; font-weight: 600;">Review &amp; Place Order</a></p>
                     <p style="color: #94a3b8; font-size: 12px;">The link is private to you and valid for 7 days. Reply to this email with any questions.</p>
