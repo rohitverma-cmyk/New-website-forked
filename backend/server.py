@@ -775,6 +775,13 @@ async def startup_create_default_admin():
     except Exception as e:
         logger.error(f"Credit-ledger sheets poller failed to start: {e}")
 
+    # Auto-cancel stale unpaid orders (72h Razorpay / 7d Credit by default).
+    try:
+        from order_autocancel import start_autocancel_poller
+        asyncio.create_task(start_autocancel_poller(db))
+    except Exception as e:
+        logger.error(f"Auto-cancel poller failed to start: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()

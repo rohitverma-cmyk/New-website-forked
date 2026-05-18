@@ -286,6 +286,64 @@ async def create_shared_cart(data: CreateSharedCartRequest, request: Request):
     }
 
 
+@router.post("/shared-cart/{cart_id}/duplicate")
+async def duplicate_shared_cart(cart_id: str, request: Request):
+    """Clone a shared cart into a new DRAFT for a different customer.
+
+    Carries over: items, dispatch_country, bangladesh_charges, usd_rate.
+    Does NOT carry over: customer_phone/name/email, payment_proof_url,
+    notes — the agent is starting fresh for a new buyer.
+
+    The new cart gets a fresh token + id so the original link stays
+    valid for the first customer. Returns the new `{cart_id, token}` so
+    the frontend can refresh the list (and optionally jump to it).
+    """
+    payload = get_current_agent(request)
+
+    src = await db.shared_carts.find_one(
+        {"$or": [{"id": cart_id}, {"token": cart_id}], "agent_email": payload["email"]},
+        {"_id": 0},
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Cart not found")
+
+    new_id = str(uuid.uuid4())
+    new_token = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc)
+
+    cart_doc = {
+        "id": new_id,
+        "token": new_token,
+        "agent_id": payload["agent_id"],
+        "agent_email": payload["email"],
+        "agent_name": payload.get("name", ""),
+        # Deep-copy items so any future edits don't bleed back to the
+        # original cart (Mongo gives us dicts by reference).
+        "items": [dict(it) for it in (src.get("items") or [])],
+        # Customer fields intentionally blank — agent will fill these
+        # when they hit "Share with Customer".
+        "customer_email": "",
+        "notes": "",
+        "payment_proof_url": "",
+        "dispatch_country": src.get("dispatch_country", "india"),
+        "bangladesh_charges": src.get("bangladesh_charges"),
+        "usd_rate": src.get("usd_rate"),
+        "status": "pending",
+        "duplicated_from": src["id"],
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=7)).isoformat(),
+    }
+
+    await db.shared_carts.insert_one(cart_doc)
+    return {
+        "cart_id": new_id,
+        "token": new_token,
+        "status": "pending",
+        "items_count": len(cart_doc["items"]),
+        "duplicated_from": src["id"],
+    }
+
+
 @router.get("/shared-carts")
 async def list_shared_carts(request: Request):
     """List all shared carts for the logged-in agent."""

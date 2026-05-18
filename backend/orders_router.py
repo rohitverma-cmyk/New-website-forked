@@ -1686,6 +1686,15 @@ async def update_payment_status(order_id: str, payload: dict):
     return {"success": True, "previous": previous, "current": new_status}
 
 
+@router.post("/admin/auto-cancel-stale")
+async def trigger_autocancel_sweep(admin=Depends(auth_helpers.get_current_admin)):
+    """Manually run the stale-order sweep. Useful for admins who want to
+    flush expired carts without waiting for the next hourly poll. Returns
+    the same shape as the background sweep."""
+    from order_autocancel import cancel_stale_orders
+    return await cancel_stale_orders(db)
+
+
 @router.put("/{order_id}/cancel")
 async def cancel_order(order_id: str, data: dict):
     """Cancel an order with reason (stock out or credit limit). Refunds credit if paid via credit."""

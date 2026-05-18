@@ -415,6 +415,27 @@ Locofast Online Services`,
   // their name auto-fills; if not, the agent has to type the name.
   // Backend pushes a WhatsApp text via Gupshup AND a Resend email with
   // the cart link, then stamps the cart with customer info for audit.
+  // Duplicate a shared cart into a new draft (blank customer info).
+  // Backend keeps items intact but resets customer_phone/name/email so
+  // the agent can repurpose the same curated list for a different buyer.
+  const handleDuplicateSharedCart = async (sc) => {
+    if (!sc?.id && !sc?.token) return;
+    if (!window.confirm(`Duplicate this cart (${sc.items?.length || 0} item${(sc.items?.length || 0) !== 1 ? "s" : ""}) for a new customer?`)) return;
+    const t = toast.loading("Duplicating cart…");
+    try {
+      const res = await fetch(`${API}/api/agent/shared-cart/${sc.id || sc.token}/duplicate`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || "Duplicate failed");
+      toast.success(`New draft cart created · ${data.items_count} item${data.items_count !== 1 ? "s" : ""}`, { id: t });
+      fetchSharedCarts();
+    } catch (err) {
+      toast.error(err.message || "Couldn't duplicate", { id: t });
+    }
+  };
+
   const openInviteModal = (sc) => {
     setInviteCart(sc);
     const prefillEmail = sc.customer_email && !sc.customer_email.endsWith("@phone.locofast.local")
@@ -1290,6 +1311,14 @@ Locofast Online Services`,
                             <Send size={14} />Share with Customer
                           </button>
                           <button onClick={() => copyLink(sc.token)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#2563EB] border border-blue-200 rounded-lg hover:bg-blue-50"><Copy size={14} />Copy Link</button>
+                          <button
+                            onClick={() => handleDuplicateSharedCart(sc)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50"
+                            data-testid={`agent-duplicate-cart-${sc.token}`}
+                            title="Create a new draft cart with these items for a different customer"
+                          >
+                            <Copy size={14} />Duplicate for new customer
+                          </button>
                           <a href={`/shared-cart/${sc.token}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"><ExternalLink size={14} />Open</a>
                           {sc.status !== "completed" && (
                             <button
