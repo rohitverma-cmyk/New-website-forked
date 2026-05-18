@@ -695,8 +695,11 @@ async def update_profile(data: ProfileUpdate, request: Request):
                 detail=f"GST verification failed: {gst_result.get('message', 'Invalid GSTIN')}"
             )
 
-        # Auto-fill company from GST API (legal_name preferred).
-        api_company = (gst_result.get("legal_name") or gst_result.get("trade_name") or "").strip()
+        # Auto-fill company from GST API (trade_name preferred — that's
+        # the public-facing brand name customers know, and what we want
+        # printed on the tax invoice). Fall back to legal_name only when
+        # the registry has no trade name on file.
+        api_company = (gst_result.get("trade_name") or gst_result.get("legal_name") or "").strip()
         if api_company:
             company = api_company
         if not company:

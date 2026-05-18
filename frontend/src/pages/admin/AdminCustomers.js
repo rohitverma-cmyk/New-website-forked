@@ -188,14 +188,14 @@ const AdminCustomers = () => {
       setForm((prev) => ({
         ...prev,
         gstin,
-        company: data.legal_name || data.trade_name || prev.company,
+        company: data.trade_name || data.legal_name || prev.company,
         city: prev.city || data.city || "",
         state: prev.state || data.state || "",
         pincode: prev.pincode || data.pincode || "",
         address: prev.address || data.address || "",
       }));
       setGstVerified(true);
-      toast.success(`GST verified: ${data.legal_name || data.trade_name}`);
+      toast.success(`GST verified: ${data.trade_name || data.legal_name}`);
     } catch (err) {
       setGstError("GST verification service unavailable");
     } finally {

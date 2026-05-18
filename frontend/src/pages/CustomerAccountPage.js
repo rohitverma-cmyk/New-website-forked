@@ -97,7 +97,7 @@ const CustomerAccountPage = () => {
         toast.error(msg);
         return;
       }
-      const company = data.legal_name || data.trade_name || "";
+      const company = data.trade_name || data.legal_name || "";
       // Prefill — only overwrite if the user hasn't typed in something already
       setProfileForm((p) => ({
         ...p,
