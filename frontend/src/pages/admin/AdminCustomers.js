@@ -82,6 +82,40 @@ const AdminCustomers = () => {
   const [emailEditOpen, setEmailEditOpen] = useState(false);
   const [emailEditForm, setEmailEditForm] = useState({ new_email: "", reason: "" });
   const [emailEditBusy, setEmailEditBusy] = useState(false);
+  // GST resync state — keyed per-customer so concurrent clicks across rows
+  // don't disable each other's button.
+  const [gstResyncBusyId, setGstResyncBusyId] = useState(null);
+
+  const handleResyncGst = async (customerId) => {
+    if (!customerId) return;
+    setGstResyncBusyId(customerId);
+    try {
+      const token = localStorage.getItem("locofast_token");
+      const r = await fetch(`${API_URL}/api/admin/customers/${customerId}/resync-gst`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        toast.error(data?.detail || "GST resync failed");
+        return;
+      }
+      const synced = data.synced_from_registry || {};
+      if (synced.is_active) {
+        toast.success(`GST resynced · ${synced.trade_name || synced.legal_name || "company updated"}`);
+      } else {
+        toast.warning(`GSTIN status: ${synced.gst_status || "Cancelled"} — company kept, flag updated`);
+      }
+      if (detail?.customer?.id === customerId) {
+        setDetail({ ...detail, customer: data.customer });
+      }
+      fetchCustomers();
+    } catch (err) {
+      toast.error("GST verification service unavailable");
+    } finally {
+      setGstResyncBusyId(null);
+    }
+  };
 
   const handleAdminChangeEmail = async () => {
     if (!detail?.customer?.id) return;
@@ -426,7 +460,28 @@ const AdminCustomers = () => {
                     </div>
                     <div><p className="text-xs uppercase tracking-wide text-gray-500">Phone</p><p className="font-medium mt-0.5">{detail.customer.phone || "—"}{detail.customer.phone_verified && <CheckCircle2 className="inline w-3.5 h-3.5 ml-1 text-emerald-600" />}</p></div>
                     <div><p className="text-xs uppercase tracking-wide text-gray-500">Company</p><p className="font-medium mt-0.5">{detail.customer.company || "—"}</p></div>
-                    <div><p className="text-xs uppercase tracking-wide text-gray-500">GSTIN</p><p className="font-medium mt-0.5 font-mono text-xs">{detail.customer.gstin || "—"}{detail.customer.gst_verified ? <CheckCircle2 className="inline w-3.5 h-3.5 ml-1 text-emerald-600" /> : detail.customer.gstin ? <XCircle className="inline w-3.5 h-3.5 ml-1 text-amber-500" /> : null}</p></div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-gray-500 flex items-center gap-2">
+                        GSTIN
+                        {detail.customer.gstin && (
+                          <button
+                            onClick={() => handleResyncGst(detail.customer.id)}
+                            disabled={gstResyncBusyId === detail.customer.id}
+                            className="text-[10px] text-blue-600 hover:text-blue-800 font-medium underline disabled:opacity-50 disabled:no-underline"
+                            data-testid="admin-resync-customer-gst"
+                          >
+                            {gstResyncBusyId === detail.customer.id ? "Syncing…" : "Resync"}
+                          </button>
+                        )}
+                      </p>
+                      <p className="font-medium mt-0.5 font-mono text-xs">{detail.customer.gstin || "—"}{detail.customer.gst_verified ? <CheckCircle2 className="inline w-3.5 h-3.5 ml-1 text-emerald-600" /> : detail.customer.gstin ? <XCircle className="inline w-3.5 h-3.5 ml-1 text-amber-500" /> : null}</p>
+                      {detail.customer.gst_status && !detail.customer.gst_verified && detail.customer.gstin && (
+                        <p className="text-[10px] text-amber-600 mt-0.5 font-semibold uppercase tracking-wide">Status: {detail.customer.gst_status}</p>
+                      )}
+                      {detail.customer.gst_last_synced_at && (
+                        <p className="text-[10px] text-gray-400 mt-0.5">Synced {formatDate(detail.customer.gst_last_synced_at)}</p>
+                      )}
+                    </div>
                     <div><p className="text-xs uppercase tracking-wide text-gray-500">Source</p><p className="font-medium mt-0.5">{detail.customer.created_via || "manual"}</p></div>
                     {detail.customer.lead_source && <div><p className="text-xs uppercase tracking-wide text-gray-500">Lead Source</p><p className="font-medium mt-0.5">{detail.customer.lead_source}</p></div>}
                     <div><p className="text-xs uppercase tracking-wide text-gray-500">Joined</p><p className="font-medium mt-0.5">{formatDate(detail.customer.created_at)}</p></div>

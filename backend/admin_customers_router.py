@@ -321,3 +321,88 @@ async def admin_change_customer_email(
 
     fresh = await db.customers.find_one({"id": customer_id}, {"_id": 0})
     return {"success": True, "customer": fresh, "audit": audit_entry}
+
+
+
+# ── GST resync (admin-initiated) ─────────────────────────────────────
+@router.post("/{customer_id}/resync-gst")
+async def admin_resync_customer_gst(
+    customer_id: str,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Re-hit the GSTN registry for this customer and refresh
+    `company` (using TRADE name, not legal name), city/state/pincode,
+    and gst_status.
+
+    When the GSTIN comes back as cancelled/inactive (`sts != "Active"`),
+    we DO NOT wipe the customer's existing company name — we only stamp
+    `gst_status = "Cancelled"` and `gst_verified = False` so accounts /
+    sales can see the flag without losing historical data on the row.
+    """
+    customer = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    gstin = (customer.get("gstin") or "").strip().upper()
+    if not gstin:
+        raise HTTPException(status_code=400, detail="Customer has no GSTIN on file")
+    if not GSTIN_REGEX.match(gstin):
+        raise HTTPException(status_code=400, detail="Customer's GSTIN is not a valid 15-character GSTIN")
+
+    from gst_verify import verify_gstin
+    try:
+        gst = await verify_gstin(gstin)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"GST verification service unavailable: {e}")
+
+    if not gst.get("valid"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"GST verification failed: {gst.get('message', 'Invalid GSTIN')}",
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    status_raw = (gst.get("gst_status") or "").strip()
+    is_active = status_raw.lower() == "active"
+
+    update_data = {
+        "gst_status": status_raw or "Unknown",
+        "gst_business_type": gst.get("business_type") or customer.get("gst_business_type", ""),
+        "gst_last_synced_at": now,
+        "updated_at": now,
+    }
+
+    if is_active:
+        # Refresh derived fields from the registry. Trade name preferred —
+        # mirrors the customer profile flow so the tax invoice prints the
+        # public-facing brand name.
+        new_company = (gst.get("trade_name") or gst.get("legal_name") or "").strip()
+        if new_company:
+            update_data["company"] = new_company
+        # Address fields — only overwrite when the registry actually
+        # provides a value (otherwise keep what's already on the doc).
+        for src_key, dst_key in (("city", "city"), ("state", "state"), ("pincode", "pincode")):
+            val = (gst.get(src_key) or "").strip()
+            if val:
+                update_data[dst_key] = val
+        update_data["gst_verified"] = True
+    else:
+        # Cancelled / Suspended / Inactive — flag but never wipe the
+        # existing company name (per ops request: don't lose history).
+        update_data["gst_verified"] = False
+
+    await db.customers.update_one({"id": customer_id}, {"$set": update_data})
+
+    fresh = await db.customers.find_one({"id": customer_id}, {"_id": 0})
+    return {
+        "success": True,
+        "customer": fresh,
+        "synced_from_registry": {
+            "gst_status": status_raw,
+            "is_active": is_active,
+            "trade_name": gst.get("trade_name", ""),
+            "legal_name": gst.get("legal_name", ""),
+        },
+    }

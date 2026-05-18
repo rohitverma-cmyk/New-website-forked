@@ -597,6 +597,10 @@ Compliance fix — per Schedule II of the CGST Act, packaging and logistics char
 - **Mobile checkout auto-fills from saved addresses**: when the customer profile doc has empty `address/city/state/pincode` (common for users who only filled address per-order on desktop), MCheckout now falls back to `/api/customer/saved-addresses[0]` for the prefill — no more re-asking for shipping details already captured on desktop.
 - Fixed-bar centering uses `left:50%; transform:translateX(-50%); width:100%; max-width:480px` so the bar matches the mobile frame on wider viewports.
 
+### GST Trade Name Migration (Feb 18, 2026)
+- **Forward-fix:** Flipped GST auto-fill priority from `legal_name → trade_name` so all new GSTIN verifications save the Trade Name as the customer's company name (which is what the tax invoice prints). Touched `customer_router.py`, `CustomerAccountPage.js`, `AdminCustomers.js`. Desktop CheckoutPage/AdminSellers/SellOnLocofast already preferred trade name.
+- **Backfill tool:** new admin endpoint `POST /api/admin/customers/{id}/resync-gst` + "Resync" button next to GSTIN in `/admin/customers` detail dialog. Re-hits the GST registry, prefers trade_name for `company`, refreshes `city/state/pincode`, stamps `gst_status` + `gst_last_synced_at`. If the GSTIN comes back cancelled/inactive (`sts != "Active"`), we flag `gst_verified=false` and persist the status — but **never wipe** the existing company name (per ops directive).
+
 
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
