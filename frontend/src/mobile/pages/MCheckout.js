@@ -61,7 +61,17 @@ function MCheckoutInner() {
   // we have on file (derived from past orders) so mobile checkout never
   // re-asks for details the customer has already provided.
   useEffect(() => {
-    if (authLoading || !fabricId) return;
+    if (authLoading) return;
+    // Hard-fail when this page is hit without ?fabric=... (e.g. user
+    // navigated from a multi-item cart on desktop where checkout doesn't
+    // need a fabric id). Without this, the effect bails silently and
+    // the page is stuck on the loading skeleton forever — exactly what
+    // was happening on prod.
+    if (!fabricId) {
+      setLoading(false);
+      setError("Missing fabric reference. Please reopen this page from the fabric detail screen.");
+      return;
+    }
     let alive = true;
     (async () => {
       try {
