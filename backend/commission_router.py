@@ -86,11 +86,14 @@ async def calculate_commission(order_data: dict, items: list) -> dict:
 
     rules = await db.commission_rules.find({"is_active": True}, {"_id": 0}).to_list(500)
 
-    # 1. Vendor-specific
-    for r in rules:
-        if r.get("rule_type") == "vendor" and r.get("vendor_id") == seller_id:
-            pct = r["commission_pct"]
-            return {"commission_pct": pct, "commission_amount": round(subtotal * pct / 100, 2), "rule_applied": f"vendor:{r.get('vendor_name', seller_id)}"}
+    # 1. Vendor-specific (skip when no seller_id — treat as Null and fall
+    # through to category+pattern → category. Prevents accidental match
+    # against a malformed rule with vendor_id=null/"".)
+    if seller_id:
+        for r in rules:
+            if r.get("rule_type") == "vendor" and r.get("vendor_id") == seller_id:
+                pct = r["commission_pct"]
+                return {"commission_pct": pct, "commission_amount": round(subtotal * pct / 100, 2), "rule_applied": f"vendor:{r.get('vendor_name', seller_id)}"}
 
     # 2. Category + Pattern (more specific than plain category — e.g. Cotton + Stripes
     #    might attract a different rate than generic Cotton).

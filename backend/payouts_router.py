@@ -104,12 +104,16 @@ async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str =
                 pattern = (fab.get("pattern") or fab.get("design_pattern") or "").strip()
 
     # 1. Vendor-specific
-    rule = await _db.commission_rules.find_one(
-        {"rule_type": "vendor", "vendor_id": seller_id, "is_active": True},
-        {"_id": 0, "commission_pct": 1},
-    )
-    if rule:
-        return float(rule["commission_pct"])
+    # Only run this lookup when we have an actual seller_id — otherwise
+    # a missing seller_id could accidentally match a malformed rule with
+    # `vendor_id: null` / `vendor_id: ""` and short-circuit the chain.
+    if seller_id:
+        rule = await _db.commission_rules.find_one(
+            {"rule_type": "vendor", "vendor_id": seller_id, "is_active": True},
+            {"_id": 0, "commission_pct": 1},
+        )
+        if rule:
+            return float(rule["commission_pct"])
 
     # 2. Category + Pattern (case-insensitive)
     if category_name and pattern:
