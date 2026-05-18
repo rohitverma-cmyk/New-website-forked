@@ -660,6 +660,62 @@ async def create_order(order_data: OrderCreate):
         "customer": order_data.customer.model_dump()
     }
 
+@router.post("/{order_id}/retry-payment")
+async def retry_payment(order_id: str, request: Request):
+    """Create a fresh Razorpay order for an existing 'initiated' order.
+
+    Used by the mobile/desktop "Pay" button on `Awaiting payment` orders
+    so customers can complete payment after closing the original modal.
+    Refuses if the order is already paid or cancelled.
+    """
+    # Reuse customer_router's auth helper. Returns the customer dict
+    # or raises HTTPException — same envelope used by every other
+    # customer-side endpoint, so the JWT/cookie contract is identical.
+    from customer_router import get_current_customer as _get_current_customer
+    customer = _get_current_customer(request)
+    order = await db.orders.find_one({"id": order_id, "customer.email": customer["email"]}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("payment_status") == "paid":
+        raise HTTPException(status_code=400, detail="Order is already paid")
+    if order.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Order has been cancelled — cannot re-pay. Please place a new order.")
+    if order.get("payment_method") == "credit":
+        raise HTTPException(status_code=400, detail="Credit orders cannot be retried via Razorpay.")
+
+    total_paise = int(round(float(order.get("total", 0)) * 100))
+    if total_paise <= 0:
+        raise HTTPException(status_code=400, detail="Order total is invalid.")
+
+    try:
+        rzp = razorpay_client.order.create({
+            "amount": total_paise,
+            "currency": "INR",
+            "receipt": order.get("order_number") or order_id[:36],
+            "notes": {"order_id": order_id, "retry": "true"},
+        })
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "razorpay_order_id": rzp["id"],
+            "payment_status": "initiated",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+    return {
+        "razorpay_order_id": rzp["id"],
+        "amount": rzp["amount"],
+        "currency": rzp["currency"],
+        "key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
+        "order_id": order_id,
+        "order_number": order.get("order_number", ""),
+    }
+
+
 @router.post("/verify-payment")
 async def verify_payment(verification: PaymentVerification):
     """Verify Razorpay payment and update order status"""

@@ -4,9 +4,22 @@ import { ChevronLeft, CheckCircle, Circle, Truck, MapPin, Package, Receipt, Refr
 import { toast } from "sonner";
 import { useCustomerAuth } from "../../context/CustomerAuthContext";
 import { useRequireMobileAuth } from "../utils/authGuard";
-import { getCustomerOrder, getOrderTracking, downloadInvoice } from "../../lib/api";
+import { getCustomerOrder, getOrderTracking, downloadInvoice, verifyPayment } from "../../lib/api";
 import { statusLabel, statusTone, statusBackground, ORDER_TIMELINE, ORDER_STATUS, formatDateRelative } from "../lib/orderHelpers";
 import { formatPriceINR } from "../lib/format";
+
+// Razorpay checkout.js loader — cached so we don't inject the script
+// multiple times when the user taps Pay → cancels → taps Pay again.
+const loadRazorpayScript = () =>
+  new Promise((resolve) => {
+    if (typeof window === "undefined") return resolve(false);
+    if (window.Razorpay) return resolve(true);
+    const s = document.createElement("script");
+    s.src = "https://checkout.razorpay.com/v1/checkout.js";
+    s.onload = () => resolve(true);
+    s.onerror = () => resolve(false);
+    document.body.appendChild(s);
+  });
 
 export default function MOrderDetail() {
   const { orderId } = useParams();
@@ -17,7 +30,76 @@ export default function MOrderDetail() {
   const [order, setOrder] = useState(null);
   const [tracking, setTracking] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [retrying, setRetrying] = useState(false);
   const isFresh = params.get("fresh") === "1";
+
+  // Re-open Razorpay for an unpaid order. Backend mints a fresh
+  // razorpay_order_id (the original one may have expired or been used)
+  // and we hand it straight to the SDK. On success we redirect to the
+  // confirmation page just like the original checkout flow.
+  const handlePayAgain = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      const sdkReady = await loadRazorpayScript();
+      if (!sdkReady) {
+        toast.error("Couldn't load payment gateway. Check your connection.");
+        setRetrying(false);
+        return;
+      }
+      const apiBase = process.env.REACT_APP_BACKEND_URL;
+      const r = await fetch(`${apiBase}/api/orders/${order.id}/retry-payment`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        toast.error(data?.detail || "Couldn't start payment");
+        setRetrying(false);
+        return;
+      }
+      const rzp = new window.Razorpay({
+        key: data.key_id,
+        amount: data.amount,
+        currency: data.currency,
+        name: "Locofast",
+        description: `Order ${data.order_number}`,
+        order_id: data.razorpay_order_id,
+        prefill: {
+          name: order.customer?.name || "",
+          email: order.customer?.email || "",
+          contact: order.customer?.phone || "",
+        },
+        theme: { color: "#F37021" },
+        modal: {
+          ondismiss: () => setRetrying(false),
+        },
+        handler: async (resp) => {
+          try {
+            await verifyPayment({
+              razorpay_order_id: resp.razorpay_order_id,
+              razorpay_payment_id: resp.razorpay_payment_id,
+              razorpay_signature: resp.razorpay_signature,
+            });
+            toast.success("Payment received — confirming…");
+            navigate(`/m/orders/${order.id}?fresh=1`);
+          } catch (err) {
+            toast.error(err?.response?.data?.detail || "Verification failed");
+          } finally {
+            setRetrying(false);
+          }
+        },
+      });
+      rzp.on("payment.failed", (resp) => {
+        toast.error(resp.error?.description || "Payment failed");
+        setRetrying(false);
+      });
+      rzp.open();
+    } catch (err) {
+      toast.error(err?.message || "Couldn't open payment");
+      setRetrying(false);
+    }
+  };
 
   useEffect(() => {
     if (authLoading || !token) return;
@@ -91,8 +173,14 @@ export default function MOrderDetail() {
               <div style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>Payment pending</div>
               <div style={{ fontSize: 12, color: "#92400e", opacity: 0.8 }}>Complete payment to confirm your order.</div>
             </div>
-            <button onClick={() => toast.info("Re-payment is built in Phase 6 — coming next")} className="m-btn m-btn-primary" style={{ padding: "8px 14px", minHeight: 36 }}>
-              <CreditCard size={14} /> Pay
+            <button
+              onClick={handlePayAgain}
+              disabled={retrying}
+              className="m-btn m-btn-primary"
+              style={{ padding: "8px 14px", minHeight: 36 }}
+              data-testid="m-order-retry-pay"
+            >
+              <CreditCard size={14} /> {retrying ? "Opening…" : "Pay"}
             </button>
           </div>
         </div>
@@ -154,18 +242,26 @@ export default function MOrderDetail() {
       <div className="m-container" style={{ marginTop: 16 }}>
         <h2 className="m-title" style={{ marginBottom: 10 }}>Items</h2>
         <div className="m-card" style={{ padding: 4 }}>
-          {items.map((it, i) => (
-            <div key={i} style={{ display: "flex", gap: 12, padding: 12, borderBottom: i < items.length - 1 ? "1px solid var(--m-border)" : "none" }}>
-              <div style={{ width: 60, height: 60, borderRadius: 10, background: it.fabric_image ? `url(${it.fabric_image}) center/cover` : "linear-gradient(135deg, var(--m-orange-50), #FFE3CE)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--m-orange)" }}>
-                {!it.fabric_image && <Package size={22} />}
+          {items.map((it, i) => {
+            // Backend stores `price_per_meter` + `image_url`; some older
+            // rows still use `rate_per_meter` + `fabric_image`. Accept both
+            // so we don't render ₹0 / 1m on legacy + new orders alike.
+            const rate = Number(it.price_per_meter ?? it.rate_per_meter ?? 0);
+            const qty = Number(it.quantity ?? 0);
+            const img = it.image_url || it.fabric_image || "";
+            return (
+              <div key={i} style={{ display: "flex", gap: 12, padding: 12, borderBottom: i < items.length - 1 ? "1px solid var(--m-border)" : "none" }}>
+                <div style={{ width: 60, height: 60, borderRadius: 10, background: img ? `url(${img}) center/cover` : "linear-gradient(135deg, var(--m-orange-50), #FFE3CE)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--m-orange)" }}>
+                  {!img && <Package size={22} />}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "var(--m-ink)", overflow: "hidden", textOverflow: "ellipsis" }}>{it.fabric_name}</div>
+                  <div className="m-caption" style={{ marginTop: 2 }}>{qty}m · {formatPriceINR(rate)}/m</div>
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: "var(--m-ink)" }}>{formatPriceINR(rate * qty)}</div>
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, color: "var(--m-ink)", overflow: "hidden", textOverflow: "ellipsis" }}>{it.fabric_name}</div>
-                <div className="m-caption" style={{ marginTop: 2 }}>{it.quantity}m · {formatPriceINR(it.rate_per_meter)}/m</div>
-              </div>
-              <div style={{ fontWeight: 700, fontSize: 14, color: "var(--m-ink)" }}>{formatPriceINR((it.rate_per_meter || 0) * (it.quantity || 0))}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
