@@ -478,8 +478,12 @@ Locofast Online Services`,
       toast.error("Customer name is required for new numbers");
       return;
     }
-    if (inviteForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteForm.email.trim())) {
-      toast.error("Enter a valid email or leave it blank");
+    if (!inviteForm.email || !inviteForm.email.trim()) {
+      toast.error("Email is required (WhatsApp send is paused for now)");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteForm.email.trim())) {
+      toast.error("Enter a valid email");
       return;
     }
     setInviteSending(true);
@@ -499,14 +503,17 @@ Locofast Online Services`,
         setInviteSending(false);
         return;
       }
+      const waSkipped = d.whatsapp?.skipped && d.whatsapp?.reason === "whatsapp_template_pending";
       const waOk = d.whatsapp?.success;
       const emOk = d.email?.success;
       const emSkipped = d.email?.skipped;
-      if (waOk && emOk) toast.success("Sent · WhatsApp + Email delivered");
+      if (emOk && waSkipped) toast.success("Email sent · WhatsApp pending template approval");
+      else if (waOk && emOk) toast.success("Sent · WhatsApp + Email delivered");
       else if (waOk && emSkipped) toast.success("Sent · WhatsApp delivered (no email provided)");
       else if (waOk) toast.warning("WhatsApp sent · Email failed — link copied to clipboard");
-      else if (emOk) toast.warning("Email sent · WhatsApp failed — link copied to clipboard");
-      else toast.error(`Couldn't send · WhatsApp: ${d.whatsapp?.error || "fail"}`);
+      else if (emOk) toast.success("Email sent · link copied to clipboard");
+      else if (waSkipped && emSkipped) toast.warning("No channel sent · please add an email or wait for WhatsApp template approval");
+      else toast.error(`Couldn't send · ${d.email?.error || d.whatsapp?.error || "delivery failed"}`);
       try { navigator.clipboard.writeText(d.share_url); } catch {}
       setInviteOpen(false);
       fetchSharedCarts();
@@ -1499,7 +1506,7 @@ Locofast Online Services`,
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Share cart with customer</h3>
-                <p className="text-xs text-gray-500 mt-0.5">{inviteCart.items?.length || 0} item{(inviteCart.items?.length || 0) !== 1 ? "s" : ""} · sent via WhatsApp + Email</p>
+                <p className="text-xs text-gray-500 mt-0.5">{inviteCart.items?.length || 0} item{(inviteCart.items?.length || 0) !== 1 ? "s" : ""} · sent via Email <span className="text-amber-600">(WhatsApp pending template approval)</span></p>
               </div>
               <button onClick={() => !inviteSending && setInviteOpen(false)} className="text-gray-400 hover:text-gray-600 disabled:opacity-50" disabled={inviteSending}><X size={20} /></button>
             </div>
@@ -1549,7 +1556,7 @@ Locofast Online Services`,
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Customer email <span className="text-gray-400 font-normal">(optional)</span></label>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Customer email <span className="text-red-500">*</span></label>
                 <input
                   type="email"
                   value={inviteForm.email}
@@ -1558,7 +1565,7 @@ Locofast Online Services`,
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:outline-none"
                   data-testid="invite-email"
                 />
-                <p className="text-[11px] text-gray-400 mt-1">If provided, we also email the cart link.</p>
+                <p className="text-[11px] text-gray-400 mt-1">Currently the only active delivery channel. WhatsApp resumes once your template is approved.</p>
               </div>
             </div>
 

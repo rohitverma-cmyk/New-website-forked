@@ -505,6 +505,10 @@ async def send_shared_cart_invite(cart_id: str, data: SendCartInviteRequest, req
         wa_items_lines.append(f"• +{overflow} more item{'s' if overflow != 1 else ''}")
     wa_items_block = "\n".join(wa_items_lines)
 
+    # NOTE: WhatsApp send is temporarily disabled until the user's Gupshup
+    # WABA template is approved. The composed `wa_body` is kept in the
+    # response for QA preview and as the source-of-truth copy that will be
+    # mapped onto the template's variable slots once the template ships.
     wa_body = (
         f"Hi {customer_name or 'there'},\n\n"
         f"I've curated a fabric cart for you on Locofast — {item_count} item{'s' if item_count != 1 else ''} ready to review.\n\n"
@@ -514,7 +518,12 @@ async def send_shared_cart_invite(cart_id: str, data: SendCartInviteRequest, req
         f"— {agent_name}\nLocofast Online Services"
     )
 
-    wa_result = await send_whatsapp_text(phone_e164, wa_body)
+    wa_result = {
+        "success": False,
+        "skipped": True,
+        "reason": "whatsapp_template_pending",
+        "preview_body": wa_body,
+    }
 
     # Email send (best-effort)
     email_result = {"success": False, "skipped": True}
