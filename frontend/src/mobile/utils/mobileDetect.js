@@ -49,18 +49,7 @@ export function mapToMobilePath(pathname, search = "") {
     const id = path.replace("/account/queries/", "");
     return `/m/rfq/${id}` + search;
   }
-  // /checkout — mobile only supports single-fabric checkout for now,
-  // so route to mobile only when `?fabric=` is present in the URL.
-  // Multi-item cart checkout (no fabric param) stays on desktop, since
-  // the mobile build doesn't yet render a cart summary. Without this
-  // guard the mobile page falls into an infinite loading skeleton
-  // because the load effect bails when fabricId is null.
-  if (path === "/checkout") {
-    if (search && new URLSearchParams(search).get("fabric")) {
-      return "/m/checkout" + search;
-    }
-    return null; // keep desktop /checkout for cart-mode
-  }
+  if (path === "/checkout") return "/m/checkout" + search;
   if (path.startsWith("/order-confirmation/")) {
     const id = path.replace("/order-confirmation/", "");
     return `/m/order-confirmation/${id}` + search;

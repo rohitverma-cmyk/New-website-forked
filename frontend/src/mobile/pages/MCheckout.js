@@ -36,11 +36,20 @@ function MCheckoutInner() {
   // users get their profile auto-filled; guests fill the form manually.
   // No hard login gate here.
 
-  const fabricId = searchParams.get("fabric");
+  // Accept BOTH `fabric` (legacy mobile param) and `fabric_id` (desktop
+  // shared-cart redirect param) so a desktop-built /checkout URL
+  // surviving a /m redirect still resolves the right fabric.
+  const fabricId = searchParams.get("fabric") || searchParams.get("fabric_id");
   const variantId = searchParams.get("variant");
   const qty = Math.max(1, parseInt(searchParams.get("qty") || "1", 10));
   const orderType = searchParams.get("type") === "sample" ? "sample" : "bulk";
+  // Shared-cart support — when present we load the FULL multi-item cart
+  // and render a cart-style summary instead of a single-fabric layout.
+  const sharedCartToken = searchParams.get("shared_cart") || "";
 
+  // Multi-item state — empty array means "single-fabric flow".
+  const [cartItems, setCartItems] = useState([]);
+  const isMultiItem = cartItems.length > 0;
   const [fabric, setFabric] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -62,12 +71,8 @@ function MCheckoutInner() {
   // re-asks for details the customer has already provided.
   useEffect(() => {
     if (authLoading) return;
-    // Hard-fail when this page is hit without ?fabric=... (e.g. user
-    // navigated from a multi-item cart on desktop where checkout doesn't
-    // need a fabric id). Without this, the effect bails silently and
-    // the page is stuck on the loading skeleton forever — exactly what
-    // was happening on prod.
-    if (!fabricId) {
+    // Hard-fail when there's neither a fabric nor a shared-cart token.
+    if (!fabricId && !sharedCartToken) {
       setLoading(false);
       setError("Missing fabric reference. Please reopen this page from the fabric detail screen.");
       return;
@@ -75,7 +80,7 @@ function MCheckoutInner() {
     let alive = true;
     (async () => {
       try {
-        const fRes = await getFabric(fabricId);
+        // Profile + saved-address fetches are shared across both modes.
         const pRes = token ? await getCustomerProfile(token).catch(() => null) : null;
         let savedAddrs = [];
         if (token) {
@@ -86,12 +91,49 @@ function MCheckoutInner() {
             savedAddrs = Array.isArray(sRes.data) ? sRes.data : [];
           } catch {}
         }
+
+        // Shared-cart mode: fetch the full cart, hydrate multi-item state.
+        // We only fall back to single-fabric mode when the cart endpoint
+        // hands us 0 items (defensive — should not happen in practice).
+        if (sharedCartToken) {
+          try {
+            const cRes = await axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/agent/cart/${sharedCartToken}`);
+            const items = Array.isArray(cRes.data?.items) ? cRes.data.items : [];
+            if (items.length > 0) {
+              if (!alive) return;
+              setCartItems(items);
+              // Lift a representative fabric image for the OG/preview slot
+              setFabric({
+                name: items[0].fabric_name || "Shared cart",
+                images: items[0].image_url ? [items[0].image_url] : [],
+              });
+            } else if (!fabricId) {
+              setError("This shared cart is empty.");
+              setLoading(false);
+              return;
+            }
+          } catch {
+            if (!fabricId) {
+              setError("Shared cart link is invalid or has expired.");
+              setLoading(false);
+              return;
+            }
+          }
+        }
+
+        // Single-fabric mode (also used as fallback when shared cart fails).
+        if (!sharedCartToken || cartItems.length === 0) {
+          if (fabricId) {
+            const fRes = await getFabric(fabricId);
+            if (!alive) return;
+            // Don't clobber the cart-mode fabric placeholder we set above.
+            setFabric((prev) => (cartItems.length === 0 ? fRes.data : prev));
+          }
+        }
+
         if (!alive) return;
-        setFabric(fRes.data);
         const c = pRes?.data || customer || {};
         if (token && c && updateCustomer) updateCustomer(c);
-        // Pick the most recent saved address as fallback when the
-        // customer profile has no address-on-file.
         const fallback = savedAddrs[0] || {};
         setAddr({
           name: c.name || fallback.name || "",
@@ -110,18 +152,39 @@ function MCheckoutInner() {
       }
     })();
     return () => { alive = false; };
-  }, [authLoading, token, fabricId]); // eslint-disable-line
+  }, [authLoading, token, fabricId, sharedCartToken]); // eslint-disable-line
 
-  // Pricing — mirrors desktop CheckoutPage.calculatePricing (May 2026):
+  // Pricing — mirrors desktop CheckoutPage (May 2026):
   // Bulk = packaging (qty × ₹1) + logistics (max 3% × goods, ₹3,000),
   // both INDEPENDENT lines.  Sample = flat ₹100 logistics, no packaging.
   // GST = 5% on (goods + packaging + logistics).
-  const rate = orderType === "sample" ? getSamplePrice(fabric) : getBulkPrice(fabric);
-  const subtotal = rate ? rate * qty : 0;
-  const packaging = orderType === "sample" ? 0 : qty * PACKAGING_PER_M;
-  const logistics = orderType === "sample"
-    ? LOGISTICS_SAMPLE_FLAT
-    : Math.max(subtotal * LOGISTICS_BULK_PCT, LOGISTICS_BULK_MIN);
+  //
+  // Multi-item cart mode applies the same formula but aggregates across
+  // every line. A cart with ANY bulk item uses the bulk formula on the
+  // whole cart; sample-only carts get ₹100 × line_count.
+  let subtotal, packaging, logistics;
+  if (isMultiItem) {
+    subtotal = cartItems.reduce(
+      (s, it) => s + (Number(it.quantity) || 0) * (Number(it.price_per_meter) || 0),
+      0,
+    );
+    const hasBulk = cartItems.some((it) => (it.order_type || "bulk") === "bulk");
+    if (!hasBulk) {
+      packaging = 0;
+      logistics = LOGISTICS_SAMPLE_FLAT * cartItems.length;
+    } else {
+      const totalQty = cartItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+      packaging = totalQty * PACKAGING_PER_M;
+      logistics = Math.max(subtotal * LOGISTICS_BULK_PCT, LOGISTICS_BULK_MIN);
+    }
+  } else {
+    const rate = orderType === "sample" ? getSamplePrice(fabric) : getBulkPrice(fabric);
+    subtotal = rate ? rate * qty : 0;
+    packaging = orderType === "sample" ? 0 : qty * PACKAGING_PER_M;
+    logistics = orderType === "sample"
+      ? LOGISTICS_SAMPLE_FLAT
+      : Math.max(subtotal * LOGISTICS_BULK_PCT, LOGISTICS_BULK_MIN);
+  }
   const taxableValue = subtotal + packaging + logistics;
   const tax = Math.round(taxableValue * GST_RATE * 100) / 100;
   const total = Math.round((taxableValue + tax) * 100) / 100;
@@ -164,33 +227,60 @@ function MCheckoutInner() {
       window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
-    if (!fabric || !rate) {
+    if (!isMultiItem && (!fabric || !subtotal)) {
       toast.error("Pricing unavailable. Please request a quote instead.");
+      return;
+    }
+    if (isMultiItem && cartItems.length === 0) {
+      toast.error("Cart is empty.");
       return;
     }
     setSubmitting(true);
     try {
+      // Build the items array. Single-fabric flow stamps one item built
+      // from the loaded fabric; cart-mode passes through what the shared
+      // cart fetched (already in the right shape).
+      const itemsPayload = isMultiItem
+        ? cartItems.map((it) => ({
+            fabric_id: it.fabric_id,
+            fabric_name: it.fabric_name,
+            fabric_code: it.fabric_code || "",
+            category_name: it.category_name || "",
+            pattern: it.pattern || "",
+            seller_id: it.seller_id || "",
+            seller_company: it.seller_company || "",
+            price_per_meter: Number(it.price_per_meter) || 0,
+            quantity: Number(it.quantity) || 0,
+            order_type: it.order_type || "bulk",
+            image_url: it.image_url || "",
+            hsn_code: it.hsn_code || "",
+            dispatch_timeline: it.dispatch_timeline || "",
+            color_name: it.color_name || it.color || "",
+            color_hex: it.color_hex || "",
+          }))
+        : [{
+            fabric_id: fabric.id,
+            fabric_name: fabric.name,
+            fabric_code: fabric.code || "",
+            category_name: fabric.category_name || fabric.category || "",
+            pattern: fabric.pattern || fabric.design_pattern || "",
+            seller_id: fabric.seller_id || "",
+            seller_company: fabric.seller_company || "",
+            // Backend schema uses `price_per_meter`; sending the wrong key
+            // (e.g. `rate_per_meter`) causes a Pydantic 422 → Razorpay
+            // never opens because order creation fails before launch.
+            price_per_meter: subtotal / qty,
+            quantity: qty,
+            order_type: orderType,
+            image_url: fabricImage || "",
+            hsn_code: fabric.hsn_code || "",
+            dispatch_timeline: orderType === "sample" ? "48-72 hours" : (fabric.dispatch_timeline || "15-20 days"),
+            color_name: color || "",
+            color_hex: colorHex || "",
+          }];
+
       const orderData = {
-        items: [{
-          fabric_id: fabric.id,
-          fabric_name: fabric.name,
-          fabric_code: fabric.code || "",
-          category_name: fabric.category_name || fabric.category || "",
-          pattern: fabric.pattern || fabric.design_pattern || "",
-          seller_id: fabric.seller_id || "",
-          seller_company: fabric.seller_company || "",
-          // Backend schema uses `price_per_meter`; sending the wrong key
-          // (e.g. `rate_per_meter`) causes a Pydantic 422 → Razorpay
-          // never opens because order creation fails before launch.
-          price_per_meter: rate,
-          quantity: qty,
-          order_type: orderType,
-          image_url: fabricImage || "",
-          hsn_code: fabric.hsn_code || "",
-          dispatch_timeline: orderType === "sample" ? "48-72 hours" : (fabric.dispatch_timeline || "15-20 days"),
-          color_name: color || "",
-          color_hex: colorHex || "",
-        }],
+        items: itemsPayload,
         customer: {
           name: addr.name.trim(),
           email: addr.email.trim().toLowerCase(),
@@ -208,6 +298,9 @@ function MCheckoutInner() {
         payment_method: "razorpay",
         coupon: null,
         discount: 0,
+        // Stamp the shared-cart token so the backend can mark the cart as
+        // converted and credit the agent who built it.
+        shared_cart_token: sharedCartToken || undefined,
       };
 
       const scriptLoaded = await loadRazorpayScript();
@@ -299,7 +392,9 @@ function MCheckoutInner() {
     );
   }
 
-  if (!rate) {
+  // Single-fabric "Pricing on request" empty state — cart-mode has
+  // already vetted prices upstream so we skip this branch.
+  if (!isMultiItem && !subtotal) {
     return (
       <div className="m-container" style={{ paddingTop: 40, textAlign: "center" }}>
         <Package size={32} color="var(--m-orange)" />
@@ -325,26 +420,69 @@ function MCheckoutInner() {
         <Lock size={16} color="var(--m-ink-3)" />
       </div>
 
-      {/* Order summary card */}
+      {/* Order summary card.
+       * Cart-mode (multi-item): render every line as its own tile. Single
+       * mode keeps the original compact single-row card. */}
       <div className="m-container" style={{ paddingTop: 14 }}>
-        <div className="m-card" style={{ padding: 12, display: "flex", gap: 12 }}>
-          <div style={{ width: 64, height: 64, borderRadius: 12, background: fabricImage ? `url(${fabricImage}) center/cover` : "linear-gradient(135deg, var(--m-orange-50), #FFE3CE)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--m-orange)" }}>
-            {!fabricImage && <Package size={26} />}
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <span className="m-chip m-chip-orange" style={{ padding: "3px 8px", fontSize: 11 }}>{orderType === "sample" ? "Sample" : "Bulk"}</span>
-            <div style={{ fontWeight: 700, fontSize: 14, color: "var(--m-ink)", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-              {fabric.name}
+        {isMultiItem ? (
+          <div className="m-card" style={{ padding: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <span style={{ fontWeight: 700, fontSize: 14, color: "var(--m-ink)" }}>
+                {cartItems.length} item{cartItems.length !== 1 ? "s" : ""}
+              </span>
+              {(() => {
+                const mills = new Set(cartItems.map((it) => it.seller_id).filter(Boolean)).size || 1;
+                return <span className="m-caption">from {mills} mill{mills !== 1 ? "s" : ""}</span>;
+              })()}
             </div>
-            <div className="m-caption" style={{ marginTop: 2 }}>
-              {qty}m {color && `\u00b7 ${color}`} {colorHex && <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: colorHex, verticalAlign: "middle", marginLeft: 4 }} />}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {cartItems.map((it, idx) => {
+                const lineTotal = (Number(it.quantity) || 0) * (Number(it.price_per_meter) || 0);
+                return (
+                  <div key={idx} style={{ display: "flex", gap: 10, paddingTop: idx === 0 ? 0 : 10, borderTop: idx === 0 ? "none" : "1px dashed var(--m-border-2)" }}>
+                    <div style={{ width: 52, height: 52, borderRadius: 10, background: it.image_url ? `url(${it.image_url}) center/cover` : "linear-gradient(135deg, var(--m-orange-50), #FFE3CE)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--m-orange)" }}>
+                      {!it.image_url && <Package size={20} />}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span className="m-chip m-chip-orange" style={{ padding: "2px 6px", fontSize: 10 }}>
+                        {(it.order_type || "bulk") === "sample" ? "Sample" : "Bulk"}
+                      </span>
+                      <div style={{ fontWeight: 600, fontSize: 13, color: "var(--m-ink)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                        {it.fabric_name}
+                      </div>
+                      <div className="m-caption" style={{ marginTop: 1, fontSize: 11 }}>
+                        {it.quantity}m · {formatPriceINR(it.price_per_meter)}/m
+                        {it.seller_company && ` · ${it.seller_company}`}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0, alignSelf: "center" }}>
+                      <div style={{ fontWeight: 700, color: "var(--m-ink)", fontSize: 13 }}>{formatPriceINR(lineTotal)}</div>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
-          <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div className="m-caption">{formatPriceINR(rate)}/m</div>
-            <div style={{ fontWeight: 700, color: "var(--m-ink)" }}>{formatPriceINR(subtotal)}</div>
+        ) : (
+          <div className="m-card" style={{ padding: 12, display: "flex", gap: 12 }}>
+            <div style={{ width: 64, height: 64, borderRadius: 12, background: fabricImage ? `url(${fabricImage}) center/cover` : "linear-gradient(135deg, var(--m-orange-50), #FFE3CE)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--m-orange)" }}>
+              {!fabricImage && <Package size={26} />}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span className="m-chip m-chip-orange" style={{ padding: "3px 8px", fontSize: 11 }}>{orderType === "sample" ? "Sample" : "Bulk"}</span>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "var(--m-ink)", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                {fabric.name}
+              </div>
+              <div className="m-caption" style={{ marginTop: 2 }}>
+                {qty}m {color && `\u00b7 ${color}`} {colorHex && <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: colorHex, verticalAlign: "middle", marginLeft: 4 }} />}
+              </div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div className="m-caption">{formatPriceINR(subtotal / qty)}/m</div>
+              <div style={{ fontWeight: 700, color: "var(--m-ink)" }}>{formatPriceINR(subtotal)}</div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Shipping address */}
@@ -402,7 +540,7 @@ function MCheckoutInner() {
       <div className="m-container" style={{ marginTop: 22 }}>
         <h2 className="m-title" style={{ marginBottom: 10 }}>Bill summary</h2>
         <div className="m-card" style={{ padding: 14 }}>
-          <Row label={`Order Value (${qty}m)`} value={formatPriceINR(subtotal)} />
+          <Row label={isMultiItem ? `Order Value (${cartItems.length} item${cartItems.length !== 1 ? "s" : ""})` : `Order Value (${qty}m)`} value={formatPriceINR(subtotal)} />
           {packaging > 0 && <Row label="Packaging" value={formatPriceINR(packaging)} />}
           <Row label="Logistics" value={formatPriceINR(logistics)} />
           <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12, color: "var(--m-ink-3)", borderTop: "1px dashed var(--m-border-2)", paddingTop: 6, marginTop: 2 }}>
