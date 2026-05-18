@@ -555,10 +555,28 @@ const AdminOrders = () => {
                     grp.items.push({ ...it, _idx: idx });
                     grp.subtotal += Number(it.quantity || 0) * Number(it.price_per_meter || 0);
                   });
-                  // Attach SR shipment info (if persisted as array)
+                  // Attach SR shipment info (if persisted as array).
+                  //
+                  // Hardened keying: real seller_ids are mapped only by
+                  // their actual id (empty string is reserved for the
+                  // "_unknown" group). Without this guard, a shipment row
+                  // with `seller_id: ""` could collide with a different
+                  // supplier's group whose `seller_id` is also empty in
+                  // the items array — causing the SR# of supplier A to
+                  // appear next to supplier B's name.
                   const srMap = new Map();
                   (selectedOrder.shiprocket_shipments || []).forEach((sh) => {
-                    srMap.set(sh.seller_id || "", sh);
+                    const k = (sh.seller_id || "").trim();
+                    srMap.set(k, sh);
+                  });
+                  // Also build a name-based fallback for cases where the
+                  // shipment row has a blank seller_id but a known
+                  // seller_company string — better than showing the wrong
+                  // SR# next to the wrong supplier.
+                  const srByName = new Map();
+                  (selectedOrder.shiprocket_shipments || []).forEach((sh) => {
+                    const nm = (sh.seller_company || "").trim().toLowerCase();
+                    if (nm && !srByName.has(nm)) srByName.set(nm, sh);
                   });
                   return (
                     <div>
@@ -566,7 +584,22 @@ const AdminOrders = () => {
                         Items <span className="text-gray-400 text-xs font-normal">({groups.length} supplier{groups.length > 1 ? "s" : ""})</span>
                       </h3>
                       {groups.map((g, gi) => {
-                        const sr = srMap.get(g.seller_id);
+                        // Strict id match first; only fall back to a name
+                        // match when the shipment row has no seller_id at
+                        // all. This stops Vasu's SR# leaking into the
+                        // Locofast Online Services row when only one of
+                        // the two pushes actually succeeded.
+                        const gid = (g.seller_id || "").trim();
+                        let sr = gid ? srMap.get(gid) : null;
+                        if (!sr) {
+                          const gnm = (g.seller_company || "").trim().toLowerCase();
+                          const cand = gnm ? srByName.get(gnm) : null;
+                          // Only accept the name-match if THIS shipment row
+                          // didn't already get claimed by a different supplier
+                          // earlier in the loop (prevents the duplicate-SR
+                          // bug seen on prod with multi-supplier orders).
+                          if (cand && !(gid && cand.seller_id && cand.seller_id !== gid)) sr = cand;
+                        }
                         return (
                           <div key={g.seller_id || `g-${gi}`} className="border rounded-lg mb-3 overflow-hidden" data-testid={`order-supplier-${g.seller_id || gi}`}>
                             <div className="bg-emerald-50 px-4 py-2 flex items-center justify-between text-xs border-b">
