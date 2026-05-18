@@ -371,10 +371,7 @@ const OrderDetailPage = () => {
             <div className="bg-white border border-gray-200 rounded-xl p-6">
               <h2 className="text-sm font-semibold text-gray-900 mb-3">Payment summary</h2>
               <dl className="space-y-2 text-sm">
-                <div className="flex justify-between"><dt className="text-gray-600">Subtotal</dt><dd className="text-gray-900">{formatRupees(order.subtotal)}</dd></div>
-                {order.discount > 0 && (
-                  <div className="flex justify-between"><dt className="text-gray-600">Discount{order.coupon?.code ? ` (${order.coupon.code})` : ""}</dt><dd className="text-emerald-700">− {formatRupees(order.discount)}</dd></div>
-                )}
+                <div className="flex justify-between"><dt className="text-gray-600">Order Value</dt><dd className="text-gray-900">{formatRupees(order.subtotal)}</dd></div>
                 {order.packaging_charge > 0 && (
                   <div className="flex justify-between"><dt className="text-gray-600">Packaging</dt><dd className="text-gray-900">{formatRupees(order.packaging_charge)}</dd></div>
                 )}
@@ -384,8 +381,12 @@ const OrderDetailPage = () => {
                 {!order.packaging_charge && order.logistics_charge > 0 && (
                   <div className="flex justify-between"><dt className="text-gray-600">Logistics</dt><dd className="text-gray-900">{formatRupees(order.logistics_charge)}</dd></div>
                 )}
+                <div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-dashed border-gray-100"><dt>Gross Value</dt><dd>{formatRupees((order.subtotal || 0) + (order.packaging_charge || 0) + (order.logistics_only_charge || order.logistics_charge || 0))}</dd></div>
                 <div className="flex justify-between"><dt className="text-gray-600">GST</dt><dd className="text-gray-900">{formatRupees(order.tax)}</dd></div>
-                <div className="flex justify-between border-t border-gray-100 pt-2 mt-2 font-semibold"><dt className="text-gray-900">Total</dt><dd className="text-emerald-700">{formatRupees(order.total)}</dd></div>
+                {order.discount > 0 && (
+                  <div className="flex justify-between"><dt className="text-gray-600">Discount{order.coupon?.code ? ` (${order.coupon.code})` : ""}</dt><dd className="text-emerald-700">− {formatRupees(order.discount)}</dd></div>
+                )}
+                <div className="flex justify-between border-t border-gray-100 pt-2 mt-2 font-semibold"><dt className="text-gray-900">Total Invoice Value</dt><dd className="text-emerald-700">{formatRupees(order.total)}</dd></div>
                 <div className="flex justify-between text-xs text-gray-500"><dt>Payment method</dt><dd>{order.payment_method === "credit" ? "Locofast Credit" : "Razorpay"}</dd></div>
                 {order.invoice_number && (
                   <div className="flex justify-between text-xs text-gray-500"><dt>Invoice no.</dt><dd className="font-mono">{order.invoice_number}</dd></div>

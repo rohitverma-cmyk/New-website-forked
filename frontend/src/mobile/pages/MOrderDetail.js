@@ -187,13 +187,19 @@ export default function MOrderDetail() {
       <div className="m-container" style={{ marginTop: 16 }}>
         <h2 className="m-title" style={{ marginBottom: 10 }}>Bill summary</h2>
         <div className="m-card" style={{ padding: 14 }}>
-          <Row label="Subtotal" value={formatPriceINR(order.subtotal)} />
-          {order.tax ? <Row label="GST" value={formatPriceINR(order.tax)} /> : null}
-          {order.logistics_charge ? <Row label="Logistics" value={formatPriceINR(order.logistics_charge)} /> : null}
+          <Row label="Order Value" value={formatPriceINR(order.subtotal)} />
           {order.packaging_charge ? <Row label="Packaging" value={formatPriceINR(order.packaging_charge)} /> : null}
+          {(order.logistics_only_charge || order.logistics_charge) ? (
+            <Row label="Logistics" value={formatPriceINR(order.logistics_only_charge || order.logistics_charge)} />
+          ) : null}
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12, color: "var(--m-ink-3)", borderTop: "1px dashed var(--m-border-2)", paddingTop: 6, marginTop: 2 }}>
+            <span>Gross Value</span>
+            <span>{formatPriceINR((order.subtotal || 0) + (order.packaging_charge || 0) + (order.logistics_only_charge || order.logistics_charge || 0))}</span>
+          </div>
+          {order.tax ? <Row label="GST" value={formatPriceINR(order.tax)} /> : null}
           {order.discount ? <Row label="Discount" value={`− ${formatPriceINR(order.discount)}`} green /> : null}
           <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, borderTop: "1px dashed var(--m-border-2)", marginTop: 6 }}>
-            <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>Total paid</span>
+            <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>Total Invoice Value</span>
             <span style={{ fontWeight: 800, fontSize: 18, color: "var(--m-orange-700)" }}>{formatPriceINR(order.total)}</span>
           </div>
           {order.payment_status === "paid" && (

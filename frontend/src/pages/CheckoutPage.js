@@ -1452,7 +1452,7 @@ const CheckoutPage = () => {
                     </>
                   )}
                   <div className="flex justify-between pt-3 border-t border-gray-100">
-                    <span className="text-gray-600">Goods Subtotal</span>
+                    <span className="text-gray-600">Order Value</span>
                     <span>₹{subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
                   {(isMultiItem ? packagingCharge > 0 : orderType === "bulk") ? (
@@ -1479,7 +1479,7 @@ const CheckoutPage = () => {
                     </div>
                   )}
                   <div className="flex justify-between text-gray-500 text-xs pt-1 border-t border-dashed border-gray-100">
-                    <span>Taxable value (Goods + Packaging + Logistics)</span>
+                    <span>Gross Value</span>
                     <span>₹{(subtotal + packagingCharge + logistics).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
                   <div className="flex justify-between">
@@ -1499,7 +1499,7 @@ const CheckoutPage = () => {
                     </div>
                   )}
                   <div className="flex justify-between pt-3 border-t border-gray-200 text-lg font-semibold">
-                    <span>Total</span>
+                    <span>Total Invoice Value</span>
                     <span className="text-emerald-600">₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
                   <p className="text-xs text-amber-600 mt-3">For export orders, additional port charges, custom charges, export documentation &amp; cess may be applicable.</p>

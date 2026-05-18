@@ -2494,15 +2494,17 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
     totals_data = []
 
     if is_v2:
-        # Goods subtotal first, then charges, then taxable value, then GST.
-        totals_data.append(['Goods Subtotal:', f"Rs {subtotal:,.2f}"])
+        # New presentation: Order Value → Packaging → Logistics → Gross
+        # Value → GST → Total Invoice Value. Packaging/logistics are part
+        # of the taxable supply per Schedule II of the CGST Act.
+        totals_data.append(['Order Value:', f"Rs {subtotal:,.2f}"])
         if packaging > 0:
-            totals_data.append(['Packaging Charge:', f"Rs {packaging:,.2f}"])
+            totals_data.append(['Packaging:', f"Rs {packaging:,.2f}"])
         eff_log = logistics_only if (logistics_only > 0) else logistics
         if eff_log > 0:
-            totals_data.append(['Logistics Charge:', f"Rs {eff_log:,.2f}"])
+            totals_data.append(['Logistics:', f"Rs {eff_log:,.2f}"])
         taxable_value = order.get('taxable_value') or round(subtotal + packaging + eff_log, 2)
-        totals_data.append(['Taxable Value:', f"Rs {taxable_value:,.2f}"])
+        totals_data.append(['Gross Value:', f"Rs {taxable_value:,.2f}"])
         if is_interstate:
             totals_data.append(['IGST (5%):', f"Rs {tax:,.2f}"])
         else:
@@ -2511,16 +2513,11 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
             totals_data.append(['CGST (2.5%):', f"Rs {cgst:,.2f}"])
             totals_data.append(['SGST (2.5%):', f"Rs {sgst:,.2f}"])
     else:
-        # Legacy presentation — preserves exactly what these old orders
-        # were charged at checkout (packaging/logistics were NOT taxed).
-        totals_data.append(['Subtotal:', f"Rs {subtotal:,.2f}"])
-        if is_interstate:
-            totals_data.append(['IGST (5%):', f"Rs {tax:,.2f}"])
-        else:
-            cgst = tax / 2
-            sgst = tax / 2
-            totals_data.append(['CGST (2.5%):', f"Rs {cgst:,.2f}"])
-            totals_data.append(['SGST (2.5%):', f"Rs {sgst:,.2f}"])
+        # Legacy orders — same visual sequence so the invoice format is
+        # consistent across vintages, but the math note remains that
+        # packaging/logistics were NOT part of the taxable value on
+        # these historical invoices.
+        totals_data.append(['Order Value:', f"Rs {subtotal:,.2f}"])
         if packaging > 0 and logistics_only > 0:
             totals_data.append(['Packaging:', f"Rs {packaging:,.2f}"])
             totals_data.append(['Logistics:', f"Rs {logistics_only:,.2f}"])
@@ -2528,13 +2525,24 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
             totals_data.append(['Logistics:', f"Rs {logistics:,.2f}"])
         else:
             totals_data.append(['Logistics:', 'FREE (Included)'])
+        # Gross value here = subtotal + charges (charges weren't taxed
+        # in legacy, so this row is for readability only).
+        legacy_gross = round(subtotal + packaging + (logistics_only if logistics_only > 0 else logistics), 2)
+        totals_data.append(['Gross Value:', f"Rs {legacy_gross:,.2f}"])
+        if is_interstate:
+            totals_data.append(['IGST (5%):', f"Rs {tax:,.2f}"])
+        else:
+            cgst = tax / 2
+            sgst = tax / 2
+            totals_data.append(['CGST (2.5%):', f"Rs {cgst:,.2f}"])
+            totals_data.append(['SGST (2.5%):', f"Rs {sgst:,.2f}"])
 
     if discount > 0:
         coupon = order.get('coupon', {})
         coupon_code = coupon.get('code', 'DISCOUNT') if coupon else 'DISCOUNT'
         totals_data.append([f'Coupon ({coupon_code}):', f"-Rs {discount:,.2f}"])
 
-    totals_data.append(['TOTAL:', f"Rs {total:,.2f}"])
+    totals_data.append(['Total Invoice Value:', f"Rs {total:,.2f}"])
     
     totals_table = Table(totals_data, colWidths=[130*mm, 46*mm])
     totals_table.setStyle(TableStyle([

@@ -373,12 +373,16 @@ function MCheckoutInner() {
       <div className="m-container" style={{ marginTop: 22 }}>
         <h2 className="m-title" style={{ marginBottom: 10 }}>Bill summary</h2>
         <div className="m-card" style={{ padding: 14 }}>
-          <Row label={`Subtotal (${qty}m)`} value={formatPriceINR(subtotal)} />
-          <Row label="Logistics" value={formatPriceINR(logistics)} />
+          <Row label={`Order Value (${qty}m)`} value={formatPriceINR(subtotal)} />
           {packaging > 0 && <Row label="Packaging" value={formatPriceINR(packaging)} />}
+          <Row label="Logistics" value={formatPriceINR(logistics)} />
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12, color: "var(--m-ink-3)", borderTop: "1px dashed var(--m-border-2)", paddingTop: 6, marginTop: 2 }}>
+            <span>Gross Value</span>
+            <span>{formatPriceINR(subtotal + packaging + logistics)}</span>
+          </div>
           <Row label="GST (5%)" value={formatPriceINR(tax)} />
           <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, borderTop: "1px dashed var(--m-border-2)", marginTop: 6 }}>
-            <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>Total</span>
+            <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>Total Invoice Value</span>
             <span style={{ fontWeight: 800, fontSize: 20, color: "var(--m-orange-700)" }}>{formatPriceINR(total)}</span>
           </div>
         </div>
