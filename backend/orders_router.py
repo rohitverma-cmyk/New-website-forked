@@ -2324,10 +2324,22 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         f'<b>State Code:</b> {bill_state_code} ({bill_state_name})<br/>' if bill_state_code else ''
     )
 
+    # Bill To — print the TRADE NAME (company, populated from GST trade
+    # name) as the primary line on the invoice; fall back to contact name
+    # when there's no company on file (rare — pre-GST verification orders).
+    # The customer's contact name is added as "Attn:" so the document
+    # still names a real person.
+    bill_company = (customer.get('company') or '').strip()
+    bill_contact = (customer.get('name') or '').strip()
+    bill_primary = bill_company or bill_contact or 'N/A'
+    bill_attn_line = (
+        f"Attn: {bill_contact}<br/>"
+        if bill_company and bill_contact and bill_contact.lower() != bill_company.lower()
+        else ''
+    )
     buyer_info = f"""<b>Bill To:</b><br/>
-    {customer.get('name', 'N/A')}<br/>
-    {customer.get('company', '') + '<br/>' if customer.get('company') else ''}
-    {gst_line}{customer.get('address', 'N/A')}<br/>
+    {bill_primary}<br/>
+    {bill_attn_line}{gst_line}{customer.get('address', 'N/A')}<br/>
     {customer.get('city', '')}, {customer.get('state', '')}<br/>
     PIN: {customer.get('pincode', 'N/A')}<br/>
     {bill_state_line}<b>Phone:</b> {customer.get('phone', 'N/A')}<br/>
@@ -2347,10 +2359,19 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
             f"<b>State Code:</b> {buyer_state_code} ({buyer_state_name})<br/>"
             if buyer_state_code else ''
         )
-        ship_company = ship_to.get('company', '')
+        # Ship To — same convention as Bill To: company (trade name)
+        # leads, contact name appears as "Attn:" line.
+        ship_company = (ship_to.get('company') or '').strip()
+        ship_contact = (ship_to.get('name') or customer.get('name') or '').strip()
+        ship_primary = ship_company or ship_contact or 'N/A'
+        ship_attn_line = (
+            f"Attn: {ship_contact}<br/>"
+            if ship_company and ship_contact and ship_contact.lower() != ship_company.lower()
+            else ''
+        )
         ship_info = f"""<b>Ship To:</b><br/>
-        {ship_to.get('name') or customer.get('name', 'N/A')}<br/>
-        {(ship_company + '<br/>') if ship_company else ''}{ship_gst_line}{ship_addr}<br/>
+        {ship_primary}<br/>
+        {ship_attn_line}{ship_gst_line}{ship_addr}<br/>
         {ship_to.get('city') or order.get('ship_to_city', '')}, {ship_to.get('state') or order.get('ship_to_state', '')}<br/>
         PIN: {ship_to.get('pincode') or order.get('ship_to_pincode', '')}<br/>
         {ship_state_line}"""
@@ -2707,12 +2728,19 @@ def generate_pi_pdf(order: dict) -> io.BytesIO:
     elements.append(company_table)
     elements.append(Spacer(1, 4*mm))
 
-    # Bill To / Ship To
+    # Bill To / Ship To — trade name (company) leads, contact as "Attn:".
     customer = order.get('customer', {})
+    pi_company = (customer.get('company') or '').strip()
+    pi_contact = (customer.get('name') or '').strip()
+    pi_bill_primary = pi_company or pi_contact
+    pi_bill_attn = f"Attn: {pi_contact}<br/>" if pi_company and pi_contact and pi_contact.lower() != pi_company.lower() else ""
+    pi_ship_contact = (customer.get('shipping_name') or customer.get('name') or '').strip()
+    pi_ship_primary = pi_company or pi_ship_contact
+    pi_ship_attn = f"Attn: {pi_ship_contact}<br/>" if pi_company and pi_ship_contact and pi_ship_contact.lower() != pi_company.lower() else ""
     bill_ship = [
         [Paragraph("<b>Bill To</b>", header_style), Paragraph("<b>Ship To</b>", header_style)],
-        [Paragraph(f"{customer.get('name', '')}<br/>{customer.get('company', '')}<br/>{customer.get('address', '')}<br/>{customer.get('city', '')}, {customer.get('state', '')}<br/>{customer.get('email', '')}", small_style),
-         Paragraph(f"{customer.get('shipping_name', customer.get('name', ''))}<br/>{customer.get('shipping_address', customer.get('address', ''))}<br/>{customer.get('shipping_city', customer.get('city', ''))}, {customer.get('shipping_state', customer.get('state', ''))}", small_style)],
+        [Paragraph(f"{pi_bill_primary}<br/>{pi_bill_attn}{customer.get('address', '')}<br/>{customer.get('city', '')}, {customer.get('state', '')}<br/>{customer.get('email', '')}", small_style),
+         Paragraph(f"{pi_ship_primary}<br/>{pi_ship_attn}{customer.get('shipping_address', customer.get('address', ''))}<br/>{customer.get('shipping_city', customer.get('city', ''))}, {customer.get('shipping_state', customer.get('state', ''))}", small_style)],
     ]
     bill_table = Table(bill_ship, colWidths=[85*mm, 85*mm])
     bill_table.setStyle(TableStyle([
