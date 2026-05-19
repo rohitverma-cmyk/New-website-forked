@@ -618,6 +618,14 @@ Full E2E flow for the 10% advance bulk order workflow shipped. Customer pays 10%
 - **API helpers** (`/app/frontend/src/lib/api.js`): `vendorMarkGoodsReady(orderId, items)`, `adminMarkBalancePaid(orderId)`. Axios interceptor now forwards the vendor JWT for `mark-goods-ready` calls.
 - **Tests**: `/app/backend/tests/test_provisional_orders.py` — 10/10 pass (state machine, variance band, rolls payload, balance recompute, admin override, full E2E).
 
+### Provisional Bulk Orders — Vendor Invoice + Payout from Actual Qty (Feb 19, 2026) ✅
+Refined the goods-ready step so vendor payouts use real dispatched quantities and the tax invoice is captured upfront.
+- **Vendor invoice required at goods-ready**: `POST /api/orders/{id}/mark-goods-ready` now requires `vendor_invoice: {url, filename, invoice_number, invoice_date, amount?}` when caller is a vendor. Admin override (caller_role=admin) still allowed without invoice. Order stores `vendor_invoices: [{seller_id, url, filename, invoice_number, invoice_date, amount, uploaded_at}]` keyed by seller_id (multi-supplier safe).
+- **Payouts use actual_quantity**: `payouts_router.materialize_payouts_for_order` now reads `item.actual_quantity` (fallback to `item.quantity`) when computing `line_gross`, so vendor commission/payout matches dispatched volume — not the customer's original order. Non-provisional orders are unchanged.
+- **Auto-stamped payout invoice**: When materializing a payout we copy the order's `vendor_invoices` entry onto the payout doc (`vendor_invoice_url`, `vendor_invoice_number`, `vendor_invoice_date`, `vendor_invoice_amount`, `vendor_invoice_status='uploaded'`, `vendor_invoice_source='mark_goods_ready'`). Vendor doesn't need to re-upload from My Payouts; legacy `/api/vendor/payouts/{id}/upload-invoice` is still available for non-provisional flows.
+- **UI** (`/app/frontend/src/pages/vendor/VendorOrders.js`): Mark Goods Ready modal now has a "Tax Invoice for Payout" block (invoice number + invoice date + amount + Cloudinary file upload). Submit blocked until all required fields are filled.
+- **Tests**: `/app/backend/tests/test_provisional_invoice_payout.py` — 10/10 pass (required-for-vendor, optional-for-admin, vendor_invoices persistence, actual_quantity payout, invoice auto-stamping, non-provisional fallback, legacy upload still works).
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
