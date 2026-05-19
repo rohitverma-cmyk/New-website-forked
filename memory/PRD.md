@@ -666,6 +666,14 @@ Default ±variance band tightened from 10% → 3%. Admins can now configure vari
 - **Backend** `category_router.py`: `CategoryCreate` / `CategoryUpdate` / `Category` now include optional `variance_pct: float`. POST `/api/categories` and PUT `/api/categories/{id}` accept it; GET returns it. (Bug-fix: POST was previously dropping `variance_pct` + other newer fields — now mirrors full schema.)
 - **Frontend** `AdminCategories.js`: New "Goods-Ready Variance %" input (testid `category-variance-input`) on the category modal — 0–100 range, blank → platform default. Help text spells out typical ranges (knits 3–5%, greige 5–8%).
 
+### Multi-Vendor Shiprocket Duplicate Prevention (Feb 19, 2026) ✅
+Bug: Duplicate Shiprocket shipments being created for the same vendor (Locofast Online Services) on multi-supplier orders. Verified 9/11 backend tests + frontend rendering invariant.
+- **Root cause #1 (backend)**: Auto-push during `verify-payment` splits a multi-vendor order into child orders and pushes each child's Shiprocket independently. The PARENT order's `shiprocket_shipments[]` array was never populated. When admin clicked "Push to Shiprocket" on the parent later, `admin_push_to_shiprocket`'s idempotency check saw an empty array and re-pushed every supplier → duplicate SR# on Shiprocket.
+- **Fix #1** (`orders_router.py` verify-payment auto-push, lines 893-984): After each child push (success OR failure), aggregate the result into a `parent_shipments[]` list with seller_id, seller_company, success, order_id, shipment_id, awb_code, child_order_id, error. After all children, persist that list onto the parent's `shiprocket_shipments` array along with `shiprocket_pushed=True` + first-success mirror on legacy single-shipment fields. Subsequent admin pushes correctly short-circuit with `already_pushed=true`.
+- **Root cause #2 (frontend)**: AdminOrders.js name-based fallback could match the same shipment row under multiple supplier groups, displaying identical SR# under different vendors.
+- **Fix #2** (`AdminOrders.js`): `srMap` only indexes shipments WITH a `seller_id`; `srByName` only indexes shipments WITHOUT one. A `claimed: Set` ensures each shipment can attach to AT MOST ONE supplier group across the render loop.
+- **Tests**: 9 backend tests pass (admin idempotency, force re-push, seller_ids filter, single-vendor regression, provisional advance-leg no-push, failed-push structure preserved). 2 skipped due to no existing multi-vendor test data — code review confirms logic is correct.
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
