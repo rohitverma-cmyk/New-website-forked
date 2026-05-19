@@ -158,6 +158,119 @@ def _gst_rates() -> tuple[float, float]:
     return goods, comm
 
 
+async def resync_payouts_for_actual_qty(order: dict) -> dict:
+    """Recompute every PENDING vendor_payout linked to this order using
+    the freshly-stamped `actual_quantity` on each item.
+
+    Called automatically from `mark_goods_ready` so finance never has to
+    click the manual "Resync" button just to correct the basis when a
+    supplier reports a different dispatched qty.
+
+    Returns a small summary so the caller can log diffs.
+    """
+    from auth_helpers import db as _db
+    order_id = order["id"]
+    payouts = await _db.vendor_payouts.find({"order_id": order_id}, {"_id": 0}).to_list(50)
+    if not payouts:
+        # Order isn't paid yet → no payouts to resync. (materialize will
+        # pick up actual_quantity naturally on first run.)
+        return {"updated": 0, "skipped_paid": 0, "no_payouts": True}
+
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+    updated = 0
+    skipped_paid = 0
+    diffs: list = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for p in payouts:
+        if p.get("status") == "paid":
+            skipped_paid += 1
+            continue
+        sid = p["seller_id"]
+        order_items = [it for it in (order.get("items") or []) if (it.get("seller_id") or "") == sid]
+        if not order_items:
+            continue
+
+        new_lines = []
+        new_gross = 0.0
+        new_comm = 0.0
+        for it in order_items:
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
+            rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
+            line_gross = qty * rate
+            item_pct_raw = it.get("commission_pct")
+            try:
+                item_pct = float(item_pct_raw) if item_pct_raw is not None else None
+            except (TypeError, ValueError):
+                item_pct = None
+            if item_pct is not None:
+                comm_pct = item_pct
+            else:
+                comm_pct = await _resolve_commission(
+                    sid,
+                    it.get("fabric_id", ""),
+                    it.get("category_id", ""),
+                    it.get("category_name", ""),
+                    it.get("pattern", ""),
+                )
+            line_comm = round(line_gross * comm_pct / 100.0, 2)
+            new_lines.append({
+                "fabric_id": it.get("fabric_id", ""),
+                "fabric_name": it.get("fabric_name", ""),
+                "fabric_code": it.get("fabric_code", ""),
+                "quantity": qty,
+                "rate": rate,
+                "gross": round(line_gross, 2),
+                "commission_pct": comm_pct,
+                "commission_amount": line_comm,
+                "net": round(line_gross - line_comm, 2),
+            })
+            new_gross += line_gross
+            new_comm += line_comm
+
+        new_gross = round(new_gross, 2)
+        new_comm = round(new_comm, 2)
+        gst_on_goods = round(new_gross * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(new_gross + gst_on_goods, 2)
+        gst_on_commission = round(new_comm * comm_gst_pct / 100.0, 2)
+        advances = float(p.get("advances_applied", 0) or 0)
+        net_payable = round(supplier_invoice_value - new_comm - gst_on_commission - advances, 2)
+
+        old_gross = float(p.get("gross_subtotal", 0) or 0)
+        if abs(old_gross - new_gross) <= 0.01:
+            # Nothing actually changed — skip the write.
+            continue
+        await _db.vendor_payouts.update_one(
+            {"id": p["id"]},
+            {"$set": {
+                "items": new_lines,
+                "gross_subtotal": new_gross,
+                "commission_total": new_comm,
+                "commission_gst_pct": comm_gst_pct,
+                "gst_on_commission": gst_on_commission,
+                "goods_gst_pct": goods_gst_pct,
+                "gst_on_goods": gst_on_goods,
+                "supplier_invoice_value": supplier_invoice_value,
+                "net_payable": net_payable,
+                "actual_qty_resync_at": now_iso,
+                "updated_at": now_iso,
+            }},
+        )
+        updated += 1
+        diffs.append({
+            "seller_company": p.get("seller_company", ""),
+            "old_gross": old_gross,
+            "new_gross": new_gross,
+        })
+
+    return {"updated": updated, "skipped_paid": skipped_paid, "diffs": diffs}
+
+
+
+
 async def materialize_payouts_for_order(order: dict) -> List[dict]:
     """Idempotently create one `vendor_payouts` row per (seller × order).
 
@@ -547,7 +660,12 @@ async def get_order_seller_commissions(order_id: str):
         gross = 0.0
         comm_total = 0.0
         for it in items:
-            qty = float(it.get("quantity", 0) or 0)
+            # Use actual (vendor-reported) qty once goods are marked ready;
+            # falls back to ordered qty for the pre-ready preview.
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
             rate = float(it.get("price_per_meter", 0) or 0)
             line_gross = qty * rate
             pct = await _resolve_commission(sid, it.get("fabric_id", ""), it.get("category_id", ""))
@@ -635,7 +753,13 @@ async def resync_order_commission(
         new_gross = 0.0
         new_comm = 0.0
         for it in order_items:
-            qty = float(it.get("quantity", 0) or 0)
+            # Use actual (vendor-reported) qty whenever available — that's
+            # the quantity the supplier is actually being paid for. Falls
+            # back to ordered qty for legacy / pre-goods-ready orders.
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
             rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
             line_gross = qty * rate
             # Resync intentionally bypasses the stale `order.commission_pct`
@@ -773,7 +897,13 @@ async def backfill_pending_payouts_commission(user=Depends(get_current_accounts_
         new_gross = 0.0
         new_comm = 0.0
         for it in order_items:
-            qty = float(it.get("quantity", 0) or 0)
+            # Use actual (vendor-reported) qty whenever available — that's
+            # the quantity the supplier is actually being paid for. Falls
+            # back to ordered qty for legacy / pre-goods-ready orders.
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
             rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
             line_gross = qty * rate
             # Resync intentionally bypasses the stale `order.commission_pct`

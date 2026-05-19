@@ -706,6 +706,28 @@ Surfaced both balance-payment controls inside the admin order detail modal so th
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
 
+### Actual-Qty Balance Collection + Vendor Payout Auto-Resync (Feb 19, 2026) ✅
+Closed two intertwined gaps when vendors report a goods-ready qty that differs from the booked qty.
+
+**Backend (`orders_router.py`)**
+- `mark_goods_ready` now recomputes `actual_subtotal / packaging / logistics / tax / total` for **non-provisional** orders too (previously only provisional). Sets `balance_amount = max(actual_total − amount_paid, 0)` and `refund_amount = max(amount_paid − actual_total, 0)`. Flips `payment_status` to `balance_pending` whenever balance > 0; otherwise stays `paid`.
+- New endpoint `POST /api/orders/{id}/recompute-actuals` — retroactive fix for orders marked ready before this logic landed. Idempotent; only mutates if at least one item has `actual_quantity != quantity`.
+- Removed the `is_provisional` gate from `balance-share-link`, `mark-balance-paid`, `start_balance_payment`, and `start_balance_payment_via_share`. Balance flow is now driven entirely by `payment_status == 'balance_pending'`, so non-provisional orders with delta balance use the same buttons & token URL.
+
+**Backend (`payouts_router.py`)**
+- New helper `resync_payouts_for_actual_qty(order)` — automatically called from the tail of `mark_goods_ready`. Recomputes every PENDING `vendor_payouts` row using `actual_quantity`, stamps `actual_qty_resync_at`, leaves PAID rows untouched.
+- Fixed `resync_order_commission` and bulk `resync_commissions` and the preview path in `get_order_seller_commissions` — all three were silently using `it.get("quantity")` instead of `actual_quantity`, so the manual "Resync" button was a no-op on quantity drift.
+
+**Frontend (`AdminOrders.js`)**
+- New banner "Actual qty differs from ordered" on non-provisional orders with `goods_ready_at` set and a delta — shows Original vs Actual invoice value + Customer owes / Refund due, with contextual help.
+- Action-bar gate relaxed: **Share Balance Link** and **Mark Balance Paid** buttons now surface whenever `payment_status === 'balance_pending'` and `balance_amount > 0`, regardless of `is_provisional`. Same backend endpoints handle both paths.
+- New purple button "Recompute Actuals" surfaces for legacy orders (`goods_ready_at` set, `actual_total` null, and at least one item with diff) — one-click retroactive fix that also resyncs vendor payouts.
+
+**Verified end-to-end via curl on preview:**
+- Created a synthetic non-provisional order, 100m → 105m actual qty. `mark-goods-ready` → `actual_total=12012`, `balance_amount=1092`, `payment_status=balance_pending`. Vendor payout auto-resynced from gross ₹10,000 → **₹11,000** (110m × ₹100), with `actual_qty_resync_at` stamped.
+- `balance-share-link` minted a public URL for the non-provisional order (would previously 400).
+- `mark-balance-paid` flipped to `paid` (would previously 400 with "Not a provisional order").
+
 ### Admin User Management (Feb 19, 2026) ✅
 Super-admin (default `admin@locofast.com`, configurable via `SUPER_ADMIN_EMAIL` env var) can now create/reset/deactivate other admin-panel users from a new page `/admin/users` — no more DB shell needed for password resets.
 - **Backend**: new `admin_users_router.py` exposing `GET/POST /api/admin/manage-users`, `POST /api/admin/manage-users/{id}/reset-password`, `PATCH /api/admin/manage-users/{id}` (rename / role / AM flag / active toggle), `DELETE` (soft-delete via `active=false`). Gated by `_require_super_admin` — non-super admins get 403.

@@ -2200,14 +2200,45 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
                 "goods_ready_by": caller_seller_id or caller_role,
             })
         else:
-            # Non-provisional: customer already paid 100%. We just stamp
-            # rolls/invoice for the payout flow and flip status so admin
-            # knows to push to Shiprocket. No financial recomputation.
+            # Non-provisional: customer paid 100% upfront on the ordered
+            # qty. When the vendor reports a *different* actual qty we now
+            # also recompute order-level `actual_*` totals — proportional
+            # to the booking — so finance can:
+            #   • Charge the customer the *extra* balance if actual > ordered
+            #   • Surface a `refund_amount` if actual < ordered
+            # If actual qty exactly matches ordered, nothing financial
+            # changes and we just stamp the goods-ready flag.
+            actual_subtotal = sum(float(it.get("actual_total") or 0) for it in new_items)
+            booked_subtotal = float(order.get("subtotal") or 0)
+            ratio = (actual_subtotal / booked_subtotal) if booked_subtotal > 0 else 1.0
+            packaging = round(float(order.get("packaging_charge") or 0) * ratio, 2)
+            logistics = round(float(order.get("logistics_only_charge") or order.get("logistics_charge") or 0) * ratio, 2)
+            tax = round((actual_subtotal + packaging + logistics) * 0.05, 2)  # 5 % GST
+            discount = float(order.get("discount") or 0)
+            actual_total = round(actual_subtotal + packaging + logistics + tax - discount, 2)
+            # Customer has already paid `order.total` (100 % upfront).
+            paid_amount = float(order.get("total") or 0)
+            delta = round(actual_total - paid_amount, 2)
+            balance_amount = max(delta, 0.0)
+            refund_amount = max(-delta, 0.0)
+
             update_doc.update({
+                "actual_subtotal": round(actual_subtotal, 2),
+                "actual_packaging_charge": packaging,
+                "actual_logistics_charge": logistics,
+                "actual_tax": tax,
+                "actual_total": actual_total,
+                "balance_amount": balance_amount,
+                "refund_amount": refund_amount,
                 "status": "goods_ready",
                 "goods_ready_at": datetime.now(timezone.utc).isoformat(),
                 "goods_ready_by": caller_seller_id or caller_role,
             })
+            # Only flip payment_status when there's an actual balance owed
+            # by the customer — refunds/no-change stay as 'paid' since
+            # logistics + payouts can still proceed.
+            if balance_amount > 0.005:
+                update_doc["payment_status"] = "balance_pending"
 
     await db.orders.update_one({"id": order_id}, {"$set": update_doc})
 
@@ -2233,8 +2264,127 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"internal goods_ready event failed: {e}")
 
+        # Resync vendor payouts to use the freshly-stamped `actual_quantity`.
+        # The original payout was materialized at payment-capture time using
+        # the *ordered* qty; without this resync, vendors get paid on the
+        # wrong basis. Paid payouts are skipped — only PENDING rows update.
+        try:
+            from payouts_router import resync_payouts_for_actual_qty
+            fresh2 = await db.orders.find_one({"id": order_id}, {"_id": 0})
+            resync_summary = await resync_payouts_for_actual_qty(fresh2)
+            if resync_summary.get("updated", 0) > 0:
+                logger.info(
+                    f"[mark-ready] vendor-payout resync · order={order_id} "
+                    f"updated={resync_summary.get('updated')} skipped_paid={resync_summary.get('skipped_paid', 0)}"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[mark-ready] vendor-payout resync failed: {e}")
+
     fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
     return {"success": True, "all_ready": all_ready, "order": fresh}
+
+
+@router.post("/{order_id}/recompute-actuals")
+async def recompute_order_actuals(order_id: str, admin=Depends(auth_helpers.get_current_admin)):
+    """Retroactive fix for orders that were marked goods-ready BEFORE the
+    actual-qty recompute logic landed (Feb 2026). Idempotent — recomputes
+    `actual_subtotal / packaging / logistics / tax / total / balance /
+    refund` from the per-item `actual_quantity` stamps and resyncs vendor
+    payouts. Only acts on orders that have at least one item where
+    `actual_quantity != quantity`. Returns the updated order.
+    """
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if not order.get("goods_ready_at"):
+        raise HTTPException(status_code=400, detail="Order is not marked goods-ready yet")
+
+    items = order.get("items") or []
+    if not items:
+        raise HTTPException(status_code=400, detail="Order has no items")
+
+    # Detect if at least one item has an actual qty that differs from
+    # ordered — if everything matches, nothing to recompute.
+    has_diff = any(
+        it.get("actual_quantity") is not None
+        and float(it.get("actual_quantity") or 0) != float(it.get("quantity") or 0)
+        for it in items
+    )
+    if not has_diff and order.get("actual_total") is not None:
+        return {"success": True, "no_change": True, "order": order}
+
+    # Stamp per-item actual_total if missing (uses actual_quantity || quantity)
+    new_items = []
+    for it in items:
+        clone = dict(it)
+        qty = float(clone.get("actual_quantity") if clone.get("actual_quantity") is not None else (clone.get("quantity") or 0))
+        rate = float(clone.get("price_per_meter") or 0)
+        clone["actual_total"] = round(qty * rate, 2)
+        new_items.append(clone)
+
+    actual_subtotal = sum(float(it.get("actual_total") or 0) for it in new_items)
+    booked_subtotal = float(order.get("subtotal") or 0)
+    ratio = (actual_subtotal / booked_subtotal) if booked_subtotal > 0 else 1.0
+    packaging = round(float(order.get("packaging_charge") or 0) * ratio, 2)
+    logistics = round(float(order.get("logistics_only_charge") or order.get("logistics_charge") or 0) * ratio, 2)
+    tax = round((actual_subtotal + packaging + logistics) * 0.05, 2)
+    discount = float(order.get("discount") or 0)
+    actual_total = round(actual_subtotal + packaging + logistics + tax - discount, 2)
+
+    update: dict = {
+        "items": new_items,
+        "actual_subtotal": round(actual_subtotal, 2),
+        "actual_packaging_charge": packaging,
+        "actual_logistics_charge": logistics,
+        "actual_tax": tax,
+        "actual_total": actual_total,
+        "actuals_recomputed_at": datetime.now(timezone.utc).isoformat(),
+        "actuals_recomputed_by": admin.get("email", ""),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if order.get("is_provisional"):
+        # Provisional: customer paid the advance. Balance = actual - advance.
+        advance_amount = float(order.get("advance_amount") or 0)
+        balance_amount = max(round(actual_total - advance_amount, 2), 0.0)
+        update["balance_amount"] = balance_amount
+        # Preserve existing payment_status if already moved past
+        # balance_pending; else set it.
+        if order.get("payment_status") not in ("paid",):
+            update["payment_status"] = "balance_pending"
+    else:
+        # Non-provisional: customer paid 100% of original `total`. Delta
+        # is now the additional balance (or refund).
+        paid_amount = float(order.get("total") or 0)
+        delta = round(actual_total - paid_amount, 2)
+        update["balance_amount"] = max(delta, 0.0)
+        update["refund_amount"] = max(-delta, 0.0)
+        # Only mark balance_pending if customer actually owes something.
+        if delta > 0.005:
+            update["payment_status"] = "balance_pending"
+
+    await db.orders.update_one({"id": order_id}, {"$set": update})
+
+    # Resync vendor payouts to the recomputed basis.
+    try:
+        from payouts_router import resync_payouts_for_actual_qty
+        fresh_for_resync = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        summary = await resync_payouts_for_actual_qty(fresh_for_resync)
+        logger.info(f"[recompute-actuals] order={order_id} payout-resync={summary}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[recompute-actuals] payout resync failed: {e}")
+
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {
+        "success": True,
+        "no_change": False,
+        "actual_total": actual_total,
+        "balance_amount": fresh.get("balance_amount"),
+        "refund_amount": fresh.get("refund_amount"),
+        "payment_status": fresh.get("payment_status"),
+        "order": fresh,
+    }
+
 
 
 # ─── Vendor 24h Accept / Cancel window ─────────────────────────
@@ -2389,8 +2539,6 @@ async def start_balance_payment(order_id: str, request: Request):
     )
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    if not order.get("is_provisional"):
-        raise HTTPException(status_code=400, detail="Not a provisional order")
     if order.get("payment_status") != "balance_pending":
         raise HTTPException(
             status_code=400,
@@ -2474,8 +2622,8 @@ async def mint_balance_share_link(order_id: str, request: Request):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    if not order.get("is_provisional") or order.get("payment_status") != "balance_pending":
-        raise HTTPException(status_code=400, detail="Balance link only available for provisional orders awaiting balance")
+    if order.get("payment_status") != "balance_pending":
+        raise HTTPException(status_code=400, detail="Balance link only available for orders awaiting balance payment")
 
     token = order.get("balance_share_token") or _make_balance_token(order_id)
     await db.orders.update_one({"id": order_id}, {"$set": {
@@ -2527,8 +2675,6 @@ async def start_balance_payment_via_share(order_id: str, token: str):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order or order.get("balance_share_token") != token:
         raise HTTPException(status_code=404, detail="Invalid or expired link")
-    if not order.get("is_provisional"):
-        raise HTTPException(status_code=400, detail="Not a provisional order")
     if order.get("payment_status") != "balance_pending":
         raise HTTPException(status_code=400, detail="Balance is not currently due")
     if order.get("payment_method") == "credit":
@@ -2568,8 +2714,6 @@ async def admin_mark_balance_paid(order_id: str, admin=Depends(auth_helpers.get_
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    if not order.get("is_provisional"):
-        raise HTTPException(status_code=400, detail="Not a provisional order")
     if order.get("payment_status") != "balance_pending":
         raise HTTPException(status_code=400, detail="Balance is not pending — nothing to mark.")
 

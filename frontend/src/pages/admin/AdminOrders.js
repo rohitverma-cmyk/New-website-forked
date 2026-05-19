@@ -661,6 +661,44 @@ const AdminOrders = () => {
                     )}
                   </div>
                 )}
+                {/* Non-provisional: vendor reported a different actual qty
+                    than ordered, so the customer either owes an
+                    additional balance or is due a refund. */}
+                {!selectedOrder.is_provisional && selectedOrder.goods_ready_at && (Number(selectedOrder.balance_amount || 0) > 0 || Number(selectedOrder.refund_amount || 0) > 0) && (
+                  <div
+                    className={`rounded-lg p-4 border ${Number(selectedOrder.balance_amount || 0) > 0 ? 'bg-orange-50 border-orange-200' : 'bg-blue-50 border-blue-200'}`}
+                    data-testid="admin-actual-qty-delta-banner"
+                  >
+                    <p className="text-sm font-semibold flex items-center gap-1.5">
+                      <AlertTriangle size={14} /> Actual qty differs from ordered
+                    </p>
+                    <div className="grid grid-cols-3 gap-3 mt-2 text-xs">
+                      <div>
+                        <p className="text-gray-500">Originally invoiced</p>
+                        <p className="font-semibold">₹{Number(selectedOrder.total || 0).toLocaleString('en-IN')}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Actual invoice</p>
+                        <p className="font-semibold">₹{Number(selectedOrder.actual_total || selectedOrder.total || 0).toLocaleString('en-IN')}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">{Number(selectedOrder.balance_amount || 0) > 0 ? 'Customer owes' : 'Refund due'}</p>
+                        <p className={`font-semibold ${Number(selectedOrder.balance_amount || 0) > 0 ? 'text-orange-700' : 'text-blue-700'}`} data-testid="actual-qty-delta-amount">
+                          ₹{Number(selectedOrder.balance_amount || selectedOrder.refund_amount || 0).toLocaleString('en-IN')}
+                        </p>
+                      </div>
+                    </div>
+                    {Number(selectedOrder.balance_amount || 0) > 0 ? (
+                      <p className="text-xs text-orange-800 mt-2">
+                        Customer was charged on the ordered qty. Use <strong>Share Balance Link</strong> or <strong>Mark Balance Paid</strong> below to collect the extra ₹{Number(selectedOrder.balance_amount).toLocaleString('en-IN')}.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-blue-800 mt-2">
+                        Vendor delivered less than ordered — finance to process a refund of ₹{Number(selectedOrder.refund_amount).toLocaleString('en-IN')} manually.
+                      </p>
+                    )}
+                  </div>
+                )}
                 <div><h3 className="font-medium mb-3">Customer</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><p className="font-medium">{selectedOrder.customer?.name}</p>{selectedOrder.customer?.company && <p className="text-gray-600">{selectedOrder.customer.company}</p>}<div className="flex items-center gap-2 text-sm text-gray-600"><Mail size={14} />{selectedOrder.customer?.email}</div><div className="flex items-center gap-2 text-sm text-gray-600"><Phone size={14} />{selectedOrder.customer?.phone}</div><div className="flex items-start gap-2 text-sm text-gray-600"><MapPin size={14} className="mt-0.5 flex-shrink-0" /><span>{selectedOrder.customer?.address}, {selectedOrder.customer?.city}, {selectedOrder.customer?.state} {selectedOrder.customer?.pincode}</span></div></div></div>
                 {(() => {
                   // Group items by seller_id so multi-supplier orders show
@@ -908,7 +946,7 @@ const AdminOrders = () => {
               <div className="p-6 border-t flex justify-between">
                 <div className="flex gap-3 flex-wrap">
                   <button onClick={() => handleResendConfirmation(selectedOrder.id)} className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Mail size={16} />Resend Email</button>
-                  {selectedOrder.is_provisional && selectedOrder.payment_status === 'balance_pending' && (
+                  {selectedOrder.payment_status === 'balance_pending' && Number(selectedOrder.balance_amount || 0) > 0 && (
                     <>
                       <button
                         onClick={async () => {
@@ -933,12 +971,48 @@ const AdminOrders = () => {
                         data-testid="admin-mark-balance-paid-btn"
                         title={`Mark balance of ₹${Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')} as paid`}
                       >
-                        {balancePaidBusy ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                        <CheckCircle size={16} />
                         Mark Balance Paid (₹{Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')})
                       </button>
                     </>
                   )}
-                  {selectedOrder.payment_status !== 'paid' && !(selectedOrder.is_provisional && selectedOrder.payment_status === 'balance_pending') && (
+                  {/* Legacy retro-fix: orders marked ready BEFORE the
+                      actual-qty recompute logic landed. Surface a button
+                      so admin can refresh totals + resync payouts. */}
+                  {selectedOrder.goods_ready_at
+                    && selectedOrder.actual_total == null
+                    && (selectedOrder.items || []).some(it => it.actual_quantity != null && Number(it.actual_quantity) !== Number(it.quantity))
+                    && (
+                    <button
+                      onClick={async () => {
+                        if (!window.confirm("Recompute order totals based on the vendor-reported actual quantities? This will also resync vendor payouts.")) return;
+                        try {
+                          const { data } = await api.post(`/orders/${selectedOrder.id}/recompute-actuals`);
+                          if (data.no_change) {
+                            toast.info("Actuals match ordered — nothing to recompute.");
+                          } else {
+                            toast.success(
+                              data.balance_amount > 0
+                                ? `Recomputed · customer owes ₹${Number(data.balance_amount).toLocaleString('en-IN')}`
+                                : data.refund_amount > 0
+                                  ? `Recomputed · refund due ₹${Number(data.refund_amount).toLocaleString('en-IN')}`
+                                  : "Recomputed · no balance change"
+                            );
+                            setSelectedOrder(data.order);
+                            fetchOrders();
+                          }
+                        } catch (e) {
+                          toast.error(e?.response?.data?.detail || "Failed to recompute");
+                        }
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 text-purple-700 bg-purple-50 hover:bg-purple-100 rounded-lg border border-purple-200 font-medium"
+                      data-testid="admin-recompute-actuals-btn"
+                      title="Refresh order totals + vendor payout using actual qty"
+                    >
+                      <Receipt size={16} />Recompute Actuals
+                    </button>
+                  )}
+                  {selectedOrder.payment_status !== 'paid' && selectedOrder.payment_status !== 'balance_pending' && (
                     <button
                       onClick={() => { setMarkPayForm({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" }); setMarkPayOpen(true); }}
                       className="flex items-center gap-2 px-4 py-2 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 font-medium"
