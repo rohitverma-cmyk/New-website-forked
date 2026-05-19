@@ -449,6 +449,11 @@ export const vendorMarkGoodsReady = (orderId, items, vendor_invoice) =>
   api.post(`/orders/${orderId}/mark-goods-ready`, { items, vendor_invoice });
 export const adminMarkBalancePaid = (orderId) =>
   api.post(`/orders/${orderId}/mark-balance-paid`);
+export const vendorAcceptOrder = (orderId) => api.post(`/orders/${orderId}/vendor-accept`);
+export const vendorCancelOrder = (orderId, reason) =>
+  api.post(`/orders/${orderId}/vendor-cancel`, { reason });
+export const mintBalanceShareLink = (orderId) =>
+  api.post(`/orders/${orderId}/balance-share-link`);
 export const getVendorStats = () => api.get("/vendor/stats");
 export const getVendorCategories = () => api.get("/vendor/categories");
 export const getVendorEnquiries = () => api.get("/vendor/enquiries");

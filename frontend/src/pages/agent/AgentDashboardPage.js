@@ -70,6 +70,10 @@ const AgentDashboardPage = () => {
   const [sharing, setSharing] = useState(false);
   const [dispatchCountry, setDispatchCountry] = useState("india");
   const [usdRate, setUsdRate] = useState(null);
+  // Cart-level default qty_type for bulk items. Provisional → customer
+  // pays 10% advance, vendor confirms actual qty later. Actual → full
+  // payment upfront, vendor must ship exactly what was ordered.
+  const [defaultQtyType, setDefaultQtyType] = useState("actual");
 
   // "Send invite to customer" modal — opens when an agent taps Share
   // next to a shared cart. Asks for phone + email, autofills name from
@@ -217,6 +221,8 @@ const AgentDashboardPage = () => {
       order_type: orderType,
       image_url: fabric.images?.[0] || "",
       hsn_code: fabric.hsn_code || "",
+      // Samples are always actual; bulk inherits cart-level default
+      qty_type: isSample ? "actual" : defaultQtyType,
     }]);
     toast.success(`${fabric.name} added as ${orderType}`);
   };
@@ -234,6 +240,15 @@ const AgentDashboardPage = () => {
 
   const removeFromCart = (fabricId) => {
     setCart(cart.filter((c) => c.fabric_id !== fabricId));
+  };
+
+  // Per-item qty_type override. Only meaningful for bulk lines. Samples
+  // stay as "actual" since the swatch flow doesn't have a provisional
+  // booking concept.
+  const setItemQtyType = (fabricId, qtyType) => {
+    setCart(cart.map((c) => c.fabric_id === fabricId && c.order_type === "bulk"
+      ? { ...c, qty_type: qtyType }
+      : c));
   };
 
   // ── Inline credit-limit lookup (India only) ──────────────────────────
@@ -274,7 +289,7 @@ const AgentDashboardPage = () => {
       // by browser extensions/interceptors, causing "body stream already read"
       const { data } = await axios.post(
         `${API}/api/agent/shared-cart`,
-        { items: cart, customer_email: "", notes: "", payment_proof_url: "", dispatch_country: dispatchCountry },
+        { items: cart, customer_email: "", notes: "", payment_proof_url: "", dispatch_country: dispatchCountry, default_qty_type: defaultQtyType },
         { headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` } }
       );
       const link = `${window.location.origin}/shared-cart/${data.token}`;
@@ -1064,6 +1079,25 @@ Locofast Online Services`,
                             >
                               {item.order_type === "sample" ? "Sample" : "Bulk"}
                             </span>
+                            {item.order_type === "bulk" && (
+                              <div className="inline-flex items-center text-[10px] font-medium rounded-full border border-gray-200 overflow-hidden" data-testid={`cart-qty-type-${item.fabric_id}`}>
+                                {[
+                                  { val: "actual", label: "Actual" },
+                                  { val: "provisional", label: "Provisional" },
+                                ].map((q) => (
+                                  <button
+                                    key={q.val}
+                                    type="button"
+                                    onClick={() => setItemQtyType(item.fabric_id, q.val)}
+                                    className={`px-2 py-0.5 ${(item.qty_type || defaultQtyType) === q.val ? (q.val === "provisional" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700") : "bg-white text-gray-500 hover:bg-gray-50"}`}
+                                    data-testid={`cart-qty-type-${q.val}-${item.fabric_id}`}
+                                    title={q.val === "provisional" ? "Indicative qty · 10% advance, vendor confirms actual" : "Exact qty · full payment upfront"}
+                                  >
+                                    {q.label}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                             <span className="text-sm text-[#2563EB] font-semibold">₹{item.price_per_meter}/m</span>
                           </div>
                         </div>
@@ -1131,6 +1165,36 @@ Locofast Online Services`,
                           </button>
                         ))}
                       </div>
+                    </div>
+
+                    {/* Quantity Type — cart-level default for BULK items.
+                        Per-item override is available on each cart row. */}
+                    <div className="mb-4" data-testid="cart-default-qty-type">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Quantity Confirmation</label>
+                      <div className="flex gap-2">
+                        {[
+                          { val: "actual", label: "Actual qty", help: "Vendor ships exactly this — full payment upfront" },
+                          { val: "provisional", label: "Provisional", help: "Indicative — 10% advance, vendor confirms actual" },
+                        ].map((q) => (
+                          <button
+                            key={q.val}
+                            type="button"
+                            onClick={() => {
+                              setDefaultQtyType(q.val);
+                              // Apply to all existing bulk items
+                              setCart((prev) => prev.map((c) => c.order_type === "bulk" ? { ...c, qty_type: q.val } : c));
+                            }}
+                            title={q.help}
+                            className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-all ${defaultQtyType === q.val ? (q.val === "provisional" ? "border-amber-300 bg-amber-50 text-amber-700" : "border-emerald-300 bg-emerald-50 text-emerald-700") : "border-gray-200 text-gray-600 hover:border-gray-300"}`}
+                            data-testid={`cart-default-qty-${q.val}`}
+                          >
+                            {q.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-gray-400 mt-1">
+                        {defaultQtyType === "provisional" ? "Customer pays 10% advance. Vendor confirms exact qty later." : "Customer pays full amount. Vendor must ship exact qty."}
+                      </p>
                     </div>
 
                     <div className="space-y-2 text-sm mb-3">
@@ -1388,6 +1452,7 @@ Locofast Online Services`,
                         <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase" title="Final invoice value — goods + packaging + logistics + 5% GST">Invoice Value <span className="ml-1 text-[10px] font-normal normal-case text-gray-400">(all-incl.)</span></th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
@@ -1429,6 +1494,32 @@ Locofast Online Services`,
                             </span>
                           </td>
                           <td className="px-4 py-4 text-sm text-gray-500">{formatDate(o.created_at)}</td>
+                          <td className="px-4 py-4 text-right">
+                            {o.is_provisional && o.payment_status === "balance_pending" && (
+                              <button
+                                type="button"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    const { data } = await axios.post(
+                                      `${API}/api/orders/${o.id}/balance-share-link`,
+                                      {},
+                                      { headers: { Authorization: `Bearer ${token}` } }
+                                    );
+                                    await navigator.clipboard.writeText(data.url);
+                                    toast.success(`Balance pay link copied · ₹${Number(data.balance_amount).toLocaleString('en-IN')}`);
+                                  } catch (err) {
+                                    toast.error(err?.response?.data?.detail || "Failed to generate link");
+                                  }
+                                }}
+                                className="text-[11px] font-medium text-orange-700 bg-orange-50 hover:bg-orange-100 border border-orange-200 px-2 py-1 rounded"
+                                data-testid={`agent-balance-link-${o.order_number}`}
+                                title="Copy a public balance-pay link to send to the customer"
+                              >
+                                Share Balance Link
+                              </button>
+                            )}
+                          </td>
                         </tr>
                         );
                       })}

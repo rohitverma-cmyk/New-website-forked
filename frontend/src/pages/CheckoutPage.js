@@ -602,6 +602,8 @@ const CheckoutPage = () => {
             hsn_code: it.hsn_code || "",
             color_name: it.color_name || "",
             color_hex: it.color_hex || "",
+            // Provisional flag — agent stamps this on shared cart items.
+            qty_type: it.qty_type || "",
             dispatch_timeline: it.dispatch_timeline || (it.order_type === "bulk" ? "15-20 days" : "Ready Stock"),
           }))
         : [{
@@ -618,6 +620,8 @@ const CheckoutPage = () => {
             hsn_code: fabric.hsn_code || "",
             color_name: colorName || "",
             color_hex: colorHex || "",
+            // PDP buyflow is always "actual" — provisional only via agent shared cart
+            qty_type: "actual",
             dispatch_timeline: fabric.dispatch_timeline || (orderType === 'bulk' ? '15-20 days' : 'Ready Stock')
           }];
 

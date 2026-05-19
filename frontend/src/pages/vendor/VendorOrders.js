@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Package, Clock, CheckCircle, Truck, MapPin, Phone, ExternalLink, FileText, Upload, AlertTriangle, Loader2, Boxes, Plus, Trash2 } from "lucide-react";
 import VendorLayout from "../../components/vendor/VendorLayout";
 import VendorFileUpload from "../../components/vendor/VendorFileUpload";
-import { getVendorOrders, vendorMarkGoodsReady } from "../../lib/api";
+import { getVendorOrders, vendorMarkGoodsReady, vendorAcceptOrder, vendorCancelOrder } from "../../lib/api";
 import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -206,6 +206,16 @@ const VendorOrders = () => {
               </div>
 
               <div className="p-6 space-y-6">
+                {/* Vendor 24h Accept/Cancel banner — visible for pending acceptance */}
+                {selectedOrder.vendor_acceptance_status === "pending" && (
+                  <VendorAcceptanceBanner
+                    order={selectedOrder}
+                    onAction={(updated) => {
+                      setSelectedOrder(updated);
+                      setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+                    }}
+                  />
+                )}
                 {/* Provisional bulk order banner */}
                 {selectedOrder.is_provisional && (
                   <ProvisionalBanner
@@ -337,6 +347,142 @@ const VendorOrders = () => {
 };
 
 export default VendorOrders;
+
+// ─── Vendor 24h Accept/Cancel banner ──────────────────────────────
+const VendorAcceptanceBanner = ({ order, onAction }) => {
+  const [busy, setBusy] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+
+  // Live countdown
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const deadline = order.vendor_action_deadline ? new Date(order.vendor_action_deadline).getTime() : null;
+  const remainingMs = deadline ? Math.max(0, deadline - now) : null;
+  const hrs = remainingMs != null ? Math.floor(remainingMs / 3600000) : null;
+  const mins = remainingMs != null ? Math.floor((remainingMs % 3600000) / 60000) : null;
+  const expired = remainingMs != null && remainingMs === 0;
+
+  const handleAccept = async () => {
+    if (!window.confirm("Confirm you will fulfil this order? You won't be able to cancel after.")) return;
+    setBusy(true);
+    try {
+      const res = await vendorAcceptOrder(order.id);
+      toast.success(res.data.all_accepted
+        ? "Order accepted — all vendors confirmed"
+        : "Order accepted on your behalf");
+      onAction(res.data.order);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to accept");
+    }
+    setBusy(false);
+  };
+
+  const handleCancel = async () => {
+    if (!cancelReason.trim()) {
+      toast.error("Please share a reason — it goes to the customer email");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await vendorCancelOrder(order.id, cancelReason.trim());
+      toast.success("Order cancelled — customer and Locofast Accounts have been notified");
+      onAction(res.data.order);
+      setShowCancelModal(false);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to cancel");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className={`rounded-lg p-4 border ${expired ? "bg-red-50 border-red-200" : "bg-blue-50 border-blue-200"}`} data-testid="vendor-acceptance-banner">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <p className={`text-sm font-semibold flex items-center gap-1.5 ${expired ? "text-red-900" : "text-blue-900"}`}>
+            <Clock size={14} /> {expired ? "Acceptance window expired" : "Action required: Accept or Cancel order"}
+          </p>
+          <p className={`text-xs mt-1 ${expired ? "text-red-800" : "text-blue-800"}`}>
+            {expired
+              ? "The 24h SLA has elapsed. The order will be auto-cancelled on the next sweep. Reach out to Locofast Operations if you can still fulfil."
+              : "You have 24 hours from order assignment to confirm or decline this order."}
+            {hrs != null && !expired && (
+              <span className="ml-1 font-semibold">
+                {hrs}h {mins}m remaining
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCancelModal(true)}
+            disabled={busy}
+            className="px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded-lg disabled:opacity-50"
+            data-testid="vendor-cancel-order-btn"
+          >
+            Cancel Order
+          </button>
+          <button
+            type="button"
+            onClick={handleAccept}
+            disabled={busy || expired}
+            className="px-4 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 flex items-center gap-1.5"
+            data-testid="vendor-accept-order-btn"
+          >
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle size={12} />}
+            Confirm Order
+          </button>
+        </div>
+      </div>
+
+      {showCancelModal && (
+        <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4" onClick={() => setShowCancelModal(false)}>
+          <div className="bg-white rounded-xl max-w-md w-full p-5" onClick={(e) => e.stopPropagation()} data-testid="vendor-cancel-modal">
+            <h3 className="font-semibold text-base flex items-center gap-1.5 text-red-700">
+              <AlertTriangle size={16} /> Cancel order {order.order_number}?
+            </h3>
+            <p className="text-xs text-gray-600 mt-2">
+              The customer will receive a cancellation email. Any advance paid will be refunded. This action is final.
+            </p>
+            <label className="block text-xs font-medium text-gray-700 mt-3">Reason (will be shared with customer)</label>
+            <textarea
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              rows={3}
+              placeholder="e.g. Out of stock for the requested quantity; lead time exceeds customer's window…"
+              className="w-full mt-1 px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+              data-testid="vendor-cancel-reason"
+            />
+            <div className="flex justify-end gap-2 mt-3">
+              <button
+                type="button"
+                onClick={() => setShowCancelModal(false)}
+                className="px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg"
+              >
+                Keep Order
+              </button>
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={busy}
+                className="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg disabled:opacity-50 flex items-center gap-1.5"
+                data-testid="vendor-cancel-confirm"
+              >
+                {busy ? <Loader2 size={12} className="animate-spin" /> : null}
+                Confirm Cancellation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 // ─── Provisional bulk-order banner ────────────────────────────────
 const ProvisionalBanner = ({ order, onMarkReady }) => {

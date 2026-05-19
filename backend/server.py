@@ -575,6 +575,8 @@ async def seed_data():
 
 # Initialize orders and email routers with database
 orders_router.set_db(db)
+import internal_events  # noqa: E402
+internal_events.set_db(db)
 orders_router.init_razorpay()
 email_router.set_db(db)
 cloudinary_router.set_db(db)

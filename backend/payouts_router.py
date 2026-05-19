@@ -476,6 +476,23 @@ async def mark_payout_paid(
     except Exception as e:
         logger.warning(f"[payout-notify] schedule failed: {e}")
 
+    # Internal mail chain — separate mail to Locofast stakeholders
+    try:
+        order = await _db.orders.find_one({"id": payout.get("order_id")}, {"_id": 0}) or {
+            "id": payout.get("order_id"), "order_number": payout.get("order_number"),
+        }
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.VENDOR_PAYOUT_PAID, order, extra={
+            "vendor_seller_id": payout.get("seller_id"),
+            "vendor_company": payout.get("seller_company"),
+            "net_payable": payout.get("net_payable"),
+            "utr": payload.utr.strip(),
+            "paid_via": payload.paid_via,
+            "paid_by": user.get("email", ""),
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[payout-notify] internal event failed: {e}")
+
     return {"success": True, "payout": final}
 
 

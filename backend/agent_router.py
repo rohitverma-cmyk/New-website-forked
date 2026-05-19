@@ -81,6 +81,12 @@ class SharedCartItem(BaseModel):
     order_type: str = "bulk"
     image_url: str = ""
     hsn_code: str = ""
+    # Provisional bulk-order toggle. "actual" = vendor will ship the
+    # ordered quantity (full payment upfront). "provisional" = quantity
+    # is indicative, customer pays 10% advance and vendor confirms
+    # actual qty later. Defaults to the cart-level value at materialize
+    # time when left empty.
+    qty_type: str = ""  # "" | "actual" | "provisional"
 
 class CreateSharedCartRequest(BaseModel):
     items: list[SharedCartItem]
@@ -88,6 +94,9 @@ class CreateSharedCartRequest(BaseModel):
     notes: str = ""
     payment_proof_url: str = ""  # RTGS/NEFT screenshot URL
     dispatch_country: str = "india"  # "india" or "bangladesh"
+    # Default qty_type applied to any bulk item that didn't pick one.
+    # "actual" → no advance; "provisional" → 10% advance flow.
+    default_qty_type: str = "actual"
 
 
 # ==================== AUTH HELPERS ====================
@@ -236,6 +245,19 @@ async def create_shared_cart(data: CreateSharedCartRequest, request: Request):
     cart_token = str(uuid.uuid4()).replace('-', '')[:12]
     now = datetime.now(timezone.utc)
 
+    # Normalize per-item qty_type. Samples are always "actual" (no
+    # provisional flow for swatches). Bulk items inherit the cart-level
+    # default when the agent didn't pick per-item.
+    default_qt = (data.default_qty_type or "actual").lower()
+    if default_qt not in ("actual", "provisional"):
+        default_qt = "actual"
+    for it in data.items:
+        if it.order_type == "sample":
+            it.qty_type = "actual"
+        else:
+            qt = (it.qty_type or "").lower()
+            it.qty_type = qt if qt in ("actual", "provisional") else default_qt
+
     # Calculate Bangladesh charges if applicable
     bangladesh_charges = None
     usd_rate = None
@@ -269,6 +291,7 @@ async def create_shared_cart(data: CreateSharedCartRequest, request: Request):
         'notes': data.notes,
         'payment_proof_url': data.payment_proof_url,
         'dispatch_country': data.dispatch_country,
+        'default_qty_type': default_qt,
         'bangladesh_charges': bangladesh_charges,
         'usd_rate': usd_rate,
         'status': 'pending',

@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = int(os.environ.get("AUTOCANCEL_POLL_INTERVAL_SECONDS", "3600"))
 CUTOFF_HOURS_RAZORPAY = int(os.environ.get("AUTOCANCEL_CUTOFF_HOURS_RAZORPAY", "72"))
 CUTOFF_HOURS_CREDIT = int(os.environ.get("AUTOCANCEL_CUTOFF_HOURS_CREDIT", "168"))  # 7 days
+# Vendor must accept/cancel an assigned order within this many hours.
+# After the deadline the order is auto-cancelled (refund initiated for
+# any advance), customer + internal stakeholders notified.
+VENDOR_SLA_HOURS = int(os.environ.get("VENDOR_ACCEPT_SLA_HOURS", "24"))
 
 
 def _iso_minus_hours(hours: int) -> str:
@@ -89,6 +93,59 @@ async def cancel_stale_orders(db) -> dict:
     }
 
 
+async def cancel_stale_vendor_orders(db) -> dict:
+    """Vendor 24h SLA sweep. An order with `vendor_acceptance_status: pending`
+    and `vendor_action_deadline` past now is auto-cancelled the same way a
+    vendor-cancellation would: order.status → cancelled, customer email,
+    internal mail chain. Multi-vendor orders are cancelled in full (single
+    payment makes per-vendor partial cancel non-trivial; sales ops can
+    re-place the order against another vendor)."""
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    sla_cutoff = now_iso
+    query = {
+        "vendor_acceptance_status": "pending",
+        "vendor_action_deadline": {"$lt": sla_cutoff},
+        "status": {"$nin": ["cancelled", "delivered"]},
+    }
+    cancelled_orders = []
+    async for o in db.orders.find(query, {"_id": 0}):
+        cancelled_orders.append(o)
+
+    if not cancelled_orders:
+        return {"vendor_auto_cancelled": 0, "swept_at": now_iso}
+
+    for o in cancelled_orders:
+        await db.orders.update_one(
+            {"id": o["id"]},
+            {"$set": {
+                "status": "cancelled",
+                "vendor_acceptance_status": "auto_cancelled",
+                "cancellation_reason": "vendor_sla_missed",
+                "cancelled_at": now_iso,
+                "auto_cancelled_at": now_iso,
+                "updated_at": now_iso,
+            }}
+        )
+        # Notify customer + internal stakeholders. Best-effort.
+        try:
+            from email_router import send_order_cancellation_email  # type: ignore
+            await send_order_cancellation_email(o, reason="The supplier did not confirm within 24 hours. Your advance will be refunded shortly.")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[vendor-sla] customer cancel email failed for {o.get('order_number')}: {e}")
+        try:
+            from internal_events import fire_internal_event, OrderEvent
+            await fire_internal_event(OrderEvent.VENDOR_AUTO_CANCELLED, o, extra={
+                "reason": "Vendor did not accept within 24h SLA",
+                "deadline": o.get("vendor_action_deadline"),
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[vendor-sla] internal event failed for {o.get('order_number')}: {e}")
+        logger.info(f"[vendor-sla] auto-cancelled {o.get('order_number')}")
+
+    return {"vendor_auto_cancelled": len(cancelled_orders), "swept_at": now_iso}
+
+
 async def start_autocancel_poller(db):
     """Long-running task. Wait one minute after boot so the app is fully
     ready, then sweep every `POLL_INTERVAL_SECONDS` (default hourly)."""
@@ -105,6 +162,9 @@ async def start_autocancel_poller(db):
                     "Auto-cancel sweep · razorpay=%d credit=%d",
                     result["razorpay_cancelled"], result["credit_cancelled"],
                 )
+            v_result = await cancel_stale_vendor_orders(db)
+            if v_result.get("vendor_auto_cancelled"):
+                logger.info("Vendor SLA sweep · cancelled=%d", v_result["vendor_auto_cancelled"])
         except Exception as e:  # noqa: BLE001
             logger.error(f"Auto-cancel sweep failed: {e}")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)

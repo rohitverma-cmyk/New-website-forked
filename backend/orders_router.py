@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 import razorpay
@@ -17,9 +17,13 @@ import os
 import asyncio
 import logging
 import io
+import jwt
 
 from email_router import send_order_notification_emails
 import auth_helpers
+
+JWT_SECRET = os.environ.get('JWT_SECRET', 'default-secret')
+JWT_ALGORITHM = 'HS256'
 
 # PDF Generation imports
 from reportlab.lib.pagesizes import A4
@@ -76,6 +80,10 @@ class OrderItem(BaseModel):
     # Buyer-selected color variant (for multi-color SKUs)
     color_name: str = ""
     color_hex: str = ""
+    # Provisional flag set by the Agent on the shared cart. When
+    # "provisional" → triggers the 10% advance flow at checkout.
+    # When "actual" or empty → full payment upfront (legacy).
+    qty_type: str = ""
 
 class CustomerInfo(BaseModel):
     name: str
@@ -592,14 +600,19 @@ async def create_order(order_data: OrderCreate):
         logger.error("Razorpay client not initialized")
         raise HTTPException(status_code=503, detail="Payment service not configured. Please contact support.")
 
-    # Provisional bulk-order: every bulk order (or explicit `is_provisional`)
-    # charges only the advance % upfront; balance is collected after the
-    # supplier marks goods-ready with the actual quantity. Sample-only
-    # carts and any caller that explicitly opts out (is_provisional=False
-    # AND order has only samples) get the legacy 100% upfront flow.
-    from provisional_orders import is_bulk_order, resolve_advance_pct, split_amounts
-    order_is_bulk = is_bulk_order([i.model_dump() for i in order_data.items])
-    use_provisional = order_data.is_provisional or order_is_bulk
+    # Provisional bulk-order: now driven by the AGENT'S choice (per-item
+    # qty_type="provisional") rather than blanket "all bulk = provisional".
+    # An order is provisional iff ANY item carries qty_type="provisional".
+    # The `is_provisional` flag on the request acts as a hard-override
+    # (e.g. for legacy callers / Bangladesh PI flow).
+    from provisional_orders import resolve_advance_pct, split_amounts
+    items_raw = [i.model_dump() for i in order_data.items]
+    has_provisional_item = any(
+        ((it.get("qty_type") or "").lower() == "provisional")
+        and ((it.get("order_type") or "bulk") == "bulk")
+        for it in items_raw
+    )
+    use_provisional = order_data.is_provisional or has_provisional_item
     if use_provisional:
         advance_pct = resolve_advance_pct(order_data.advance_pct)
         advance_amount, balance_amount = split_amounts(final_total, advance_pct)
@@ -814,12 +827,26 @@ async def verify_payment(verification: PaymentVerification):
         update_doc["payment_status"] = "advance_paid"
         update_doc["status"] = "provisional"
         update_doc["advance_paid_at"] = now
+        # Provisional advance triggers vendor 24h Accept/Cancel window.
+        # Each item's seller must accept; until then `vendor_acceptance_status`
+        # is `pending`. Auto-cancel sweep enforces SLA.
+        update_doc["vendor_acceptance_status"] = "pending"
+        update_doc["vendor_action_deadline"] = (
+            datetime.now(timezone.utc) + timedelta(hours=24)
+        ).isoformat()
     else:
         update_doc["payment_status"] = "paid"
         update_doc["status"] = "confirmed"
         update_doc["paid_at"] = now
         if payment_stage == "balance":
             update_doc["balance_paid_at"] = now
+        # Non-provisional or balance payment — also opens vendor SLA
+        # window if first payment, but only when fresh order (not balance).
+        if payment_stage == "full":
+            update_doc["vendor_acceptance_status"] = "pending"
+            update_doc["vendor_action_deadline"] = (
+                datetime.now(timezone.utc) + timedelta(hours=24)
+            ).isoformat()
 
     await db.orders.update_one(
         {"razorpay_order_id": verification.razorpay_order_id},
@@ -881,6 +908,15 @@ async def verify_payment(verification: PaymentVerification):
                         }}
                     )
                     logger.info(f"Shiprocket shipment created for {tgt['order_number']}")
+                    try:
+                        from internal_events import fire_internal_event as _fire, OrderEvent as _OE
+                        await _fire(_OE.ORDER_DISPATCHED, tgt, extra={
+                            "shiprocket_order_id": str(shiprocket_result.get("order_id") or ""),
+                            "shipment_id": shiprocket_result.get("shipment_id"),
+                            "awb_code": shiprocket_result.get("awb_code", ""),
+                        })
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(f"Failed to create Shiprocket shipment for {tgt.get('order_number')}: {str(e)}")
 
@@ -906,6 +942,27 @@ async def verify_payment(verification: PaymentVerification):
         logger.info(f"Order {order['order_number']} email notifications: {email_results}")
     except Exception as e:
         logger.error(f"Failed to send order notification emails: {str(e)}")
+
+    # ── Internal mail chain (separate from customer emails) ─────────
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        if payment_stage == "advance":
+            await fire_internal_event(OrderEvent.ADVANCE_PAID, updated_order, extra={
+                "advance_amount": updated_order.get("advance_amount"),
+                "balance_amount": updated_order.get("balance_amount"),
+                "vendor_action_deadline": updated_order.get("vendor_action_deadline"),
+            })
+            await fire_internal_event(OrderEvent.ORDER_PLACED, updated_order)
+        elif payment_stage == "balance":
+            await fire_internal_event(OrderEvent.ORDER_CONFIRMED, updated_order, extra={
+                "balance_amount": updated_order.get("balance_amount"),
+            })
+            await fire_internal_event(OrderEvent.PAYMENT_CAPTURED, updated_order)
+        else:
+            await fire_internal_event(OrderEvent.PAYMENT_CAPTURED, updated_order)
+            await fire_internal_event(OrderEvent.ORDER_CONFIRMED, updated_order)
+    except Exception as e:
+        logger.warning(f"Internal event email failed: {e}")
     
     # Note: Orders are NOT sent to Zapier - only general enquiries are
     
@@ -2046,9 +2103,159 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
             await send_balance_payment_due_email(fresh)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"balance-due email skipped: {e}")
+        # Internal mail chain
+        try:
+            from internal_events import fire_internal_event, OrderEvent
+            fresh = fresh if 'fresh' in locals() else await db.orders.find_one({"id": order_id}, {"_id": 0})
+            await fire_internal_event(OrderEvent.GOODS_READY, fresh, extra={
+                "actual_subtotal": fresh.get("actual_subtotal"),
+                "balance_amount": fresh.get("balance_amount"),
+                "marked_by": caller_role,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"internal goods_ready event failed: {e}")
 
     fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
     return {"success": True, "all_ready": all_ready, "order": fresh}
+
+
+# ─── Vendor 24h Accept / Cancel window ─────────────────────────
+async def _resolve_vendor_caller(request: Request) -> tuple[str, str]:
+    """Returns (caller_role, caller_seller_id). caller_role in
+    {"vendor","admin"}. Raises 401 if neither auth succeeds."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+    
+    token = auth_header.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        
+        # Check if vendor token
+        if payload.get("type") == "vendor":
+            seller_id = payload.get("seller_id", "")
+            # Verify seller is active
+            seller = await db.sellers.find_one({"id": seller_id, "is_active": True}, {"_id": 0})
+            if seller:
+                return "vendor", seller_id
+        
+        # Check if admin token
+        admin_id = payload.get("sub")
+        if admin_id:
+            admin = await db.admins.find_one({"id": admin_id}, {"_id": 0})
+            if admin:
+                return "admin", ""
+        
+    except jwt.PyJWTError:
+        pass
+    
+    raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+
+
+@router.post("/{order_id}/vendor-accept")
+async def vendor_accept_order(order_id: str, request: Request):
+    """Vendor confirms they will fulfil the order. Closes the 24h SLA
+    window. Multi-vendor orders: every vendor must accept independently;
+    the order remains `pending` until ALL vendors have accepted, then
+    flips to `accepted`."""
+    caller_role, caller_sid = await _resolve_vendor_caller(request)
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Order is cancelled")
+    if order.get("vendor_acceptance_status") in ("auto_cancelled", "cancelled"):
+        raise HTTPException(status_code=400, detail="Order was already cancelled by vendor/SLA")
+
+    # Determine the seller(s) the caller is responsible for.
+    item_sids = {(it.get("seller_id") or "").strip() for it in (order.get("items") or [])}
+    item_sids.discard("")
+    if caller_role == "vendor":
+        if caller_sid not in item_sids:
+            raise HTTPException(status_code=403, detail="You are not assigned to this order")
+        target_sids = {caller_sid}
+    else:
+        target_sids = item_sids  # admin override accepts on behalf of all
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    acceptances = dict(order.get("vendor_acceptances") or {})
+    for sid in target_sids:
+        acceptances[sid] = {"status": "accepted", "at": now_iso, "by": caller_role}
+
+    # If every vendor has accepted → close the window.
+    all_accepted = all(acceptances.get(sid, {}).get("status") == "accepted" for sid in item_sids)
+    update_doc = {"vendor_acceptances": acceptances, "updated_at": now_iso}
+    if all_accepted:
+        update_doc["vendor_acceptance_status"] = "accepted"
+        update_doc["vendor_accepted_at"] = now_iso
+    await db.orders.update_one({"id": order_id}, {"$set": update_doc})
+
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.VENDOR_ACCEPTED, fresh, extra={
+            "vendor_seller_id": caller_sid or "admin_override",
+            "all_vendors_accepted": all_accepted,
+        })
+    except Exception:
+        pass
+    return {"success": True, "all_accepted": all_accepted, "order": fresh}
+
+
+@router.post("/{order_id}/vendor-cancel")
+async def vendor_cancel_order(order_id: str, data: dict, request: Request):
+    """Vendor declines the order. Any cancellation cancels the WHOLE order
+    (single payment can't be split per-vendor)."""
+    caller_role, caller_sid = await _resolve_vendor_caller(request)
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status") == "cancelled":
+        return {"success": True, "order": order, "already_cancelled": True}
+
+    if caller_role == "vendor":
+        item_sids = {(it.get("seller_id") or "").strip() for it in (order.get("items") or [])}
+        if caller_sid not in item_sids:
+            raise HTTPException(status_code=403, detail="You are not assigned to this order")
+
+    reason = (data.get("reason") or "Vendor declined the order").strip() or "Vendor declined the order"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "status": "cancelled",
+            "vendor_acceptance_status": "cancelled",
+            "cancellation_reason": "vendor_cancelled",
+            "vendor_cancel_reason": reason,
+            "vendor_cancelled_by": caller_sid or "admin",
+            "cancelled_at": now_iso,
+            "updated_at": now_iso,
+        }},
+    )
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+
+    # Customer-facing cancellation email
+    try:
+        from email_router import send_order_cancellation_email
+        await send_order_cancellation_email(fresh, reason=reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vendor-cancel] customer email failed: {e}")
+
+    # Internal mail chain
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.VENDOR_REJECTED, fresh, extra={
+            "vendor_seller_id": caller_sid or "admin_override",
+            "reason": reason,
+        })
+        await fire_internal_event(OrderEvent.ORDER_CANCELLED, fresh, extra={
+            "reason": reason,
+            "cancelled_by": "vendor",
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vendor-cancel] internal event failed: {e}")
+
+    return {"success": True, "order": fresh}
 
 
 @router.post("/{order_id}/balance-pay")
@@ -2096,6 +2303,134 @@ async def start_balance_payment(order_id: str, request: Request):
         }},
     )
 
+    return {
+        "razorpay_order_id": rzp["id"],
+        "amount": rzp["amount"],
+        "currency": rzp["currency"],
+        "key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
+        "order_id": order_id,
+        "order_number": order.get("order_number", ""),
+        "balance_amount": float(order.get("balance_amount") or 0),
+    }
+
+
+# ─── Shareable balance-pay link ─────────────────────────────────
+# Agents (and admins) can mint a one-off URL that lets the customer pay
+# the balance WITHOUT logging in. The token is stored on the order, so
+# revoking it = deleting the token.
+import hashlib  # noqa: E402
+
+
+def _make_balance_token(order_id: str) -> str:
+    secret = os.environ.get("BALANCE_LINK_SECRET", "lf_balance_secret")
+    raw = f"{order_id}:{secret}:{datetime.now(timezone.utc).date().isoformat()}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+@router.post("/{order_id}/balance-share-link")
+async def mint_balance_share_link(order_id: str, request: Request):
+    """Agent/Admin only. Generates a public balance-pay URL the agent can
+    forward to the customer (WhatsApp, email, anywhere)."""
+    # Accept either admin or agent by manually parsing the token
+    is_admin = False
+    is_agent = False
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            # Check if admin
+            admin_id = payload.get("sub")
+            if admin_id:
+                admin = await db.admins.find_one({"id": admin_id}, {"_id": 0})
+                if admin:
+                    is_admin = True
+            # Check if agent
+            if not is_admin and payload.get("type") == "agent":
+                is_agent = True
+        except jwt.PyJWTError:
+            pass
+    if not (is_admin or is_agent):
+        raise HTTPException(status_code=401, detail="Agent or admin auth required")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if not order.get("is_provisional") or order.get("payment_status") != "balance_pending":
+        raise HTTPException(status_code=400, detail="Balance link only available for provisional orders awaiting balance")
+
+    token = order.get("balance_share_token") or _make_balance_token(order_id)
+    await db.orders.update_one({"id": order_id}, {"$set": {
+        "balance_share_token": token,
+        "balance_share_token_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    base = os.environ.get("SITE_URL", "https://locofast.com").rstrip("/")
+    return {
+        "token": token,
+        "url": f"{base}/pay-balance/{order_id}/{token}",
+        "order_number": order.get("order_number"),
+        "balance_amount": float(order.get("balance_amount") or 0),
+    }
+
+
+@router.get("/balance-share/{order_id}/{token}")
+async def resolve_balance_share_link(order_id: str, token: str):
+    """Public: customer (or anyone with the link) sees order summary."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order or order.get("balance_share_token") != token:
+        raise HTTPException(status_code=404, detail="Invalid or expired link")
+    if order.get("payment_status") == "paid":
+        return {"status": "already_paid", "order_number": order.get("order_number")}
+    return {
+        "order_id": order_id,
+        "order_number": order.get("order_number"),
+        "customer_name": (order.get("customer") or {}).get("name", ""),
+        "balance_amount": float(order.get("balance_amount") or 0),
+        "advance_amount": float(order.get("advance_amount") or 0),
+        "total": float(order.get("actual_total") or order.get("total") or 0),
+        "items_count": len(order.get("items") or []),
+        "items": [
+            {
+                "fabric_name": it.get("fabric_name", ""),
+                "fabric_code": it.get("fabric_code", ""),
+                "quantity": it.get("actual_quantity") or it.get("quantity"),
+                "price_per_meter": it.get("price_per_meter", 0),
+            }
+            for it in (order.get("items") or [])
+        ],
+        "payment_status": order.get("payment_status"),
+    }
+
+
+@router.post("/balance-share/{order_id}/{token}/pay")
+async def start_balance_payment_via_share(order_id: str, token: str):
+    """Public: mint a Razorpay order for the balance using the share token
+    (no customer login required). Same as /balance-pay but token-gated."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order or order.get("balance_share_token") != token:
+        raise HTTPException(status_code=404, detail="Invalid or expired link")
+    if not order.get("is_provisional"):
+        raise HTTPException(status_code=400, detail="Not a provisional order")
+    if order.get("payment_status") != "balance_pending":
+        raise HTTPException(status_code=400, detail="Balance is not currently due")
+    if order.get("payment_method") == "credit":
+        raise HTTPException(status_code=400, detail="Credit orders use the credit-ops balance flow.")
+    balance_paise = int(round(float(order.get("balance_amount") or 0) * 100))
+    if balance_paise <= 0:
+        raise HTTPException(status_code=400, detail="No balance due")
+    try:
+        rzp = razorpay_client.order.create({
+            "amount": balance_paise,
+            "currency": "INR",
+            "receipt": f"{order.get('order_number') or order_id[:10]}-bal-share",
+            "notes": {"order_id": order_id, "payment_stage": "balance", "via": "share_link"},
+        })
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {"razorpay_order_id": rzp["id"], "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
     return {
         "razorpay_order_id": rzp["id"],
         "amount": rzp["amount"],
@@ -2163,8 +2498,27 @@ async def admin_mark_balance_paid(order_id: str, admin=Depends(auth_helpers.get_
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }},
             )
+            try:
+                from internal_events import fire_internal_event as _fire2, OrderEvent as _OE2
+                await _fire2(_OE2.ORDER_DISPATCHED, fresh, extra={
+                    "shiprocket_order_id": str(sr.get("order_id") or ""),
+                    "marked_via": "admin_balance_paid",
+                })
+            except Exception:
+                pass
     except Exception as e:
         logger.warning(f"Shiprocket push failed: {e}")
+
+    # Internal mail chain for confirmation
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.ORDER_CONFIRMED, fresh, extra={
+            "balance_marked_by": admin.get("email", "admin"),
+            "method": "manual_balance_paid",
+        })
+        await fire_internal_event(OrderEvent.PAYMENT_CAPTURED, fresh)
+    except Exception as e:
+        logger.warning(f"internal confirmed event failed: {e}")
 
     return {"success": True, "order": await db.orders.find_one({"id": order_id}, {"_id": 0})}
 

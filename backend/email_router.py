@@ -1396,6 +1396,76 @@ async def send_rfq_lead_email(lead: dict):
 
 
 
+async def send_order_cancellation_email(order: dict, reason: str = ""):
+    """Customer-facing cancellation email. Best-effort; failures logged
+    but never block the cancel flow. The internal stakeholders are NOT
+    CC'd on this — they receive a separate internal email via
+    `internal_events.fire_internal_event`."""
+    try:
+        to_email = (order.get("customer") or {}).get("email") or ""
+        if not to_email:
+            return {"success": False, "skipped": True, "reason": "no_email"}
+        order_number = order.get("order_number") or ""
+        advance = float(order.get("advance_amount") or 0)
+        items_rows = ""
+        for it in (order.get("items") or []):
+            items_rows += (
+                f'<tr><td style="padding:6px 8px;font-size:13px;border-bottom:1px solid #eee;">'
+                f'<strong>{it.get("fabric_name","")}</strong></td>'
+                f'<td style="padding:6px 8px;text-align:right;font-size:13px;'
+                f'border-bottom:1px solid #eee;">{it.get("quantity",0)}m</td></tr>'
+            )
+        params = {
+            "from": f"Locofast <{SENDER_EMAIL}>",
+            "to": [to_email],
+            "subject": f"Order Cancelled · {order_number}",
+            "html": f"""
+            <div style="font-family: Inter, system-ui, sans-serif; max-width: 560px; margin:0 auto; padding:28px 24px;">
+              <h2 style="font-size:20px; font-weight:700; margin:0 0 12px; color:#b91c1c;">Order cancelled</h2>
+              <p style="color:#475569; line-height:1.5;">Hi {(order.get('customer') or {}).get('name','there')},</p>
+              <p style="color:#475569; line-height:1.5;">We're sorry — your order
+              <strong>{order_number}</strong> has been cancelled.</p>
+              <div style="background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:14px 16px; margin:16px 0;">
+                <p style="margin:0; color:#991b1b; font-size:13px;"><strong>Reason:</strong> {reason or 'Supplier could not fulfil the order.'}</p>
+              </div>
+              <table style="width:100%; border-collapse:collapse; margin-top:12px; background:#fff; border:1px solid #eee; border-radius:8px;">
+                {items_rows}
+              </table>
+              {('<p style="margin:18px 0 0; color:#475569; line-height:1.5;">A refund of <strong>Rs {:,.0f}</strong> for the advance you paid will be processed to your original payment method within 5–7 business days.</p>'.format(advance)) if advance > 0 else ''}
+              <p style="margin:18px 0 0; color:#475569; line-height:1.5;">Our team will reach out shortly with alternatives. If you need to chat right away, reply to this email or call us.</p>
+              <p style="color:#94a3b8; font-size:12px; margin-top:24px;">Locofast Online Services — Team Support</p>
+            </div>
+            """,
+        }
+        if RESEND_API_KEY:
+            await asyncio.to_thread(resend.Emails.send, params)
+            await log_email(
+                kind="order_cancellation_customer",
+                recipients=[to_email],
+                subject=params["subject"],
+                html=params["html"],
+                order_id=order.get("id"),
+                order_number=order_number,
+                meta={"reason": reason},
+            )
+        return {"success": True}
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"send_order_cancellation_email failed: {e}")
+        try:
+            await log_email(
+                kind="order_cancellation_customer",
+                recipients=[(order.get("customer") or {}).get("email", "")],
+                subject="Order Cancelled",
+                status="failed",
+                error=str(e),
+                order_id=order.get("id"),
+                order_number=order.get("order_number"),
+            )
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
 async def send_balance_payment_due_email(order: dict):
     """Provisional bulk-order notification: supplier has marked goods
     ready with actual quantity → customer can now pay the balance.

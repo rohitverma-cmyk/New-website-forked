@@ -257,6 +257,7 @@ function MCheckoutInner() {
             dispatch_timeline: it.dispatch_timeline || "",
             color_name: it.color_name || it.color || "",
             color_hex: it.color_hex || "",
+            qty_type: it.qty_type || "",
           }))
         : [{
             fabric_id: fabric.id,
@@ -277,6 +278,7 @@ function MCheckoutInner() {
             dispatch_timeline: orderType === "sample" ? "48-72 hours" : (fabric.dispatch_timeline || "15-20 days"),
             color_name: color || "",
             color_hex: colorHex || "",
+            qty_type: "actual",
           }];
 
       const orderData = {
