@@ -895,30 +895,93 @@ async def verify_payment(verification: PaymentVerification):
     # supplier marks goods-ready AND balance is paid.
     if fully_paid:
         shiprocket_targets = child_orders or [order]
+        parent_shipments: list = []  # collected so the parent's
+                                     # `shiprocket_shipments[]` stays in
+                                     # sync with each child push — this
+                                     # prevents a second admin click on
+                                     # the parent from re-pushing and
+                                     # creating duplicate SR# on Shiprocket.
         for tgt in shiprocket_targets:
             try:
                 shiprocket_result = await create_shiprocket_shipment(tgt)
                 if shiprocket_result.get("success"):
+                    sr_order_id = str(shiprocket_result.get("order_id") or shiprocket_result.get("shiprocket_order_id") or "")
+                    sr_ship_id = shiprocket_result.get("shipment_id")
                     await db.orders.update_one(
                         {"id": tgt["id"]},
                         {"$set": {
-                            "shiprocket_order_id": str(shiprocket_result.get("order_id") or shiprocket_result.get("shiprocket_order_id") or ""),
-                            "shiprocket_shipment_id": shiprocket_result.get("shipment_id"),
+                            "shiprocket_order_id": sr_order_id,
+                            "shiprocket_shipment_id": sr_ship_id,
                             "updated_at": datetime.now(timezone.utc).isoformat()
                         }}
                     )
                     logger.info(f"Shiprocket shipment created for {tgt['order_number']}")
+                    if child_orders:  # mirror onto parent.shiprocket_shipments
+                        parent_shipments.append({
+                            "seller_id": tgt.get("seller_id", ""),
+                            "seller_company": tgt.get("seller_company", ""),
+                            "items_count": len(tgt.get("items") or []),
+                            "success": True,
+                            "order_id": sr_order_id,
+                            "shipment_id": sr_ship_id,
+                            "awb_code": shiprocket_result.get("awb_code", ""),
+                            "courier_name": shiprocket_result.get("courier_name", ""),
+                            "child_order_id": tgt.get("id"),
+                            "child_order_number": tgt.get("order_number"),
+                            "pushed_at": datetime.now(timezone.utc).isoformat(),
+                        })
                     try:
                         from internal_events import fire_internal_event as _fire, OrderEvent as _OE
                         await _fire(_OE.ORDER_DISPATCHED, tgt, extra={
-                            "shiprocket_order_id": str(shiprocket_result.get("order_id") or ""),
-                            "shipment_id": shiprocket_result.get("shipment_id"),
+                            "shiprocket_order_id": sr_order_id,
+                            "shipment_id": sr_ship_id,
                             "awb_code": shiprocket_result.get("awb_code", ""),
                         })
                     except Exception:
                         pass
+                elif child_orders:
+                    # Capture the failure so the admin can see WHY and
+                    # decide to re-push that supplier from the picker.
+                    parent_shipments.append({
+                        "seller_id": tgt.get("seller_id", ""),
+                        "seller_company": tgt.get("seller_company", ""),
+                        "items_count": len(tgt.get("items") or []),
+                        "success": False,
+                        "error": shiprocket_result.get("error") or shiprocket_result.get("message") or "Shiprocket push failed",
+                        "child_order_id": tgt.get("id"),
+                        "child_order_number": tgt.get("order_number"),
+                        "pushed_at": datetime.now(timezone.utc).isoformat(),
+                    })
             except Exception as e:
                 logger.error(f"Failed to create Shiprocket shipment for {tgt.get('order_number')}: {str(e)}")
+                if child_orders:
+                    parent_shipments.append({
+                        "seller_id": tgt.get("seller_id", ""),
+                        "seller_company": tgt.get("seller_company", ""),
+                        "items_count": len(tgt.get("items") or []),
+                        "success": False,
+                        "error": str(e),
+                        "child_order_id": tgt.get("id"),
+                        "child_order_number": tgt.get("order_number"),
+                        "pushed_at": datetime.now(timezone.utc).isoformat(),
+                    })
+
+        # Persist the aggregated map on the parent so subsequent admin
+        # actions are idempotent (admin_push_to_shiprocket short-circuits
+        # when shiprocket_shipments is populated).
+        if child_orders and parent_shipments:
+            first_ok = next((s for s in parent_shipments if s.get("success")), parent_shipments[0])
+            await db.orders.update_one(
+                {"id": order["id"]},
+                {"$set": {
+                    "shiprocket_shipments": parent_shipments,
+                    "shiprocket_pushed": True,
+                    "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+                    "shiprocket_order_id": first_ok.get("order_id") or None,
+                    "shiprocket_shipment_id": first_ok.get("shipment_id"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }}
+            )
 
     # Materialize vendor payouts — also wait until full payment so the
     # payout reflects the actual quantity (not the booked quantity).

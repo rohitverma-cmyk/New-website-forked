@@ -675,29 +675,25 @@ const AdminOrders = () => {
                     grp.items.push({ ...it, _idx: idx });
                     grp.subtotal += Number(it.quantity || 0) * Number(it.price_per_meter || 0);
                   });
-                  // Attach SR shipment info (if persisted as array).
-                  //
-                  // Hardened keying: real seller_ids are mapped only by
-                  // their actual id (empty string is reserved for the
-                  // "_unknown" group). Without this guard, a shipment row
-                  // with `seller_id: ""` could collide with a different
-                  // supplier's group whose `seller_id` is also empty in
-                  // the items array — causing the SR# of supplier A to
-                  // appear next to supplier B's name.
+                  // Build per-seller_id lookup. Each shipment can match
+                  // exactly ONE group — once claimed, it can't be reused.
+                  // Without this guard, a name-based fallback could pull
+                  // the same SR# under multiple supplier rows when the
+                  // shipment row has a blank seller_id.
                   const srMap = new Map();
                   (selectedOrder.shiprocket_shipments || []).forEach((sh) => {
                     const k = (sh.seller_id || "").trim();
-                    srMap.set(k, sh);
+                    if (k && !srMap.has(k)) srMap.set(k, sh);
                   });
-                  // Also build a name-based fallback for cases where the
-                  // shipment row has a blank seller_id but a known
-                  // seller_company string — better than showing the wrong
-                  // SR# next to the wrong supplier.
                   const srByName = new Map();
                   (selectedOrder.shiprocket_shipments || []).forEach((sh) => {
+                    if ((sh.seller_id || "").trim()) return; // already in srMap by id
                     const nm = (sh.seller_company || "").trim().toLowerCase();
                     if (nm && !srByName.has(nm)) srByName.set(nm, sh);
                   });
+                  // Track shipments already attached to a group so we
+                  // never render the same SR# under two supplier rows.
+                  const claimed = new Set();
                   return (
                     <div>
                       <h3 className="font-medium mb-3">
@@ -706,19 +702,26 @@ const AdminOrders = () => {
                       {groups.map((g, gi) => {
                         // Strict id match first; only fall back to a name
                         // match when the shipment row has no seller_id at
-                        // all. This stops Vasu's SR# leaking into the
-                        // Locofast Online Services row when only one of
-                        // the two pushes actually succeeded.
+                        // all. A shipment is "claimed" the moment it
+                        // attaches to a group so it cannot leak into the
+                        // next row.
                         const gid = (g.seller_id || "").trim();
-                        let sr = gid ? srMap.get(gid) : null;
+                        let sr = null;
+                        if (gid) {
+                          const cand = srMap.get(gid);
+                          if (cand && !claimed.has(cand)) { sr = cand; claimed.add(cand); }
+                        }
                         if (!sr) {
                           const gnm = (g.seller_company || "").trim().toLowerCase();
                           const cand = gnm ? srByName.get(gnm) : null;
-                          // Only accept the name-match if THIS shipment row
-                          // didn't already get claimed by a different supplier
-                          // earlier in the loop (prevents the duplicate-SR
-                          // bug seen on prod with multi-supplier orders).
-                          if (cand && !(gid && cand.seller_id && cand.seller_id !== gid)) sr = cand;
+                          if (cand && !claimed.has(cand)) {
+                            // Only accept the name-match if it doesn't
+                            // contradict the group's own seller_id.
+                            if (!(gid && cand.seller_id && cand.seller_id !== gid)) {
+                              sr = cand;
+                              claimed.add(cand);
+                            }
+                          }
                         }
                         return (
                           <div key={g.seller_id || `g-${gi}`} className="border rounded-lg mb-3 overflow-hidden" data-testid={`order-supplier-${g.seller_id || gi}`}>
