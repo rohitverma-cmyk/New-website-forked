@@ -604,6 +604,10 @@ const CheckoutPage = () => {
             color_hex: it.color_hex || "",
             // Provisional flag — agent stamps this on shared cart items.
             qty_type: it.qty_type || "",
+            // Unit (m/kg) from agent cart — keeps order line item
+            // consistent with the price the customer saw.
+            unit: it.unit || "",
+            fabric_type: it.fabric_type || "",
             dispatch_timeline: it.dispatch_timeline || (it.order_type === "bulk" ? "15-20 days" : "Ready Stock"),
           }))
         : [{
@@ -622,6 +626,8 @@ const CheckoutPage = () => {
             color_hex: colorHex || "",
             // PDP buyflow is always "actual" — provisional only via agent shared cart
             qty_type: "actual",
+            unit: (fabric.fabric_type === "knitted" && fabric.category_id !== "cat-denim") ? "kg" : "m",
+            fabric_type: fabric.fabric_type || "",
             dispatch_timeline: fabric.dispatch_timeline || (orderType === 'bulk' ? '15-20 days' : 'Ready Stock')
           }];
 

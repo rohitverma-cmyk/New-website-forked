@@ -74,6 +74,7 @@ class SharedCartItem(BaseModel):
     fabric_name: str
     fabric_code: str = ""
     category_name: str = ""
+    category_id: str = ""
     seller_company: str = ""
     seller_id: str = ""
     quantity: int
@@ -81,6 +82,12 @@ class SharedCartItem(BaseModel):
     order_type: str = "bulk"
     image_url: str = ""
     hsn_code: str = ""
+    # Unit of sale ("m" or "kg") — derived per-fabric from fabric_type
+    # (knitted non-denim → kg). Persisted on the shared cart and order
+    # so UI doesn't have to recompute and customer sees what the
+    # vendor configured.
+    unit: str = ""
+    fabric_type: str = ""
     # Provisional bulk-order toggle. "actual" = vendor will ship the
     # ordered quantity (full payment upfront). "provisional" = quantity
     # is indicative, customer pays 10% advance and vendor confirms

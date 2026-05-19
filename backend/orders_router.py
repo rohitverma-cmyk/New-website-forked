@@ -80,6 +80,9 @@ class OrderItem(BaseModel):
     # Buyer-selected color variant (for multi-color SKUs)
     color_name: str = ""
     color_hex: str = ""
+    # Unit of sale — "m" (default) or "kg" for knitted (non-denim)
+    # fabrics. Determined at cart-add time from fabric.fabric_type.
+    unit: str = ""
     # Provisional flag set by the Agent on the shared cart. When
     # "provisional" → triggers the 10% advance flow at checkout.
     # When "actual" or empty → full payment upfront (legacy).

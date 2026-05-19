@@ -221,8 +221,8 @@ const SharedCartPage = () => {
                     </Link>
                   )}
                   <div className="mt-1.5 sm:mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] sm:text-sm">
-                    <span className="text-gray-700 font-medium">{item.quantity}m</span>
-                    <span className="text-gray-600">@ ₹{item.price_per_meter}/m</span>
+                    <span className="text-gray-700 font-medium">{item.quantity}{item.unit || "m"}</span>
+                    <span className="text-gray-600">@ ₹{item.price_per_meter}/{item.unit || "m"}</span>
                     <span className={`px-2 py-0.5 rounded text-[10px] sm:text-xs font-medium ${item.order_type === "sample" ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"}`}>
                       {item.order_type}
                     </span>

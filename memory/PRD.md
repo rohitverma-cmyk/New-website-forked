@@ -674,6 +674,14 @@ Bug: Duplicate Shiprocket shipments being created for the same vendor (Locofast 
 - **Fix #2** (`AdminOrders.js`): `srMap` only indexes shipments WITH a `seller_id`; `srByName` only indexes shipments WITHOUT one. A `claimed: Set` ensures each shipment can attach to AT MOST ONE supplier group across the render loop.
 - **Tests**: 9 backend tests pass (admin idempotency, force re-push, seller_ids filter, single-vendor regression, provisional advance-leg no-push, failed-push structure preserved). 2 skipped due to no existing multi-vendor test data — code review confirms logic is correct.
 
+### Agent Cart — Unit-aware Display (kg vs m) (Feb 19, 2026) ✅
+Bug: Agent panel always showed `/m` regardless of the fabric's actual sales unit. Polyester knits (configured by vendor as `kg`) were being shown in metres, mismatching the customer-facing PDP.
+- **Shared helper** `/app/frontend/src/lib/fabricUnit.js`: `getFabricUnit(fabric)` returns `kg` when `fabric_type === 'knitted'` AND not in the denim category, else `m`. Mirrors the existing logic in VendorInventory + AdminFabrics, so all three surfaces now derive the unit identically.
+- **Frontend agent** (`AgentDashboardPage.js`): Catalog tile price (`/m` → `/{unit}`), cart row price (`₹X/{item.unit}`), quantity controls, stepper tooltips, aria-labels — all reflect the per-item unit. `addToCart` stamps `unit` + `fabric_type` + `category_id` so it persists through cart, share, checkout and order.
+- **Frontend customer** (`SharedCartPage.js`): item qty + price now show `item.unit` instead of hardcoded `m`.
+- **Backend** (`agent_router.py`): `SharedCartItem` accepts `unit` + `fabric_type` + `category_id`. `orders_router.OrderItem` accepts `unit` so it survives checkout → DB → invoice rendering.
+- **Frontend checkout** (`CheckoutPage.js`): items payload to `/orders/create` now carries `unit` for both PDP single-item and shared-cart multi-item paths. PDP single-item infers `kg` from `fabric_type=knitted && category_id != cat-denim`.
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard

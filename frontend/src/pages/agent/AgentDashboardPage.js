@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import axios from "axios";
 import { getFabrics, getFabricsCount, getCategories, getFabricFilterOptions, getSellers } from "../../lib/api";
 import { getCheapestBulkPrice, formatQtyThreshold } from "../../lib/pricing";
+import { getFabricUnit, getFabricUnitLabel } from "../../lib/fabricUnit";
 import { thumbImage } from "../../lib/imageUrl";
 import Watermark from "../../components/Watermark";
 import AgentAISearchBar from "../../components/agent/AgentAISearchBar";
@@ -214,6 +215,7 @@ const AgentDashboardPage = () => {
       fabric_name: fabric.name,
       fabric_code: fabric.fabric_code || "",
       category_name: fabric.category_name || "",
+      category_id: fabric.category_id || "",
       seller_company: fabric.seller_company || "",
       seller_id: fabric.seller_id || "",
       quantity: isSample ? 1 : (parseInt(fabric.moq) || 100),
@@ -221,6 +223,11 @@ const AgentDashboardPage = () => {
       order_type: orderType,
       image_url: fabric.images?.[0] || "",
       hsn_code: fabric.hsn_code || "",
+      // Stamp the per-fabric unit (kg / m) onto the cart so cart UI,
+      // checkout and order confirmation all show the same unit the
+      // vendor configured when adding the fabric.
+      unit: getFabricUnit(fabric),
+      fabric_type: fabric.fabric_type || "",
       // Samples are always actual; bulk inherits cart-level default
       qty_type: isSample ? "actual" : defaultQtyType,
     }]);
@@ -965,12 +972,13 @@ Locofast Online Services`,
                             <div className="flex items-center justify-between mt-3">
                               {(() => {
                                 const cheapest = getCheapestBulkPrice(f);
+                                const unit = getFabricUnit(f);
                                 if (!cheapest) return <span className="text-sm text-gray-400">Price on enquiry</span>;
                                 return (
                                   <div className="flex flex-col">
-                                    <span className="text-lg font-semibold text-[#2563EB]">₹{cheapest.price.toLocaleString()}<span className="text-xs font-normal text-gray-500">/m</span></span>
+                                    <span className="text-lg font-semibold text-[#2563EB]">₹{cheapest.price.toLocaleString()}<span className="text-xs font-normal text-gray-500">/{unit}</span></span>
                                     {cheapest.hasTier && cheapest.minQty && (
-                                      <span className="text-[10px] text-gray-500">from {formatQtyThreshold(cheapest.minQty, "m")}</span>
+                                      <span className="text-[10px] text-gray-500">from {formatQtyThreshold(cheapest.minQty, unit)}</span>
                                     )}
                                   </div>
                                 );
@@ -1098,20 +1106,20 @@ Locofast Online Services`,
                                 ))}
                               </div>
                             )}
-                            <span className="text-sm text-[#2563EB] font-semibold">₹{item.price_per_meter}/m</span>
+                            <span className="text-sm text-[#2563EB] font-semibold">₹{item.price_per_meter}/{item.unit || "m"}</span>
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-2">
                           <button onClick={() => removeFromCart(item.fabric_id)} className="p-1 text-gray-400 hover:text-red-500"><Trash2 size={16} /></button>
                           {/* Quantity controls — typeable input + quick steppers.
-                               Big steppers do ±10m for bulk and ±1m for samples,
+                               Big steppers do ±10 for bulk and ±1 for samples,
                                so common adjustments are one click; for unusual
-                               quantities (e.g. 273m) the agent types directly. */}
+                               quantities (e.g. 273) the agent types directly. */}
                           <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? -1 : -100)}
                               className="px-1.5 py-1 bg-gray-100 text-gray-600 text-[10px] font-medium rounded hover:bg-gray-200"
-                              title={item.order_type === "sample" ? "-1m" : "-100m"}
+                              title={item.order_type === "sample" ? `-1${item.unit || "m"}` : `-100${item.unit || "m"}`}
                               data-testid={`cart-qty-decr-big-${item.fabric_id}`}
                             >
                               {item.order_type === "sample" ? "−1" : "−100"}
@@ -1127,19 +1135,19 @@ Locofast Online Services`,
                                 onFocus={(e) => e.target.select()}
                                 className="w-16 text-center text-sm font-semibold bg-transparent border-x border-gray-200 py-1 focus:outline-none focus:bg-white"
                                 data-testid={`cart-qty-input-${item.fabric_id}`}
-                                aria-label="Quantity in meters"
+                                aria-label={`Quantity in ${item.unit === "kg" ? "kilograms" : "meters"}`}
                               />
                               <button onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? 1 : 10)} className="px-2 py-1.5 text-gray-500 hover:bg-gray-100"><Plus size={12} /></button>
                             </div>
                             <button
                               onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? 1 : 100)}
                               className="px-1.5 py-1 bg-gray-100 text-gray-600 text-[10px] font-medium rounded hover:bg-gray-200"
-                              title={item.order_type === "sample" ? "+1m" : "+100m"}
+                              title={item.order_type === "sample" ? `+1${item.unit || "m"}` : `+100${item.unit || "m"}`}
                               data-testid={`cart-qty-incr-big-${item.fabric_id}`}
                             >
                               {item.order_type === "sample" ? "+1" : "+100"}
                             </button>
-                            <span className="text-[11px] text-gray-500 ml-0.5">m</span>
+                            <span className="text-[11px] text-gray-500 ml-0.5">{item.unit || "m"}</span>
                           </div>
                           <span className="text-sm font-semibold">₹{(item.quantity * item.price_per_meter).toLocaleString()}</span>
                         </div>
