@@ -281,29 +281,55 @@ export default function MOrderDetail() {
 
       {/* Bill summary */}
       <div className="m-container" style={{ marginTop: 16 }}>
-        <h2 className="m-title" style={{ marginBottom: 10 }}>Bill summary</h2>
+        {(() => {
+          // Goods-ready ⇒ swap to vendor-confirmed actual values so the
+          // customer sees the figure they'll be invoiced for.
+          const useActual = !!order.goods_ready_at && order.actual_total != null;
+          const subtotal = useActual ? order.actual_subtotal : order.subtotal;
+          const packaging = useActual ? order.actual_packaging_charge : order.packaging_charge;
+          const logistics = useActual
+            ? (order.actual_logistics_charge ?? order.actual_logistics_only_charge)
+            : (order.logistics_only_charge || order.logistics_charge);
+          const tax = useActual ? order.actual_tax : order.tax;
+          const total = useActual ? order.actual_total : order.total;
+          return (
+            <>
+        <h2 className="m-title" style={{ marginBottom: 10 }}>
+          Bill summary
+          {useActual && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, background: "#d1fae5", color: "#065f46", padding: "2px 6px", borderRadius: 4 }}>Final · Goods Ready</span>}
+        </h2>
         <div className="m-card" style={{ padding: 14 }}>
-          <Row label="Order Value" value={formatPriceINR(order.subtotal)} />
-          {order.packaging_charge ? <Row label="Packaging" value={formatPriceINR(order.packaging_charge)} /> : null}
-          {(order.logistics_only_charge || order.logistics_charge) ? (
-            <Row label="Logistics" value={formatPriceINR(order.logistics_only_charge || order.logistics_charge)} />
-          ) : null}
+          <Row label="Order Value" value={formatPriceINR(subtotal)} />
+          {packaging ? <Row label="Packaging" value={formatPriceINR(packaging)} /> : null}
+          {logistics ? <Row label="Logistics" value={formatPriceINR(logistics)} /> : null}
           <div style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12, color: "var(--m-ink-3)", borderTop: "1px dashed var(--m-border-2)", paddingTop: 6, marginTop: 2 }}>
             <span>Gross Value</span>
-            <span>{formatPriceINR((order.subtotal || 0) + (order.packaging_charge || 0) + (order.logistics_only_charge || order.logistics_charge || 0))}</span>
+            <span>{formatPriceINR((subtotal || 0) + (packaging || 0) + (logistics || 0))}</span>
           </div>
-          {order.tax ? <Row label="GST" value={formatPriceINR(order.tax)} /> : null}
+          {tax ? <Row label="GST" value={formatPriceINR(tax)} /> : null}
           {order.discount ? <Row label="Discount" value={`− ${formatPriceINR(order.discount)}`} green /> : null}
           <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 10, borderTop: "1px dashed var(--m-border-2)", marginTop: 6 }}>
-            <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>Total Invoice Value</span>
-            <span style={{ fontWeight: 800, fontSize: 18, color: "var(--m-orange-700)" }}>{formatPriceINR(order.total)}</span>
+            <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>{useActual ? "Final Invoice Value" : "Total Invoice Value"}</span>
+            <span style={{ fontWeight: 800, fontSize: 18, color: "var(--m-orange-700)" }}>{formatPriceINR(total)}</span>
           </div>
+          {useActual && order.advance_amount > 0 && (
+            <>
+              <Row label="Advance paid" value={`− ${formatPriceINR(order.advance_amount)}`} />
+              <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 6, borderTop: "1px dashed var(--m-border-2)", marginTop: 4 }}>
+                <span style={{ fontWeight: 700, color: "var(--m-orange-700)" }}>Balance due</span>
+                <span style={{ fontWeight: 800, color: "var(--m-orange-700)" }}>{formatPriceINR(order.balance_amount || 0)}</span>
+              </div>
+            </>
+          )}
           {order.payment_status === "paid" && (
             <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8, fontSize: 12, color: "var(--m-green)" }}>
               <CheckCircle size={12} /> Paid via Razorpay
             </div>
           )}
         </div>
+            </>
+          );
+        })()}
       </div>
 
       <div className="m-container" style={{ marginTop: 20, display: "grid", gap: 10 }}>

@@ -416,14 +416,25 @@ const OrderDetailPage = () => {
           <div className="bg-white border border-gray-200 rounded-xl p-6 mb-4">
             <h2 className="text-sm font-semibold text-gray-900 mb-3">Items</h2>
             <div className="divide-y divide-gray-100">
-              {(order.items || []).map((item, i) => (
+              {(order.items || []).map((item, i) => {
+                // Once goods are ready the line uses the supplier-reported
+                // actual quantity; before that we show the ordered qty.
+                const hasActual = item.actual_quantity != null && item.actual_quantity !== "";
+                const displayQty = hasActual ? item.actual_quantity : item.quantity;
+                const lineTotal = (Number(displayQty) || 0) * (Number(item.price_per_meter) || 0);
+                return (
                 <div key={i} className="flex gap-4 py-3" data-testid={`order-item-${i}`}>
                   {item.image_url && <img src={item.image_url} alt={item.fabric_name} className="w-16 h-16 rounded-lg object-cover flex-shrink-0" />}
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-gray-900 truncate">{item.fabric_name}</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {item.category_name || "Fabric"} · {item.quantity}{item.unit || "m"} × {formatRupees(item.price_per_meter)}/{item.unit || "m"}
+                      {item.category_name || "Fabric"} · {displayQty}{item.unit || "m"} × {formatRupees(item.price_per_meter)}/{item.unit || "m"}
                     </p>
+                    {hasActual && Number(item.actual_quantity) !== Number(item.quantity) && (
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        Originally ordered {item.quantity}{item.unit || "m"} · vendor reported {item.actual_quantity}{item.unit || "m"} at goods-ready
+                      </p>
+                    )}
                     <div className="flex items-center gap-2 mt-1">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${item.order_type === "sample" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
                         {item.order_type === "sample" ? "Sample" : "Bulk"}
@@ -440,40 +451,70 @@ const OrderDetailPage = () => {
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="font-semibold text-gray-900">{formatRupees(item.quantity * item.price_per_meter)}</p>
+                    <p className="font-semibold text-gray-900">{formatRupees(lineTotal)}</p>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
           {/* Totals + customer */}
           <div className="grid md:grid-cols-2 gap-4">
+            {(() => {
+              // Once goods are ready, the supplier has reported the exact
+              // dispatched quantity. We swap the payment-summary numbers to
+              // the recomputed `actual_*` values so the customer sees the
+              // figure they'll be invoiced for — not the original estimate.
+              const useActual = !!order.goods_ready_at && order.actual_total != null;
+              const subtotal = useActual ? order.actual_subtotal : order.subtotal;
+              const packaging = useActual ? order.actual_packaging_charge : order.packaging_charge;
+              const logistics = useActual
+                ? (order.actual_logistics_charge ?? order.actual_logistics_only_charge)
+                : (order.logistics_only_charge || order.logistics_charge);
+              const tax = useActual ? order.actual_tax : order.tax;
+              const total = useActual ? order.actual_total : order.total;
+              return (
             <div className="bg-white border border-gray-200 rounded-xl p-6">
-              <h2 className="text-sm font-semibold text-gray-900 mb-3">Payment summary</h2>
+              <h2 className="text-sm font-semibold text-gray-900 mb-3">
+                Payment summary
+                {useActual && (
+                  <span className="ml-2 text-[10px] font-medium uppercase tracking-wide bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">
+                    Final · Goods Ready
+                  </span>
+                )}
+              </h2>
               <dl className="space-y-2 text-sm">
-                <div className="flex justify-between"><dt className="text-gray-600">Order Value</dt><dd className="text-gray-900">{formatRupees(order.subtotal)}</dd></div>
-                {order.packaging_charge > 0 && (
-                  <div className="flex justify-between"><dt className="text-gray-600">Packaging</dt><dd className="text-gray-900">{formatRupees(order.packaging_charge)}</dd></div>
+                <div className="flex justify-between"><dt className="text-gray-600">Order Value</dt><dd className="text-gray-900">{formatRupees(subtotal)}</dd></div>
+                {packaging > 0 && (
+                  <div className="flex justify-between"><dt className="text-gray-600">Packaging</dt><dd className="text-gray-900">{formatRupees(packaging)}</dd></div>
                 )}
-                {order.logistics_only_charge > 0 && (
-                  <div className="flex justify-between"><dt className="text-gray-600">Logistics</dt><dd className="text-gray-900">{formatRupees(order.logistics_only_charge)}</dd></div>
+                {logistics > 0 && (
+                  <div className="flex justify-between"><dt className="text-gray-600">Logistics</dt><dd className="text-gray-900">{formatRupees(logistics)}</dd></div>
                 )}
-                {!order.packaging_charge && order.logistics_charge > 0 && (
-                  <div className="flex justify-between"><dt className="text-gray-600">Logistics</dt><dd className="text-gray-900">{formatRupees(order.logistics_charge)}</dd></div>
-                )}
-                <div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-dashed border-gray-100"><dt>Gross Value</dt><dd>{formatRupees((order.subtotal || 0) + (order.packaging_charge || 0) + (order.logistics_only_charge || order.logistics_charge || 0))}</dd></div>
-                <div className="flex justify-between"><dt className="text-gray-600">GST</dt><dd className="text-gray-900">{formatRupees(order.tax)}</dd></div>
+                <div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-dashed border-gray-100"><dt>Gross Value</dt><dd>{formatRupees((subtotal || 0) + (packaging || 0) + (logistics || 0))}</dd></div>
+                <div className="flex justify-between"><dt className="text-gray-600">GST</dt><dd className="text-gray-900">{formatRupees(tax)}</dd></div>
                 {order.discount > 0 && (
                   <div className="flex justify-between"><dt className="text-gray-600">Discount{order.coupon?.code ? ` (${order.coupon.code})` : ""}</dt><dd className="text-emerald-700">− {formatRupees(order.discount)}</dd></div>
                 )}
-                <div className="flex justify-between border-t border-gray-100 pt-2 mt-2 font-semibold"><dt className="text-gray-900">Total Invoice Value</dt><dd className="text-emerald-700">{formatRupees(order.total)}</dd></div>
+                <div className="flex justify-between border-t border-gray-100 pt-2 mt-2 font-semibold"><dt className="text-gray-900">{useActual ? "Final Invoice Value" : "Total Invoice Value"}</dt><dd className="text-emerald-700">{formatRupees(total)}</dd></div>
+                {useActual && order.advance_amount > 0 && (
+                  <>
+                    <div className="flex justify-between text-xs text-gray-500"><dt>Advance paid</dt><dd>− {formatRupees(order.advance_amount)}</dd></div>
+                    <div className="flex justify-between text-sm font-semibold text-orange-700 border-t border-dashed border-orange-200 pt-1">
+                      <dt>Balance due</dt>
+                      <dd>{formatRupees(order.balance_amount || 0)}</dd>
+                    </div>
+                  </>
+                )}
                 <div className="flex justify-between text-xs text-gray-500"><dt>Payment method</dt><dd>{order.payment_method === "credit" ? "Locofast Credit" : "Razorpay"}</dd></div>
                 {order.invoice_number && (
                   <div className="flex justify-between text-xs text-gray-500"><dt>Invoice no.</dt><dd className="font-mono">{order.invoice_number}</dd></div>
                 )}
               </dl>
             </div>
+              );
+            })()}
 
             <div className="bg-white border border-gray-200 rounded-xl p-6">
               <h2 className="text-sm font-semibold text-gray-900 mb-3">Shipping</h2>
