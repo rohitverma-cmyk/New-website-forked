@@ -25,7 +25,8 @@ CANONICAL_COMPOSITIONS: List[str] = [
     "Viscose",
     "Lyocell",
     "Modal",
-    "Lycra",  # marketing name — covers Spandex / Elastane / Flex
+    "Lycra",  # marketing name — covers Spandex / Elastane
+    "Flex",   # distinct stretch yarn (often paired with cotton/polyester)
     "Linen",
     "Hemp",
     "Nylon",
@@ -93,7 +94,10 @@ ALIAS_MAP: Dict[str, str] = {
     "spandex": "Lycra",
     "elastane": "Lycra",
     "elasthane": "Lycra",
-    "flex": "Lycra",  # shorthand for Lycra in trade
+
+    # ─── Flex (distinct stretch yarn — kept separate from Lycra) ───
+    "flex": "Flex",
+    "flx": "Flex",
 
     # ─── Linen / Hemp / Jute ───
     "linen": "Linen",

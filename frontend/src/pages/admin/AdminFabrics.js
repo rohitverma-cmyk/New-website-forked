@@ -277,7 +277,7 @@ const AdminFabrics = () => {
   };
 
   // Materials that share the stretch-fibre class and use the 0.5→20% dropdown
-  const STRETCH_FIBRES = ['spandex', 'elastane', 'lycra', 'stretch'];
+  const STRETCH_FIBRES = ['spandex', 'elastane', 'lycra', 'flex', 'stretch'];
   const isStretchFibre = (material) =>
     STRETCH_FIBRES.some((f) => (material || '').toLowerCase().includes(f));
 

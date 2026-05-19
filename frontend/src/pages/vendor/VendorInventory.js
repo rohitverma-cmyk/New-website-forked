@@ -46,7 +46,7 @@ const knitTypeOptions = [
   "Micro PP", "Jacquard Zombie", "Taiwan Lycra", "Football Knit", "Nirmal Knit",
   "Reebok Knit", "Adidas Knit", "Super Malai", "Micro Crepe", "Bubble Crepe",
 ];
-const STRETCH_FIBRES = ['spandex', 'elastane', 'lycra', 'stretch'];
+const STRETCH_FIBRES = ['spandex', 'elastane', 'lycra', 'flex', 'stretch'];
 const isStretchFibre = (m) => STRETCH_FIBRES.some((f) => (m || '').toLowerCase().includes(f));
 const stretchPercentOptions = Array.from({ length: 40 }, (_, i) => (i + 1) * 0.5);
 const colorOptions = [
