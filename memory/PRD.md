@@ -654,6 +654,11 @@ Bug-fix + UX from user audit. 9/9 endpoint tests pass.
   - Stamped state (testid `vendor-banner-goods-ready-stamped`) with Edit link for already-marked orders.
   - **Status tabs** (testid `vendor-order-status-tabs`): 9 tabs (All / Payment Pending / Advance Paid / Confirmed / Goods Ready / Processing / Shipped / Delivered / Cancelled) with live count badges scoped to the current Source filter (Inventory/RFQ).
 
+### Packing Slip PDF (Feb 19, 2026) ✅
+- **New module** `/app/backend/packing_slip.py` — reportlab-based generator that flattens `dispatch_rolls` into ONE ROW PER ROLL (e.g., `3 rolls × 50m` → 3 rows of `Roll 1/3 · 50m`, `Roll 2/3 · 50m`, …). Falls back to ordered/actual quantity if rolls weren't captured. Header shows order #, goods-ready timestamp; address panel with FROM (supplier) → SHIP TO (customer). Footer carries total rolls + total meters + per-item dispatch notes.
+- **New endpoint** `GET /api/orders/{order_id}/packing-slip` — vendor or admin JWT. Vendors get only their own seller_id's items; admins get every supplier on the order. Returns `application/pdf`. 400 if no quantity data captured yet, 403 if vendor has no items on this order.
+- **Frontend** (`VendorOrders.js`): New `PackingSlipButton` component (testid `vendor-packing-slip-btn`) on the goods-ready stamped banner. Downloads via axios blob, surfaces backend error detail (decoding blob → JSON for nicer toasts). Visible for both non-provisional goods_ready orders AND provisional orders in balance_pending / paid (since rolls + invoice are already captured at that point).
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard

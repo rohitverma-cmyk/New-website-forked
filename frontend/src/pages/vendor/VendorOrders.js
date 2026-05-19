@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
-import { Package, Clock, CheckCircle, Truck, MapPin, Phone, ExternalLink, FileText, Upload, AlertTriangle, Loader2, Boxes, Plus, Trash2 } from "lucide-react";
+import { Package, Clock, CheckCircle, Truck, MapPin, Phone, ExternalLink, FileText, Upload, AlertTriangle, Loader2, Boxes, Plus, Trash2, Printer } from "lucide-react";
 import VendorLayout from "../../components/vendor/VendorLayout";
 import VendorFileUpload from "../../components/vendor/VendorFileUpload";
 import { getVendorOrders, vendorMarkGoodsReady, vendorAcceptOrder, vendorCancelOrder } from "../../lib/api";
+import api from "../../lib/api";
 import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -268,23 +269,33 @@ const VendorOrders = () => {
                 {!selectedOrder.is_provisional && ["confirmed", "processing"].includes(selectedOrder.status) && (
                   <MarkReadyBanner order={selectedOrder} onMarkReady={() => setReadyOrder(selectedOrder)} />
                 )}
-                {/* Goods already marked ready — show summary */}
-                {!selectedOrder.is_provisional && selectedOrder.status === "goods_ready" && (
+                {/* Goods already marked ready — show summary + packing slip download */}
+                {((!selectedOrder.is_provisional && selectedOrder.status === "goods_ready")
+                  || (selectedOrder.is_provisional && ["balance_pending", "paid"].includes(selectedOrder.payment_status))) && (
                   <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4" data-testid="vendor-banner-goods-ready-stamped">
-                    <p className="text-sm font-semibold text-emerald-900 flex items-center gap-1.5">
-                      <CheckCircle size={14} /> Goods marked ready
-                    </p>
-                    <p className="text-xs text-emerald-800 mt-1">
-                      Locofast Ops will push the shipment to Shiprocket shortly. Need to update rolls or re-upload invoice?
-                      <button
-                        type="button"
-                        onClick={() => setReadyOrder(selectedOrder)}
-                        className="ml-1 underline font-medium hover:text-emerald-950"
-                        data-testid="vendor-edit-ready-btn"
-                      >
-                        Edit
-                      </button>
-                    </p>
+                    <div className="flex items-start justify-between gap-3 flex-wrap">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-emerald-900 flex items-center gap-1.5">
+                          <CheckCircle size={14} /> Goods marked ready
+                        </p>
+                        <p className="text-xs text-emerald-800 mt-1">
+                          Print the packing slip and attach one label per roll. Locofast Ops will push to Shiprocket once payment is settled.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <PackingSlipButton orderId={selectedOrder.id} orderNumber={selectedOrder.order_number} />
+                        {!selectedOrder.is_provisional && (
+                          <button
+                            type="button"
+                            onClick={() => setReadyOrder(selectedOrder)}
+                            className="text-xs underline font-medium text-emerald-800 hover:text-emerald-950"
+                            data-testid="vendor-edit-ready-btn"
+                          >
+                            Edit
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -545,6 +556,52 @@ const VendorAcceptanceBanner = ({ order, onAction }) => {
         </div>
       )}
     </div>
+  );
+};
+
+// ─── Packing Slip PDF download button ────────────────────────────
+const PackingSlipButton = ({ orderId, orderNumber, variant = "primary" }) => {
+  const [busy, setBusy] = useState(false);
+  const handle = async () => {
+    setBusy(true);
+    try {
+      const res = await api.get(`/orders/${orderId}/packing-slip`, { responseType: "blob" });
+      const blob = new Blob([res.data], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `PackingSlip_${orderNumber || orderId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success("Packing slip downloaded");
+    } catch (e) {
+      // Blob errors hide the JSON message — peek inside
+      let msg = "Failed to download packing slip";
+      if (e?.response?.data instanceof Blob) {
+        try { msg = JSON.parse(await e.response.data.text()).detail || msg; } catch {}
+      } else {
+        msg = e?.response?.data?.detail || msg;
+      }
+      toast.error(msg);
+    }
+    setBusy(false);
+  };
+  const base = variant === "primary"
+    ? "px-3 py-1.5 text-xs font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg"
+    : "px-3 py-1.5 text-xs font-medium text-emerald-700 bg-white border border-emerald-300 hover:bg-emerald-50 rounded-lg";
+  return (
+    <button
+      type="button"
+      onClick={handle}
+      disabled={busy}
+      className={`${base} disabled:opacity-50 flex items-center gap-1.5`}
+      data-testid="vendor-packing-slip-btn"
+    >
+      {busy ? <Loader2 size={12} className="animate-spin" /> : <Printer size={12} />}
+      {busy ? "Generating…" : "Packing Slip"}
+    </button>
   );
 };
 

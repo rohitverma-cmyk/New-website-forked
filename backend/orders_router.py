@@ -3552,6 +3552,53 @@ async def get_invoice(order_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to generate invoice: {str(e)}")
 
 
+@router.get("/{order_id}/packing-slip")
+async def download_packing_slip(order_id: str, request: Request):
+    """Vendor / Admin: download a PDF packing slip listing every roll
+    individually. Vendors see only their own items; admins see all.
+    Available once at least one item has been marked goods-ready."""
+    caller_role, caller_sid = await _resolve_vendor_caller(request)
+    order = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Validate caller has at least one item on this order
+    if caller_role == "vendor":
+        item_sids = {(it.get("seller_id") or "") for it in (order.get("items") or [])}
+        if caller_sid not in item_sids:
+            raise HTTPException(status_code=403, detail="You have no items on this order")
+
+    # Need *something* to render — either rolls or actual quantity. We
+    # allow generation even before goods-ready so vendors can pre-print,
+    # but warn the caller via response header.
+    has_ready_data = any(
+        (it.get("dispatch_rolls") or it.get("actual_quantity") is not None or it.get("quantity"))
+        for it in (order.get("items") or [])
+    )
+    if not has_ready_data:
+        raise HTTPException(status_code=400, detail="No quantity data on this order yet")
+
+    from packing_slip import generate_packing_slip_pdf
+    try:
+        pdf = generate_packing_slip_pdf(order, seller_id=(caller_sid or None) if caller_role == "vendor" else None)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Packing slip generation failed for {order_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate packing slip")
+
+    filename = f"PackingSlip_{order.get('order_number', order_id)}.pdf"
+    return StreamingResponse(
+        pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Type": "application/pdf",
+        },
+    )
+
+
 # ==================== PROFORMA INVOICE (Bangladesh/Export) ====================
 
 async def generate_pi_number() -> str:
