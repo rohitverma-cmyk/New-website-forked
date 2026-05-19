@@ -818,13 +818,26 @@ async def get_order_pay_context(order_id: str, request: Request):
     if not order.get("razorpay_order_id"):
         raise HTTPException(status_code=400, detail="Order has no Razorpay order to resume")
 
+    # On provisional orders the customer pays the ADVANCE first (or just
+    # the advance leg again if the modal got dismissed). Once advance is
+    # paid, the front-end uses /balance-pay instead — we refuse here so
+    # we never accidentally charge the advance amount again.
+    is_prov = bool(order.get("is_provisional"))
+    if is_prov and order.get("payment_status") == "advance_paid":
+        raise HTTPException(status_code=400, detail="Advance already paid — waiting for supplier goods-ready.")
+    if is_prov and order.get("payment_status") == "balance_pending":
+        raise HTTPException(status_code=400, detail="Use /balance-pay for the balance leg of a provisional order.")
+    amount = float(order.get("advance_amount") or 0) if is_prov else float(order.get("total") or 0)
     return {
         "order_id": order.get("id"),
         "order_number": order.get("order_number"),
         "razorpay_order_id": order["razorpay_order_id"],
         "razorpay_key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
-        "amount": order.get("total", 0),
-        "amount_paise": int(round(float(order.get("total", 0)) * 100)),
+        "amount": amount,
+        "amount_paise": int(round(amount * 100)),
+        "is_provisional": is_prov,
+        "advance_amount": float(order.get("advance_amount") or 0),
+        "balance_amount": float(order.get("balance_amount") or 0),
         "currency": "INR",
         "customer": order.get("customer", {}),
     }

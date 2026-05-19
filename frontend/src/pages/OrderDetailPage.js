@@ -11,7 +11,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
-  ArrowLeft, Loader2, Package, CheckCircle, Truck, XCircle, Clock,
+  ArrowLeft, Loader2, Package, CheckCircle, CheckCircle2, Truck, XCircle, Clock,
   CreditCard, Download, ExternalLink, MapPin, Phone, Mail, FileText, Box, History
 } from "lucide-react";
 import Navbar from "../components/Navbar";
@@ -190,6 +190,52 @@ const OrderDetailPage = () => {
     }
   };
 
+  const handleBalancePay = async () => {
+    setPaying(true);
+    try {
+      const ok = await loadRazorpayScript();
+      if (!ok) throw new Error("Failed to load payment gateway");
+      const res = await fetch(`${API_URL}/api/orders/${order.id}/balance-pay`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const ctx = await res.json();
+      if (!res.ok) throw new Error(ctx?.detail || "Could not start balance payment");
+      const rp = new window.Razorpay({
+        key: ctx.key_id,
+        amount: ctx.amount,
+        currency: ctx.currency,
+        name: "Locofast",
+        description: `Balance · ${ctx.order_number}`,
+        order_id: ctx.razorpay_order_id,
+        prefill: { name: order.customer?.name, email: order.customer?.email, contact: order.customer?.phone },
+        theme: { color: "#2563EB" },
+        modal: { ondismiss: () => { setPaying(false); toast.info("Payment cancelled"); } },
+        handler: async (r) => {
+          try {
+            const v = await verifyPayment({
+              razorpay_order_id: r.razorpay_order_id,
+              razorpay_payment_id: r.razorpay_payment_id,
+              razorpay_signature: r.razorpay_signature,
+            });
+            if (v.data.success) {
+              toast.success("Balance paid — dispatch unlocked");
+              fetchOrder();
+            }
+          } catch {
+            toast.error("Payment verification failed");
+          }
+        },
+      });
+      rp.on("payment.failed", () => toast.error("Payment failed"));
+      rp.open();
+    } catch (e) {
+      toast.error(e.message || "Could not start balance payment");
+    } finally {
+      setPaying(false);
+    }
+  };
+
   const handleDownloadInvoice = async () => {
     try {
       // Hit the public invoice endpoint — paid-only check is enforced server-side.
@@ -237,7 +283,11 @@ const OrderDetailPage = () => {
   }
 
   const isPaid = order.payment_status === "paid";
-  const isPending = order.payment_status !== "paid" && order.status !== "cancelled";
+  const isProvisional = !!order.is_provisional;
+  const isAdvancePending = order.payment_status === "pending_advance" || order.payment_status === "initiated";
+  const isAdvancePaid = order.payment_status === "advance_paid";
+  const isBalancePending = order.payment_status === "balance_pending";
+  const isPending = !isPaid && order.status !== "cancelled";
   const awb = order.awb_code;
   const trackingUrl = awb ? `https://shiprocket.co/tracking/${encodeURIComponent(awb)}` : null;
 
@@ -263,7 +313,7 @@ const OrderDetailPage = () => {
                 <p className="text-xs text-gray-500 mt-1">Placed on {formatDate(order.created_at)}</p>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                {isPending && (
+                {isAdvancePending && (
                   <button
                     onClick={handlePayNow}
                     disabled={paying}
@@ -271,7 +321,20 @@ const OrderDetailPage = () => {
                     data-testid="order-detail-pay-now"
                   >
                     {paying ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
-                    Pay now · {formatRupees(order.total)}
+                    {isProvisional
+                      ? `Pay ${order.advance_pct || 10}% advance · ${formatRupees(order.advance_amount || order.total)}`
+                      : `Pay now · ${formatRupees(order.total)}`}
+                  </button>
+                )}
+                {isBalancePending && (
+                  <button
+                    onClick={handleBalancePay}
+                    disabled={paying}
+                    className="inline-flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-60"
+                    data-testid="order-detail-pay-balance"
+                  >
+                    {paying ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
+                    Pay balance · {formatRupees(order.balance_amount || 0)}
                   </button>
                 )}
                 {isPaid && (
@@ -319,9 +382,27 @@ const OrderDetailPage = () => {
               </div>
             )}
 
-            {isPending && (
+            {isAdvancePending && !isProvisional && (
               <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-xs text-amber-800 flex items-center gap-2">
                 <Clock size={12} /> Payment pending — your order will be confirmed once payment is received.
+              </div>
+            )}
+            {isAdvancePending && isProvisional && (
+              <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-xs text-blue-800">
+                <div className="flex items-center gap-2 font-medium mb-1"><Clock size={12} /> Provisional booking · pay {order.advance_pct || 10}% advance</div>
+                <p className="text-blue-700">You only pay <strong>{formatRupees(order.advance_amount || 0)}</strong> now. Actual quantity shipped by the supplier may differ slightly; we'll send you the balance invoice ({formatRupees(order.balance_amount || 0)} estimated) once the goods are ready.</p>
+              </div>
+            )}
+            {isAdvancePaid && (
+              <div className="mt-4 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 text-xs text-emerald-800">
+                <div className="flex items-center gap-2 font-medium mb-1"><CheckCircle2 size={12} /> Advance received · waiting for supplier</div>
+                <p className="text-emerald-700">You paid <strong>{formatRupees(order.advance_amount || 0)}</strong> advance. The supplier is preparing your goods and will confirm the actual quantity shortly. We'll email you the balance payment link as soon as the order is ready.</p>
+              </div>
+            )}
+            {isBalancePending && (
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-800">
+                <div className="flex items-center gap-2 font-medium mb-1"><Clock size={12} /> Goods ready · pay balance to dispatch</div>
+                <p className="text-amber-700">Final invoice value: <strong>{formatRupees(order.actual_total || order.total)}</strong>. You've paid {formatRupees(order.advance_amount || 0)}; balance due is <strong>{formatRupees(order.balance_amount || 0)}</strong>. Once cleared, we hand the order to our logistics partner.</p>
               </div>
             )}
           </div>

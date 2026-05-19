@@ -132,6 +132,15 @@ class OrderCreate(BaseModel):
     agent_email: str = ""
     agent_name: str = ""
     shared_cart_token: str = ""
+    # Provisional bulk-order flow.
+    # When `is_provisional` is True the customer pays only `advance_pct`
+    # of the total upfront. Order moves to status `provisional` after
+    # advance is paid. Supplier marks goods-ready with the actual quantity
+    # which triggers a balance invoice. We push to Shiprocket only after
+    # the balance payment is received (or finance marks it paid).
+    # Sample orders ignore this flag — they always pay 100% upfront.
+    is_provisional: bool = False
+    advance_pct: float = 0  # 0 = inherit platform default at create-time
 
 class Order(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -582,17 +591,36 @@ async def create_order(order_data: OrderCreate):
     if not razorpay_client:
         logger.error("Razorpay client not initialized")
         raise HTTPException(status_code=503, detail="Payment service not configured. Please contact support.")
-    
-    # Create Razorpay order
+
+    # Provisional bulk-order: every bulk order (or explicit `is_provisional`)
+    # charges only the advance % upfront; balance is collected after the
+    # supplier marks goods-ready with the actual quantity. Sample-only
+    # carts and any caller that explicitly opts out (is_provisional=False
+    # AND order has only samples) get the legacy 100% upfront flow.
+    from provisional_orders import is_bulk_order, resolve_advance_pct, split_amounts
+    order_is_bulk = is_bulk_order([i.model_dump() for i in order_data.items])
+    use_provisional = order_data.is_provisional or order_is_bulk
+    if use_provisional:
+        advance_pct = resolve_advance_pct(order_data.advance_pct)
+        advance_amount, balance_amount = split_amounts(final_total, advance_pct)
+        rzp_amount_paise = int(round(advance_amount * 100))
+    else:
+        advance_pct = 100.0
+        advance_amount = final_total
+        balance_amount = 0.0
+        rzp_amount_paise = int(round(final_total * 100))
+
+    # Create Razorpay order (for the ADVANCE amount on provisional orders)
     try:
         razorpay_order = razorpay_client.order.create({
-            "amount": int(final_total * 100),  # Amount in paise
+            "amount": rzp_amount_paise,
             "currency": "INR",
             "receipt": order_number,
             "notes": {
                 "order_id": order_id,
                 "customer_email": order_data.customer.email,
-                "customer_name": order_data.customer.name
+                "customer_name": order_data.customer.name,
+                "payment_stage": "advance" if use_provisional else "full",
             }
         })
     except Exception as e:
@@ -619,7 +647,17 @@ async def create_order(order_data: OrderCreate):
         "total": final_total,
         "currency": "INR",
         "status": "payment_pending",
-        "payment_status": "initiated",
+        # On provisional orders payment moves: pending_advance → advance_paid
+        # → balance_pending → paid. Legacy single-stage flow stays on the
+        # original `initiated → paid` cycle.
+        "payment_status": "pending_advance" if use_provisional else "initiated",
+        "is_provisional": use_provisional,
+        "advance_pct": advance_pct,
+        "advance_amount": advance_amount,
+        "balance_amount": balance_amount,
+        "advance_paid_at": "",
+        "balance_paid_at": "",
+        "goods_ready_at": "",
         "payment_method": "razorpay",
         "booking_type": "assisted_online" if order_data.agent_id else "online",
         "agent_id": order_data.agent_id,
@@ -654,8 +692,16 @@ async def create_order(order_data: OrderCreate):
         "order_number": order_number,
         "razorpay_order_id": razorpay_order["id"],
         "razorpay_key_id": os.environ.get('RAZORPAY_KEY_ID'),
-        "amount": final_total,
-        "amount_paise": int(final_total * 100),
+        # `amount` is what the customer pays NOW (advance on provisional,
+        # full on non-provisional). `total` / `balance_amount` describe
+        # the full obligation so the frontend can render "₹X now · ₹Y later".
+        "amount": advance_amount if use_provisional else final_total,
+        "amount_paise": rzp_amount_paise,
+        "total": final_total,
+        "is_provisional": use_provisional,
+        "advance_pct": advance_pct,
+        "advance_amount": advance_amount,
+        "balance_amount": balance_amount,
         "currency": "INR",
         "customer": order_data.customer.model_dump()
     }
@@ -747,70 +793,106 @@ async def verify_payment(verification: PaymentVerification):
         )
         raise HTTPException(status_code=400, detail="Payment verification failed")
     
-    # Update order as paid
+    # Update order as paid. For provisional orders this is the ADVANCE
+    # leg (advance_paid → wait for goods-ready). The balance leg comes
+    # in through `/orders/{id}/balance-paid` once supplier reports actual
+    # quantity. Non-provisional orders move straight to paid + confirmed.
     now = datetime.now(timezone.utc).isoformat()
+    is_provisional = bool(order.get("is_provisional"))
+    payment_stage = "advance" if is_provisional else "full"
+    if is_provisional and order.get("payment_status") == "balance_pending":
+        # This payment is for the BALANCE leg (re-payment endpoint flips
+        # razorpay_order_id but keeps `payment_status: balance_pending`).
+        payment_stage = "balance"
+
+    update_doc = {
+        "razorpay_payment_id": verification.razorpay_payment_id,
+        "razorpay_signature": verification.razorpay_signature,
+        "updated_at": now,
+    }
+    if payment_stage == "advance":
+        update_doc["payment_status"] = "advance_paid"
+        update_doc["status"] = "provisional"
+        update_doc["advance_paid_at"] = now
+    else:
+        update_doc["payment_status"] = "paid"
+        update_doc["status"] = "confirmed"
+        update_doc["paid_at"] = now
+        if payment_stage == "balance":
+            update_doc["balance_paid_at"] = now
+
     await db.orders.update_one(
         {"razorpay_order_id": verification.razorpay_order_id},
-        {"$set": {
-            "razorpay_payment_id": verification.razorpay_payment_id,
-            "razorpay_signature": verification.razorpay_signature,
-            "payment_status": "paid",
-            "status": "confirmed",
-            "updated_at": now,
-            "paid_at": now
-        }}
+        {"$set": update_doc},
     )
+    # Refresh the in-memory order doc with the values we just persisted
+    # so downstream branches (inventory, payouts, Shiprocket) read the
+    # right state.
+    order.update(update_doc)
     
-    # Deduct inventory (best effort)
-    try:
-        for item in order["items"]:
-            await db.fabrics.update_one(
-                {"id": item["fabric_id"], "quantity_available": {"$gte": item["quantity"]}},
-                {"$inc": {"quantity_available": -item["quantity"]}}
-            )
-    except Exception as e:
-        logger.error(f"Failed to update inventory: {str(e)}")
+    # Deduct inventory + push to Shiprocket only when the order is FULLY
+    # paid. On the advance leg of a provisional order, we just confirm
+    # the booking and wait for the supplier to mark goods-ready (which
+    # then unlocks the balance invoice).
+    fully_paid = payment_stage != "advance"
+
+    if fully_paid:
+        # Deduct inventory (best effort)
+        try:
+            for item in order["items"]:
+                await db.fabrics.update_one(
+                    {"id": item["fabric_id"], "quantity_available": {"$gte": item["quantity"]}},
+                    {"$inc": {"quantity_available": -item["quantity"]}}
+                )
+        except Exception as e:
+            logger.error(f"Failed to update inventory: {str(e)}")
 
     # Auto-record into credit_payments ledger (best-effort, non-blocking)
-    try:
-        import credit_ledger_router as _clr
-        await _clr.record_razorpay_payment(order, verification.razorpay_payment_id)
-    except Exception as _e:
-        logger.warning(f"credit_ledger auto-record skipped: {_e}")
-    
-    # Create Shiprocket shipment (best effort, non-blocking)
-    # First, split into child orders if multi-vendor
-    child_orders = []
-    try:
-        child_orders = await split_order_into_child_orders(order)
-    except Exception as e:
-        logger.warning(f"Failed to split multi-vendor order {order.get('order_number')}: {e}")
-
-    # Fire Shiprocket pushes — one per child (or parent if no split)
-    shiprocket_targets = child_orders or [order]
-    for tgt in shiprocket_targets:
+    if fully_paid:
         try:
-            shiprocket_result = await create_shiprocket_shipment(tgt)
-            if shiprocket_result.get("success"):
-                await db.orders.update_one(
-                    {"id": tgt["id"]},
-                    {"$set": {
-                        "shiprocket_order_id": str(shiprocket_result.get("order_id") or shiprocket_result.get("shiprocket_order_id") or ""),
-                        "shiprocket_shipment_id": shiprocket_result.get("shipment_id"),
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }}
-                )
-                logger.info(f"Shiprocket shipment created for {tgt['order_number']}")
-        except Exception as e:
-            logger.error(f"Failed to create Shiprocket shipment for {tgt.get('order_number')}: {str(e)}")
+            import credit_ledger_router as _clr
+            await _clr.record_razorpay_payment(order, verification.razorpay_payment_id)
+        except Exception as _e:
+            logger.warning(f"credit_ledger auto-record skipped: {_e}")
 
-    # Materialize vendor payouts (one per seller in the order)
-    try:
-        from payouts_router import materialize_payouts_for_order
-        for tgt in (child_orders or [order]):
-            await materialize_payouts_for_order(tgt)
-    except Exception as e:
-        logger.warning(f"Failed to materialize payouts for {order.get('order_number')}: {e}")
+    # Create Shiprocket shipment (best effort, non-blocking) — only on full pay
+    child_orders = []
+    if fully_paid:
+        try:
+            child_orders = await split_order_into_child_orders(order)
+        except Exception as e:
+            logger.warning(f"Failed to split multi-vendor order {order.get('order_number')}: {e}")
+
+    # Fire Shiprocket pushes — one per child (or parent if no split).
+    # Skipped on advance leg (provisional booking) — we push after the
+    # supplier marks goods-ready AND balance is paid.
+    if fully_paid:
+        shiprocket_targets = child_orders or [order]
+        for tgt in shiprocket_targets:
+            try:
+                shiprocket_result = await create_shiprocket_shipment(tgt)
+                if shiprocket_result.get("success"):
+                    await db.orders.update_one(
+                        {"id": tgt["id"]},
+                        {"$set": {
+                            "shiprocket_order_id": str(shiprocket_result.get("order_id") or shiprocket_result.get("shiprocket_order_id") or ""),
+                            "shiprocket_shipment_id": shiprocket_result.get("shipment_id"),
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }}
+                    )
+                    logger.info(f"Shiprocket shipment created for {tgt['order_number']}")
+            except Exception as e:
+                logger.error(f"Failed to create Shiprocket shipment for {tgt.get('order_number')}: {str(e)}")
+
+    # Materialize vendor payouts — also wait until full payment so the
+    # payout reflects the actual quantity (not the booked quantity).
+    if fully_paid:
+        try:
+            from payouts_router import materialize_payouts_for_order
+            for tgt in (child_orders or [order]):
+                await materialize_payouts_for_order(tgt)
+        except Exception as e:
+            logger.warning(f"Failed to materialize payouts for {order.get('order_number')}: {e}")
     
     # Get updated order
     updated_order = await db.orders.find_one(
@@ -1740,6 +1822,256 @@ async def update_payment_status(order_id: str, payload: dict):
         logger.info(f"[admin] payment_status: {order.get('order_number')} {previous} → {new_status}")
 
     return {"success": True, "previous": previous, "current": new_status}
+
+
+@router.post("/{order_id}/mark-goods-ready")
+async def mark_goods_ready(order_id: str, data: dict, request: Request):
+    """Supplier reports actual quantity they've packed/dispatched.
+
+    Body: `{ items: [{ fabric_id: str, actual_quantity: float }] }`
+
+    The endpoint accepts vendor JWT (supplier marks their OWN items) or
+    admin/agent JWT (can override on the vendor's behalf). The order
+    must be `advance_paid` (provisional). On success we:
+      • stamp `actual_quantity` on each item the caller controls
+      • recompute subtotal/tax/total → save as `actual_total`
+      • set `balance_amount = actual_total - advance_amount`
+      • flip `payment_status: balance_pending`, `status: goods_ready`
+      • stamp `goods_ready_at`
+      • fire an email to the customer with a "Pay balance" link
+    Variance outside ±10 % requires admin role to proceed.
+    """
+    from provisional_orders import within_variance, recalc_item_total, VARIANCE_PCT
+
+    # Caller resolution — vendor, admin, or agent
+    caller_seller_id = None
+    caller_role = "unknown"
+    try:
+        # Try vendor auth first
+        from vendor_router import get_current_vendor
+        v = get_current_vendor(request)
+        caller_seller_id = v.get("seller_id") or v.get("id")
+        caller_role = "vendor"
+    except HTTPException:
+        # Fall back to admin / accounts
+        try:
+            await auth_helpers.get_current_admin(request)
+            caller_role = "admin"
+        except HTTPException:
+            raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if not order.get("is_provisional"):
+        raise HTTPException(status_code=400, detail="Not a provisional order")
+    if order.get("payment_status") not in ("advance_paid", "balance_pending"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot mark goods-ready in payment_status={order.get('payment_status')}",
+        )
+
+    actual_by_fabric = {(it.get("fabric_id") or ""): float(it.get("actual_quantity") or 0)
+                       for it in (data.get("items") or [])}
+    if not actual_by_fabric:
+        raise HTTPException(status_code=400, detail="No items provided")
+
+    # Stamp actual_quantity on the matching items. Vendors can only
+    # update their own items; admins can update all.
+    new_items = []
+    out_of_band = []
+    for it in (order.get("items") or []):
+        fid = it.get("fabric_id") or ""
+        if fid in actual_by_fabric:
+            if caller_role == "vendor":
+                if (it.get("seller_id") or "") != caller_seller_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Item {it.get('fabric_name','?')} is not assigned to this vendor",
+                    )
+            actual_qty = actual_by_fabric[fid]
+            if not within_variance(float(it.get("quantity") or 0), actual_qty):
+                out_of_band.append(it.get("fabric_name") or fid)
+            new_items.append(recalc_item_total(it, actual_qty))
+        else:
+            # Preserve existing actual_quantity stamp (set by a prior
+            # vendor in a multi-supplier order) or leave unset.
+            new_items.append(it)
+
+    if out_of_band and caller_role != "admin":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Actual quantity outside ±{VARIANCE_PCT:.0f}% variance for: {', '.join(out_of_band)}. Admin approval required.",
+        )
+
+    # Check ALL items now have actual_quantity. If not, the supplier is
+    # mid-update (multi-vendor split where Vendor A reported, Vendor B
+    # hasn't yet) — we stamp progress but DON'T move to balance_pending.
+    all_ready = all(it.get("actual_quantity") is not None for it in new_items)
+
+    update_doc = {
+        "items": new_items,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if all_ready:
+        # Recompute totals using actual_total per item (keeps tax /
+        # logistics / packaging proportional to the original booking).
+        actual_subtotal = sum(float(it.get("actual_total") or 0) for it in new_items)
+        booked_subtotal = float(order.get("subtotal") or 0)
+        ratio = (actual_subtotal / booked_subtotal) if booked_subtotal > 0 else 1.0
+        packaging = round(float(order.get("packaging_charge") or 0) * ratio, 2)
+        logistics = round(float(order.get("logistics_only_charge") or order.get("logistics_charge") or 0) * ratio, 2)
+        tax = round((actual_subtotal + packaging + logistics) * 0.05, 2)  # 5 % GST
+        discount = float(order.get("discount") or 0)
+        actual_total = round(actual_subtotal + packaging + logistics + tax - discount, 2)
+        advance_amount = float(order.get("advance_amount") or 0)
+        balance_amount = max(round(actual_total - advance_amount, 2), 0.0)
+
+        update_doc.update({
+            "actual_subtotal": round(actual_subtotal, 2),
+            "actual_packaging_charge": packaging,
+            "actual_logistics_charge": logistics,
+            "actual_tax": tax,
+            "actual_total": actual_total,
+            "balance_amount": balance_amount,
+            "payment_status": "balance_pending",
+            "status": "goods_ready",
+            "goods_ready_at": datetime.now(timezone.utc).isoformat(),
+            "goods_ready_by": caller_seller_id or caller_role,
+        })
+
+    await db.orders.update_one({"id": order_id}, {"$set": update_doc})
+
+    # Notify the customer (best-effort) only when the whole order is ready.
+    if all_ready:
+        try:
+            fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+            from email_router import send_balance_payment_due_email
+            await send_balance_payment_due_email(fresh)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"balance-due email skipped: {e}")
+
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {"success": True, "all_ready": all_ready, "order": fresh}
+
+
+@router.post("/{order_id}/balance-pay")
+async def start_balance_payment(order_id: str, request: Request):
+    """Customer-side endpoint: mint a Razorpay order for the BALANCE
+    amount of a provisional order. The frontend opens the Razorpay
+    modal with this id; verify-payment handles the success leg."""
+    from customer_router import get_current_customer as _get_current_customer
+    customer = _get_current_customer(request)
+    order = await db.orders.find_one(
+        {"id": order_id, "customer.email": customer["email"]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if not order.get("is_provisional"):
+        raise HTTPException(status_code=400, detail="Not a provisional order")
+    if order.get("payment_status") != "balance_pending":
+        raise HTTPException(
+            status_code=400,
+            detail="Balance payment is not yet due — waiting for the supplier to mark goods ready.",
+        )
+    if order.get("payment_method") == "credit":
+        raise HTTPException(status_code=400, detail="Credit orders use the credit-ops balance flow.")
+
+    balance_paise = int(round(float(order.get("balance_amount") or 0) * 100))
+    if balance_paise <= 0:
+        raise HTTPException(status_code=400, detail="No balance due — order may already be settled.")
+
+    try:
+        rzp = razorpay_client.order.create({
+            "amount": balance_paise,
+            "currency": "INR",
+            "receipt": f"{order.get('order_number') or order_id[:10]}-bal",
+            "notes": {"order_id": order_id, "payment_stage": "balance"},
+        })
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "razorpay_order_id": rzp["id"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+    return {
+        "razorpay_order_id": rzp["id"],
+        "amount": rzp["amount"],
+        "currency": rzp["currency"],
+        "key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
+        "order_id": order_id,
+        "order_number": order.get("order_number", ""),
+        "balance_amount": float(order.get("balance_amount") or 0),
+    }
+
+
+@router.post("/{order_id}/mark-balance-paid")
+async def admin_mark_balance_paid(order_id: str, admin=Depends(auth_helpers.get_current_admin)):
+    """Finance-only manual marker — same effect as a successful Razorpay
+    balance payment. Triggers inventory deduction + payout materialization
+    + Shiprocket push."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if not order.get("is_provisional"):
+        raise HTTPException(status_code=400, detail="Not a provisional order")
+    if order.get("payment_status") != "balance_pending":
+        raise HTTPException(status_code=400, detail="Balance is not pending — nothing to mark.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "payment_status": "paid",
+            "status": "confirmed",
+            "balance_paid_at": now,
+            "paid_at": now,
+            "balance_paid_manually": True,
+            "balance_paid_by": admin.get("email", "admin"),
+            "updated_at": now,
+        }},
+    )
+
+    # Inventory + payouts + Shiprocket (same trio as the auto-flow).
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    try:
+        for item in fresh["items"]:
+            qty = float(item.get("actual_quantity") or item.get("quantity") or 0)
+            await db.fabrics.update_one(
+                {"id": item["fabric_id"], "quantity_available": {"$gte": qty}},
+                {"$inc": {"quantity_available": -qty}},
+            )
+    except Exception as e:
+        logger.warning(f"Inventory deduct failed: {e}")
+
+    try:
+        from payouts_router import materialize_payouts_for_order
+        await materialize_payouts_for_order(fresh)
+    except Exception as e:
+        logger.warning(f"Payout materialize failed: {e}")
+
+    try:
+        sr = await create_shiprocket_shipment(fresh)
+        if sr.get("success"):
+            await db.orders.update_one(
+                {"id": order_id},
+                {"$set": {
+                    "shiprocket_order_id": str(sr.get("order_id") or ""),
+                    "shiprocket_shipment_id": sr.get("shipment_id"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+    except Exception as e:
+        logger.warning(f"Shiprocket push failed: {e}")
+
+    return {"success": True, "order": await db.orders.find_one({"id": order_id}, {"_id": 0})}
 
 
 @router.post("/admin/auto-cancel-stale")

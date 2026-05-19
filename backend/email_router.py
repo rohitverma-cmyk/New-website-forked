@@ -1396,6 +1396,51 @@ async def send_rfq_lead_email(lead: dict):
 
 
 
+async def send_balance_payment_due_email(order: dict):
+    """Provisional bulk-order notification: supplier has marked goods
+    ready with actual quantity → customer can now pay the balance.
+    Best-effort; failures are logged but never block the order flow."""
+    try:
+        to_email = (order.get("customer") or {}).get("email") or ""
+        if not to_email:
+            return {"success": False, "skipped": True, "reason": "no_email"}
+        public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") or "https://locofast.com"
+        link = f"{public_base}/orders/{order.get('id')}"
+        balance = float(order.get("balance_amount") or 0)
+        actual_total = float(order.get("actual_total") or order.get("total") or 0)
+        params = {
+            "from": f"Locofast <{SENDER_EMAIL}>",
+            "to": [to_email],
+            "subject": f"Action needed: pay the balance for {order.get('order_number')}",
+            "html": f"""
+            <div style="font-family: Inter, system-ui, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 24px;">
+                <h2 style="font-size: 20px; font-weight: 600; margin: 0 0 12px;">Your goods are ready — pay the balance</h2>
+                <p style="color: #475569; line-height: 1.5;">Hi {(order.get('customer') or {}).get('name', 'there')},</p>
+                <p style="color: #475569; line-height: 1.5;">The supplier has finished packing your order
+                <strong>{order.get('order_number')}</strong>. Final invoice value is
+                <strong>Rs {actual_total:,.0f}</strong>. You've already paid the
+                <strong>{order.get('advance_pct', 10)}%</strong> advance &mdash; please clear the
+                <strong>balance of Rs {balance:,.0f}</strong> to release dispatch.</p>
+                <p style="margin: 24px 0;"><a href="{link}" style="display: inline-block; background: #2563EB; color: #fff; padding: 12px 22px; border-radius: 10px; text-decoration: none; font-weight: 600;">Pay balance &middot; Rs {balance:,.0f}</a></p>
+                <p style="color: #94a3b8; font-size: 12px;">Once we receive payment, we hand the order over to our logistics partner and you'll get the AWB number for live tracking.</p>
+            </div>
+            """,
+        }
+        resend.Emails.send(params)
+        await log_email(
+            kind="order_balance_due",
+            recipients=[to_email],
+            subject=params["subject"],
+            order_id=order.get("id"),
+            order_number=order.get("order_number"),
+        )
+        return {"success": True}
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"send_balance_payment_due_email failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+
 async def send_order_notification_emails(order: dict, order_db=None):
     """
     Auto-send order notification emails after payment confirmation.
