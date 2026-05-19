@@ -95,7 +95,8 @@ export default function MFabricDetail() {
 
   const startBooking = (type) => {
     setOrderType(type);
-    setQty(type === "sample" ? 1 : Math.max(parseFloat(fabric.moq) || 100, 50));
+    // Customer-initiated samples must be at least 5 m; bulk uses fabric MOQ.
+    setQty(type === "sample" ? 5 : Math.max(parseFloat(fabric.moq) || 100, 50));
   };
 
   const confirmBooking = () => {
@@ -323,7 +324,7 @@ export default function MFabricDetail() {
       <BottomSheet
         open={!!orderType}
         onClose={() => setOrderType(null)}
-        title={orderType === "sample" ? "Book a Sample (1-5m)" : "Book Bulk Order"}
+        title={orderType === "sample" ? "Book a Sample (5-25m)" : "Book Bulk Order"}
         footer={
           <button onClick={confirmBooking} className="m-btn m-btn-primary" style={{ width: "100%" }} data-testid="m-booking-confirm">
             Continue to checkout
@@ -333,23 +334,23 @@ export default function MFabricDetail() {
         <div style={{ padding: "8px 0" }}>
           <div className="m-kicker">Quantity (meters)</div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, padding: "4px 4px 4px 18px", border: "1px solid var(--m-border-2)", borderRadius: 14 }}>
-            <button onClick={() => setQty(Math.max(orderType === "sample" ? 1 : 50, qty - (orderType === "sample" ? 1 : 50)))} style={qtyBtn()}>−</button>
+            <button onClick={() => setQty(Math.max(orderType === "sample" ? 5 : 50, qty - (orderType === "sample" ? 1 : 50)))} style={qtyBtn()}>−</button>
             <input
               type="number"
               inputMode="numeric"
               value={qty}
               onChange={(e) => {
                 const v = Math.max(1, parseInt(e.target.value || "0", 10));
-                // Match desktop: sample is capped at 5m. Bulk has no upper cap.
-                setQty(orderType === "sample" ? Math.min(5, v) : v);
+                // Customer-initiated samples are capped at 25 m and must be ≥5 m.
+                setQty(orderType === "sample" ? Math.max(5, Math.min(25, v)) : v);
               }}
               style={{ flex: 1, textAlign: "center", border: "none", outline: "none", fontSize: 22, fontWeight: 800, color: "var(--m-ink)", padding: "12px 4px", background: "transparent" }}
               data-testid="m-booking-qty"
             />
-            <button onClick={() => setQty(orderType === "sample" ? Math.min(5, qty + 1) : qty + 50)} style={qtyBtn()}>+</button>
+            <button onClick={() => setQty(orderType === "sample" ? Math.min(25, qty + 1) : qty + 50)} style={qtyBtn()}>+</button>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-            {(orderType === "sample" ? [1, 2, 3, 5] : [100, 250, 500, 1000]).map((n) => (
+            {(orderType === "sample" ? [5, 10, 15, 20, 25] : [100, 250, 500, 1000]).map((n) => (
               <button key={n} onClick={() => setQty(n)} className={"m-chip" + (qty === n ? " m-chip-on" : "")} style={{ padding: "7px 12px" }}>
                 {n}m
               </button>

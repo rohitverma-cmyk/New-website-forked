@@ -34,7 +34,9 @@ const FabricDetailPage = () => {
   const [orderModalType, setOrderModalType] = useState(null); // 'sample' | 'bulk' | null
   const [showBookModal, setShowBookModal] = useState(false);
   const [shortfallState, setShortfallState] = useState(null); // { qty, available, color }
-  const [sampleQty, setSampleQty] = useState(1);
+  // Customer-initiated samples on the website must be at least 5 m.
+  // (The agent-assisted flow allows 1 m for client previews.)
+  const [sampleQty, setSampleQty] = useState(5);
   const [bulkQty, setBulkQty] = useState("");
   // Buyer-side color selection for Sample / Bulk booking (null = none picked yet)
   const [bookingVariantIdx, setBookingVariantIdx] = useState(null);
@@ -1274,7 +1276,7 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                       className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
                       data-testid="detail-sample-qty"
                     >
-                      {[1, 2, 3, 4, 5].map((qty) => (
+                      {[5, 10, 15, 20, 25].map((qty) => (
                         <option key={qty} value={qty}>{qty} {unit.singular}{qty > 1 && unit.singular !== 'kg' ? "s" : ""}</option>
                       ))}
                     </select>
@@ -1508,7 +1510,7 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                     Sample Quantity ({getUnit(fabric).plural})
                   </label>
                   <div className="flex gap-2">
-                    {[1, 2, 3, 5].map((q) => (
+                    {[5, 10, 15, 20].map((q) => (
                       <button
                         key={q}
                         type="button"

@@ -682,6 +682,11 @@ Bug: Agent panel always showed `/m` regardless of the fabric's actual sales unit
 - **Backend** (`agent_router.py`): `SharedCartItem` accepts `unit` + `fabric_type` + `category_id`. `orders_router.OrderItem` accepts `unit` so it survives checkout → DB → invoice rendering.
 - **Frontend checkout** (`CheckoutPage.js`): items payload to `/orders/create` now carries `unit` for both PDP single-item and shared-cart multi-item paths. PDP single-item infers `kg` from `fabric_type=knitted && category_id != cat-denim`.
 
+### Sample MOQ: 5m for Customer Orders, 1m for Agent (Feb 19, 2026) ✅
+- **Desktop PDP** (`FabricDetailPage.js`): default sample qty 1 → 5; dropdown options `1–5` → `5–25`; quick-chip options `[1,2,3,5]` → `[5,10,15,20]`.
+- **Mobile PDP** (`MFabricDetail.js`): default sample qty 1 → 5; stepper min 1m → 5m; cap 5m → 25m; quick chips `[1,2,3,5]` → `[5,10,15,20,25]`; modal title updated.
+- **Backend guard** (`orders_router.create_order`): customer-initiated orders (no `agent_id` AND no `shared_cart_token`) with any sample line < 5 m → 400 with message `Sample orders on the website require a minimum of 5 metres.` Agent-assisted carts bypass — verified with curl (`qty=2` → 400; `qty=2 + agent_id` → 201 success).
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard

@@ -396,6 +396,19 @@ async def create_order(order_data: OrderCreate):
     """Create a new order and initiate payment (Razorpay or Credit)"""
     if not order_data.items or len(order_data.items) == 0:
         raise HTTPException(status_code=400, detail="No items in order")
+
+    # Customer-initiated samples must be at least 5 m. Agent-assisted
+    # carts (where `agent_id` or `shared_cart_token` is set) keep the
+    # 1 m floor so the field team can request fabric swatches for
+    # client previews.
+    is_agent_assisted = bool(order_data.agent_id or order_data.shared_cart_token)
+    if not is_agent_assisted:
+        for it in order_data.items:
+            if (it.order_type or "bulk") == "sample" and (it.quantity or 0) < 5:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Sample orders on the website require a minimum of 5 metres. '{it.fabric_name or it.fabric_id}' has {it.quantity}.",
+                )
     
     # Calculate totals
     totals = calculate_totals(order_data.items, order_data.logistics_charge, order_data.packaging_charge, order_data.logistics_only_charge)

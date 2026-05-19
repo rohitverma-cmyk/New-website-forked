@@ -1017,6 +1017,7 @@ const MarkGoodsReadyModal = ({ order, onClose, onSuccess }) => {
                 value={invFile}
                 onChange={setInvFile}
                 folder="uploads/payouts/vendor-invoices"
+                accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
                 testid="mark-ready-invoice-upload"
               />
             </div>
