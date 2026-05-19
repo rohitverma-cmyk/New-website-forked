@@ -1936,13 +1936,22 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    if not order.get("is_provisional"):
-        raise HTTPException(status_code=400, detail="Not a provisional order")
-    if order.get("payment_status") not in ("advance_paid", "balance_pending"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot mark goods-ready in payment_status={order.get('payment_status')}",
-        )
+    is_prov = bool(order.get("is_provisional"))
+    if is_prov:
+        if order.get("payment_status") not in ("advance_paid", "balance_pending"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot mark goods-ready in payment_status={order.get('payment_status')}",
+            )
+    else:
+        # Non-provisional (full-payment) orders — supplier still uploads
+        # rolls + invoice and we flip status → goods_ready. No balance
+        # recompute since the customer already paid in full.
+        if order.get("status") not in ("confirmed", "processing", "goods_ready"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Order must be confirmed before marking goods ready (current: {order.get('status')})",
+            )
 
     # Build per-fabric payload map. Each entry may carry actual_quantity,
     # an optional `rolls` breakdown ([{count:int, length:float}, ...]) and
@@ -2067,43 +2076,54 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
         update_doc["vendor_invoices"] = existing_invoices
 
     if all_ready:
-        # Recompute totals using actual_total per item (keeps tax /
-        # logistics / packaging proportional to the original booking).
-        actual_subtotal = sum(float(it.get("actual_total") or 0) for it in new_items)
-        booked_subtotal = float(order.get("subtotal") or 0)
-        ratio = (actual_subtotal / booked_subtotal) if booked_subtotal > 0 else 1.0
-        packaging = round(float(order.get("packaging_charge") or 0) * ratio, 2)
-        logistics = round(float(order.get("logistics_only_charge") or order.get("logistics_charge") or 0) * ratio, 2)
-        tax = round((actual_subtotal + packaging + logistics) * 0.05, 2)  # 5 % GST
-        discount = float(order.get("discount") or 0)
-        actual_total = round(actual_subtotal + packaging + logistics + tax - discount, 2)
-        advance_amount = float(order.get("advance_amount") or 0)
-        balance_amount = max(round(actual_total - advance_amount, 2), 0.0)
+        if is_prov:
+            # Recompute totals using actual_total per item (keeps tax /
+            # logistics / packaging proportional to the original booking).
+            actual_subtotal = sum(float(it.get("actual_total") or 0) for it in new_items)
+            booked_subtotal = float(order.get("subtotal") or 0)
+            ratio = (actual_subtotal / booked_subtotal) if booked_subtotal > 0 else 1.0
+            packaging = round(float(order.get("packaging_charge") or 0) * ratio, 2)
+            logistics = round(float(order.get("logistics_only_charge") or order.get("logistics_charge") or 0) * ratio, 2)
+            tax = round((actual_subtotal + packaging + logistics) * 0.05, 2)  # 5 % GST
+            discount = float(order.get("discount") or 0)
+            actual_total = round(actual_subtotal + packaging + logistics + tax - discount, 2)
+            advance_amount = float(order.get("advance_amount") or 0)
+            balance_amount = max(round(actual_total - advance_amount, 2), 0.0)
 
-        update_doc.update({
-            "actual_subtotal": round(actual_subtotal, 2),
-            "actual_packaging_charge": packaging,
-            "actual_logistics_charge": logistics,
-            "actual_tax": tax,
-            "actual_total": actual_total,
-            "balance_amount": balance_amount,
-            "payment_status": "balance_pending",
-            "status": "goods_ready",
-            "goods_ready_at": datetime.now(timezone.utc).isoformat(),
-            "goods_ready_by": caller_seller_id or caller_role,
-        })
+            update_doc.update({
+                "actual_subtotal": round(actual_subtotal, 2),
+                "actual_packaging_charge": packaging,
+                "actual_logistics_charge": logistics,
+                "actual_tax": tax,
+                "actual_total": actual_total,
+                "balance_amount": balance_amount,
+                "payment_status": "balance_pending",
+                "status": "goods_ready",
+                "goods_ready_at": datetime.now(timezone.utc).isoformat(),
+                "goods_ready_by": caller_seller_id or caller_role,
+            })
+        else:
+            # Non-provisional: customer already paid 100%. We just stamp
+            # rolls/invoice for the payout flow and flip status so admin
+            # knows to push to Shiprocket. No financial recomputation.
+            update_doc.update({
+                "status": "goods_ready",
+                "goods_ready_at": datetime.now(timezone.utc).isoformat(),
+                "goods_ready_by": caller_seller_id or caller_role,
+            })
 
     await db.orders.update_one({"id": order_id}, {"$set": update_doc})
 
     # Notify the customer (best-effort) only when the whole order is ready.
     if all_ready:
-        try:
-            fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
-            from email_router import send_balance_payment_due_email
-            await send_balance_payment_due_email(fresh)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"balance-due email skipped: {e}")
-        # Internal mail chain
+        if is_prov:
+            try:
+                fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+                from email_router import send_balance_payment_due_email
+                await send_balance_payment_due_email(fresh)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"balance-due email skipped: {e}")
+        # Internal mail chain (fires for both provisional and non-provisional)
         try:
             from internal_events import fire_internal_event, OrderEvent
             fresh = fresh if 'fresh' in locals() else await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -2111,6 +2131,7 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
                 "actual_subtotal": fresh.get("actual_subtotal"),
                 "balance_amount": fresh.get("balance_amount"),
                 "marked_by": caller_role,
+                "is_provisional": is_prov,
             })
         except Exception as e:  # noqa: BLE001
             logger.warning(f"internal goods_ready event failed: {e}")

@@ -25,6 +25,7 @@ const VendorOrders = () => {
   // RFQ-quote-converted orders. RFQ orders carry source: 'rfq', everything
   // else (inventory + agent-assisted + brand) defaults to 'inventory'.
   const [sourceFilter, setSourceFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("");
   // Provisional "Mark Goods Ready" modal target order (null = closed)
   const [readyOrder, setReadyOrder] = useState(null);
 
@@ -43,8 +44,9 @@ const VendorOrders = () => {
   };
 
   const visibleOrders = orders.filter((o) => {
-    if (sourceFilter === "all") return true;
-    return (o.source || "inventory") === sourceFilter;
+    if (sourceFilter !== "all" && (o.source || "inventory") !== sourceFilter) return false;
+    if (statusFilter && o.status !== statusFilter) return false;
+    return true;
   });
 
   const formatDate = (dateStr) => {
@@ -89,6 +91,45 @@ const VendorOrders = () => {
                 </span>
               </button>
             ))}
+          </div>
+        </div>
+
+        {/* Status tabs — one-tap filtering across order lifecycle */}
+        <div className="bg-white rounded-lg border border-gray-200 mb-4" data-testid="vendor-order-status-tabs">
+          <div className="flex items-center gap-1 px-2 py-2 overflow-x-auto">
+            {[
+              { key: "", label: "All" },
+              { key: "payment_pending", label: "Payment Pending" },
+              { key: "provisional", label: "Advance Paid" },
+              { key: "confirmed", label: "Confirmed" },
+              { key: "goods_ready", label: "Goods Ready" },
+              { key: "processing", label: "Processing" },
+              { key: "shipped", label: "Shipped" },
+              { key: "delivered", label: "Delivered" },
+              { key: "cancelled", label: "Cancelled" },
+            ].map((t) => {
+              const scoped = orders.filter((o) => sourceFilter === "all" || (o.source || "inventory") === sourceFilter);
+              const count = t.key === "" ? scoped.length : scoped.filter((o) => o.status === t.key).length;
+              const active = statusFilter === t.key;
+              return (
+                <button
+                  key={t.key || "all"}
+                  type="button"
+                  onClick={() => setStatusFilter(t.key)}
+                  className={`whitespace-nowrap px-3.5 py-1.5 rounded-full text-xs font-medium border transition ${
+                    active
+                      ? "bg-blue-50 border-blue-200 text-blue-700"
+                      : "bg-white border-gray-200 text-gray-600 hover:border-gray-300"
+                  }`}
+                  data-testid={`vendor-order-tab-${t.key || "all"}`}
+                >
+                  {t.label}
+                  <span className={`ml-1.5 text-[10px] ${active ? "text-blue-500" : "text-gray-400"}`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -222,6 +263,29 @@ const VendorOrders = () => {
                     order={selectedOrder}
                     onMarkReady={() => setReadyOrder(selectedOrder)}
                   />
+                )}
+                {/* Non-provisional Mark Ready CTA — supplier uploads rolls + invoice */}
+                {!selectedOrder.is_provisional && ["confirmed", "processing"].includes(selectedOrder.status) && (
+                  <MarkReadyBanner order={selectedOrder} onMarkReady={() => setReadyOrder(selectedOrder)} />
+                )}
+                {/* Goods already marked ready — show summary */}
+                {!selectedOrder.is_provisional && selectedOrder.status === "goods_ready" && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4" data-testid="vendor-banner-goods-ready-stamped">
+                    <p className="text-sm font-semibold text-emerald-900 flex items-center gap-1.5">
+                      <CheckCircle size={14} /> Goods marked ready
+                    </p>
+                    <p className="text-xs text-emerald-800 mt-1">
+                      Locofast Ops will push the shipment to Shiprocket shortly. Need to update rolls or re-upload invoice?
+                      <button
+                        type="button"
+                        onClick={() => setReadyOrder(selectedOrder)}
+                        className="ml-1 underline font-medium hover:text-emerald-950"
+                        data-testid="vendor-edit-ready-btn"
+                      >
+                        Edit
+                      </button>
+                    </p>
+                  </div>
                 )}
 
                 {/* Items */}
@@ -483,6 +547,30 @@ const VendorAcceptanceBanner = ({ order, onAction }) => {
     </div>
   );
 };
+
+// ─── Non-provisional Mark Goods Ready CTA ────────────────────────
+const MarkReadyBanner = ({ order, onMarkReady }) => (
+  <div className="bg-emerald-50 border border-emerald-300 rounded-lg p-4" data-testid="vendor-mark-ready-banner">
+    <div className="flex items-start justify-between gap-3 flex-wrap">
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-emerald-900 flex items-center gap-1.5">
+          <Boxes size={14} /> Ready to dispatch? Mark goods ready.
+        </p>
+        <p className="text-xs text-emerald-800 mt-1">
+          Upload your tax invoice and roll breakdown. Locofast Ops will then push the shipment to Shiprocket.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onMarkReady}
+        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium flex items-center gap-1.5"
+        data-testid="vendor-mark-goods-ready-btn"
+      >
+        <Boxes size={14} /> Mark Goods Ready
+      </button>
+    </div>
+  </div>
+);
 
 // ─── Provisional bulk-order banner ────────────────────────────────
 const ProvisionalBanner = ({ order, onMarkReady }) => {
