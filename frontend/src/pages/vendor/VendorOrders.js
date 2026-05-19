@@ -448,6 +448,17 @@ const MarkGoodsReadyModal = ({ order, onClose, onSuccess }) => {
     return init;
   });
   const [submitting, setSubmitting] = useState(false);
+  // Per-vendor tax invoice (required at goods-ready time)
+  const existingInvoice = useMemo(
+    () => (order.vendor_invoices || []).find((v) => (v.seller_id || "") === vendorId) || null,
+    [order, vendorId]
+  );
+  const [invFile, setInvFile] = useState(
+    existingInvoice?.url ? { url: existingInvoice.url, filename: existingInvoice.filename || "" } : null
+  );
+  const [invNumber, setInvNumber] = useState(existingInvoice?.invoice_number || "");
+  const [invDate, setInvDate] = useState(existingInvoice?.invoice_date || new Date().toISOString().slice(0, 10));
+  const [invAmount, setInvAmount] = useState(existingInvoice?.amount || "");
 
   const updateRoll = (fabricId, idx, field, value) => {
     setState((prev) => {
@@ -505,9 +516,29 @@ const MarkGoodsReadyModal = ({ order, onClose, onSuccess }) => {
       return;
     }
 
+    // Validate invoice (required at goods-ready time)
+    if (!invFile?.url) {
+      toast.error("Please upload your tax invoice PDF/image");
+      return;
+    }
+    if (!invNumber.trim()) {
+      toast.error("Invoice number is required");
+      return;
+    }
+    if (!invDate) {
+      toast.error("Invoice date is required");
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const res = await vendorMarkGoodsReady(order.id, items);
+      const res = await vendorMarkGoodsReady(order.id, items, {
+        url: invFile.url,
+        filename: invFile.filename || "",
+        invoice_number: invNumber.trim(),
+        invoice_date: invDate,
+        amount: invAmount ? Number(invAmount) : null,
+      });
       toast.success(res.data?.all_ready
         ? "Goods marked ready — balance invoice emailed to customer"
         : "Quantities saved. Other vendors still need to confirm their items.");
@@ -651,6 +682,53 @@ const MarkGoodsReadyModal = ({ order, onClose, onSuccess }) => {
                 </div>
               );
             })
+          )}
+
+          {/* Tax Invoice (required for vendor payouts) */}
+          {myItems.length > 0 && (
+            <div className="border border-emerald-200 bg-emerald-50/40 rounded-lg p-4 space-y-3" data-testid="mark-ready-invoice-block">
+              <div>
+                <h3 className="font-medium text-gray-900 flex items-center gap-1.5">
+                  <FileText size={14} className="text-emerald-600" /> Tax Invoice for Payout
+                  <span className="text-red-500 text-xs">*</span>
+                </h3>
+                <p className="text-xs text-gray-600 mt-0.5">
+                  Upload your GST tax invoice now. This invoice is what your payout will be drawn against —
+                  no separate upload from My Payouts needed.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={invNumber}
+                  onChange={(e) => setInvNumber(e.target.value)}
+                  placeholder="Invoice number *"
+                  className="px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                  data-testid="mark-ready-invoice-number"
+                />
+                <input
+                  type="date"
+                  value={invDate}
+                  onChange={(e) => setInvDate(e.target.value)}
+                  className="px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                  data-testid="mark-ready-invoice-date"
+                />
+              </div>
+              <input
+                type="number"
+                value={invAmount}
+                onChange={(e) => setInvAmount(e.target.value)}
+                placeholder="Invoice total (optional — auto-derived from actual quantities × rate)"
+                className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+                data-testid="mark-ready-invoice-amount"
+              />
+              <VendorFileUpload
+                value={invFile}
+                onChange={setInvFile}
+                folder="uploads/payouts/vendor-invoices"
+                testid="mark-ready-invoice-upload"
+              />
+            </div>
           )}
         </div>
 

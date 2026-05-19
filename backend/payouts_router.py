@@ -205,12 +205,18 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
         if sid in existing:
             results.append(existing[sid])
             continue
-        # Compute gross/commission per item using CURRENT rules
+        # Compute gross/commission per item using CURRENT rules.
+        # For provisional bulk orders we use `actual_quantity` (the qty
+        # the vendor actually packed) so the payout matches what they
+        # really dispatched — not what the customer originally ordered.
         line_breakdown = []
         gross_subtotal = 0.0
         commission_total = 0.0
         for it in items:
-            qty = float(it.get("quantity", 0) or 0)
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
             rate = float(it.get("price_per_meter", 0) or 0)
             line_gross = qty * rate
             # Resolution priority (most-trusted first):
@@ -259,6 +265,15 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
         supplier_invoice_value = round(gross_subtotal + gst_on_goods, 2)
         gst_on_commission = round(commission_total * comm_gst_pct / 100.0, 2)
 
+        # Pull vendor invoice uploaded at Mark-Goods-Ready time (provisional
+        # bulk orders) so the payout already carries the invoice and the
+        # vendor doesn't need to re-upload from My Payouts.
+        vendor_inv = None
+        for inv in (order.get("vendor_invoices") or []):
+            if (inv.get("seller_id") or "") == sid:
+                vendor_inv = inv
+                break
+
         payout_doc = {
             "id": str(uuid.uuid4()),
             "order_id": order_id,
@@ -291,6 +306,17 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
             "created_at": now,
             "updated_at": now,
         }
+        if vendor_inv:
+            payout_doc.update({
+                "vendor_invoice_url": vendor_inv.get("url", ""),
+                "vendor_invoice_filename": vendor_inv.get("filename", ""),
+                "vendor_invoice_number": vendor_inv.get("invoice_number", ""),
+                "vendor_invoice_date": vendor_inv.get("invoice_date", ""),
+                "vendor_invoice_amount": vendor_inv.get("amount"),
+                "vendor_invoice_status": "uploaded",
+                "vendor_invoice_uploaded_at": vendor_inv.get("uploaded_at", now),
+                "vendor_invoice_source": "mark_goods_ready",
+            })
         # Auto-apply any orphan advances linked to this order/vendor
         async for adv in _db.vendor_advances.find(
             {"seller_id": sid, "order_id": order_id, "status": "active"},

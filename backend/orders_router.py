@@ -1960,6 +1960,27 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
             detail=f"Actual quantity outside ±{VARIANCE_PCT:.0f}% variance for: {', '.join(out_of_band)}. Admin approval required.",
         )
 
+    # Per-vendor invoice: required when a vendor (or SM impersonating one)
+    # marks goods ready, since the payout will be drawn against this
+    # invoice. Admins overriding on behalf of a vendor can skip it
+    # (uploading later via the legacy Payouts page).
+    inv_payload = data.get("vendor_invoice") or {}
+    inv_url = (inv_payload.get("url") or "").strip()
+    inv_no = (inv_payload.get("invoice_number") or "").strip()
+    inv_date = (inv_payload.get("invoice_date") or "").strip()
+    inv_filename = (inv_payload.get("filename") or "").strip()
+    try:
+        inv_amount = float(inv_payload.get("amount") or 0) or None
+    except (TypeError, ValueError):
+        inv_amount = None
+
+    if caller_role == "vendor":
+        if not inv_url or not inv_no or not inv_date:
+            raise HTTPException(
+                status_code=400,
+                detail="Tax invoice file, invoice number and invoice date are required when marking goods ready.",
+            )
+
     # Check ALL items now have actual_quantity. If not, the supplier is
     # mid-update (multi-vendor split where Vendor A reported, Vendor B
     # hasn't yet) — we stamp progress but DON'T move to balance_pending.
@@ -1969,6 +1990,24 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
         "items": new_items,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    # Persist per-vendor invoice on the order (keyed by seller_id) so the
+    # payout materializer can pull it without a second upload step.
+    if inv_url and caller_seller_id:
+        existing_invoices = [
+            v for v in (order.get("vendor_invoices") or [])
+            if (v.get("seller_id") or "") != caller_seller_id
+        ]
+        existing_invoices.append({
+            "seller_id": caller_seller_id,
+            "url": inv_url,
+            "filename": inv_filename,
+            "invoice_number": inv_no,
+            "invoice_date": inv_date,
+            "amount": inv_amount,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        })
+        update_doc["vendor_invoices"] = existing_invoices
 
     if all_ready:
         # Recompute totals using actual_total per item (keeps tax /
