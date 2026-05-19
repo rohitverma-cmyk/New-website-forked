@@ -3229,48 +3229,63 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
     elements = []
     styles = getSampleStyleSheet()
     
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=20, alignment=TA_CENTER, spaceAfter=2*mm, textColor=colors.HexColor(BRAND_BLUE), fontName='Helvetica-Bold')
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=20, alignment=TA_LEFT, spaceAfter=0*mm, textColor=colors.HexColor(BRAND_BLUE), fontName='Helvetica-Bold')
     heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], fontSize=11, spaceBefore=3*mm, spaceAfter=2*mm, textColor=colors.HexColor(BRAND_BLUE), fontName='Helvetica-Bold')
     normal_style = ParagraphStyle('CustomNormal', parent=styles['Normal'], fontSize=9, leading=12)
     small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8, leading=11)
     bold_style = ParagraphStyle('Bold', parent=styles['Normal'], fontSize=9, leading=12, fontName='Helvetica-Bold')
-    
-    # Header
-    elements.append(Paragraph("LOCOFAST", title_style))
-    elements.append(Paragraph("B2B Fabric Sourcing Platform", ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=9, alignment=TA_CENTER, textColor=colors.HexColor('#64748b'))))
-    elements.append(Spacer(1, 4*mm))
+
+    # Resolve invoice date + number early so the header meta-block can use them.
+    customer = order.get('customer', {})
+    invoice_date_raw = order.get('paid_at') or order.get('created_at', '')
+    invoice_date = ''
+    if invoice_date_raw:
+        try:
+            invoice_date = invoice_date_raw[:10]
+        except Exception:
+            invoice_date = datetime.now().strftime('%Y-%m-%d')
+    inv_number = order.get('order_number', 'N/A')
+    pay_method = (order.get('payment_method', 'razorpay')).title()
+    pay_status = (order.get('payment_status', 'N/A')).upper()
+
+    # Header — logo + tagline LEFT, invoice meta block RIGHT with PAID badge
+    paid_badge = (
+        '<font color="#15803d" size="8"><b>● PAID</b></font>'
+        if pay_status == 'PAID' else
+        f'<font color="#b45309" size="8"><b>● {pay_status}</b></font>'
+    )
+    left_brand = (
+        f'<font color="{BRAND_BLUE}" size="20"><b>LOCOFAST</b></font><br/>'
+        f'<font color="#64748b" size="9">B2B Fabric Sourcing Platform</font>'
+    )
+    right_meta = (
+        f'<font color="#64748b" size="8">INVOICE DATE</font><br/>'
+        f'<font size="10"><b>{invoice_date}</b></font><br/>'
+        f'<font color="#64748b" size="8">INVOICE NO</font><br/>'
+        f'<font size="10"><b>{inv_number}</b></font><br/>'
+        f'<font color="#64748b" size="8">PAYMENT</font><br/>'
+        f'<font size="10"><b>{pay_method}</b></font> &nbsp; {paid_badge}'
+    )
+    header_tbl = Table(
+        [[Paragraph(left_brand, ParagraphStyle('lb', parent=styles['Normal'], fontSize=10, leading=14)),
+          Paragraph(right_meta, ParagraphStyle('rm', parent=styles['Normal'], fontSize=9, leading=13, alignment=TA_RIGHT))]],
+        colWidths=[110*mm, 70*mm]
+    )
+    header_tbl.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(header_tbl)
+    elements.append(Spacer(1, 5*mm))
     
     # Tax Invoice Banner
     elements.append(Paragraph("TAX INVOICE", ParagraphStyle('InvoiceTitle', parent=styles['Heading1'], fontSize=13, alignment=TA_CENTER, textColor=colors.white, backColor=colors.HexColor(BRAND_BLUE), borderPadding=5, spaceBefore=2*mm, spaceAfter=5*mm, fontName='Helvetica-Bold')))
     
-    # Invoice Details
-    customer = order.get('customer', {})
-    invoice_date = order.get('paid_at') or order.get('created_at', '')
-    if invoice_date:
-        try:
-            invoice_date = invoice_date[:10]
-        except:
-            invoice_date = datetime.now().strftime('%Y-%m-%d')
-    
-    inv_number = order.get('order_number', 'N/A')
-    
-    invoice_details = [
-        ['Invoice No:', inv_number, 'Invoice Date:', invoice_date],
-        ['Payment Method:', (order.get('payment_method', 'razorpay')).title(), 'Payment Status:', order.get('payment_status', 'N/A').upper()],
-    ]
-    
-    invoice_table = Table(invoice_details, colWidths=[28*mm, 52*mm, 30*mm, 50*mm])
-    invoice_table.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor(BRAND_BLUE)),
-        ('TEXTCOLOR', (2, 0), (2, -1), colors.HexColor(BRAND_BLUE)),
-    ]))
-    elements.append(invoice_table)
-    elements.append(Spacer(1, 5*mm))
+    # Invoice details now appear in the top-right meta block of the
+    # header. We resolve POS state here for the items / tax breakdown.
     
     # Resolve PLACE OF SUPPLY (drives IGST vs CGST+SGST and the POS line).
     # Per CGST Section 10, POS for goods = shipping state, not the buyer's
@@ -3397,7 +3412,7 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
     # Items Table
     elements.append(Paragraph("Order Items", heading_style))
     
-    items_data = [['#', 'Description', 'HSN Code', 'Qty (m)', 'Rate (₹/m)', 'Lead Time', 'Amount (₹)']]
+    items_data = [['#', 'Description', 'HSN', 'Qty', 'Rate (₹)', 'Delivery', 'Amount (₹)']]
     
     items = order.get('items', [])
     has_bulk_items = False
@@ -3407,14 +3422,19 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         rate = item.get('price_per_meter', 0)
         amount = qty * rate
         order_type = item.get('order_type', '').lower()
+        unit = item.get('unit') or 'm'
         
-        description = f"{item.get('fabric_name', 'Fabric')}"
+        # Description with SKU + Type sublines (matches the desired layout)
+        desc_main = f"<b>{item.get('fabric_name', 'Fabric')}</b>"
+        meta_bits = []
         if item.get('fabric_code'):
-            description += f"\nCode: {item.get('fabric_code')}"
+            meta_bits.append(f"SKU: {item.get('fabric_code')}")
         if item.get('color_name'):
-            description += f"\nColor: {item.get('color_name')}"
+            meta_bits.append(f"Color: {item.get('color_name')}")
         if order_type:
-            description += f"\nType: {order_type.title()}"
+            meta_bits.append(f"Type: {order_type.title()}")
+        sub = f"<br/><font size='7' color='#64748b'>{' · '.join(meta_bits)}</font>" if meta_bits else ""
+        description = Paragraph(desc_main + sub, small_style)
         
         # HSN code: use item-specific if set, fallback to a category-aware
         # default. 540799 ONLY applies to synthetic-filament woven fabrics —
@@ -3448,10 +3468,10 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         
         items_data.append([
             str(idx),
-            Paragraph(description, small_style),
+            description,
             hsn,
-            str(qty),
-            f"Rs {rate:,.2f}",
+            f"{qty}{unit}",
+            f"Rs {rate:,.2f}/{unit}",
             lead_time,
             f"Rs {amount:,.2f}"
         ])
@@ -3555,25 +3575,44 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
 
     totals_data.append(['Total Invoice Value:', f"Rs {total:,.2f}"])
     
-    totals_table = Table(totals_data, colWidths=[130*mm, 46*mm])
+    totals_table = Table(totals_data, colWidths=[44*mm, 36*mm])
     totals_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
         ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
         ('FONTSIZE', (0, 0), (-1, -1), 9),
+        # All rows in brand blue — matches the desired mockup. Total row
+        # stays bolder so the eye lands on it.
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor(BRAND_BLUE)),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('TEXTCOLOR', (0, -1), (-1, -1), colors.HexColor(BRAND_BLUE)),
+        ('FONTSIZE', (0, -1), (-1, -1), 10),
         ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(BRAND_BLUE)),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
-    elements.append(totals_table)
-    elements.append(Spacer(1, 3*mm))
+
+    # Authorised signatory (left) + totals stack (right), like the mockup.
+    signatory = Paragraph(
+        '<font size="9"><b>For LOCOFAST ONLINE SERVICES PRIVATE LIMITED</b></font><br/><br/><br/>'
+        '<font size="9" color="#64748b">_________________________</font><br/>'
+        '<font size="9"><b>Authorised Signatory</b></font>',
+        ParagraphStyle('Sig', parent=styles['Normal'], fontSize=9, leading=12, alignment=TA_LEFT)
+    )
+    sig_and_totals = Table([[signatory, totals_table]], colWidths=[100*mm, 80*mm])
+    sig_and_totals.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(sig_and_totals)
+    elements.append(Spacer(1, 4*mm))
     
-    # Amount in Words (paise-aware)
+    # Amount in Words — boxed for emphasis
     amount_words = number_to_words(total)
     elements.append(Paragraph(
         f"<b>Amount in Words:</b> {amount_words}",
-        ParagraphStyle('AmountWords', parent=styles['Normal'], fontSize=9, backColor=colors.HexColor(LIGHT_BG), borderPadding=5)
+        ParagraphStyle('AmountWords', parent=styles['Normal'], fontSize=9, backColor=colors.HexColor(LIGHT_BG), borderColor=colors.HexColor('#dbeafe'), borderWidth=0.5, borderPadding=6, leading=12)
     ))
     elements.append(Spacer(1, 5*mm))
     

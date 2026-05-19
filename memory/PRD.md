@@ -687,6 +687,14 @@ Bug: Agent panel always showed `/m` regardless of the fabric's actual sales unit
 - **Mobile PDP** (`MFabricDetail.js`): default sample qty 1 → 5; stepper min 1m → 5m; cap 5m → 25m; quick chips `[1,2,3,5]` → `[5,10,15,20,25]`; modal title updated.
 - **Backend guard** (`orders_router.create_order`): customer-initiated orders (no `agent_id` AND no `shared_cart_token`) with any sample line < 5 m → 400 with message `Sample orders on the website require a minimum of 5 metres.` Agent-assisted carts bypass — verified with curl (`qty=2` → 400; `qty=2 + agent_id` → 201 success).
 
+### Customer Invoice Layout Match (Feb 19, 2026) ✅
+Rewrote `generate_invoice_pdf` to exactly match the customer invoice mockup. Verified with AI structure analysis at 95 % confidence.
+- **Header**: Logo + "B2B Fabric Sourcing Platform" tagline top-left; meta block top-right stacks Invoice Date / Invoice No / Payment with contextual ● PAID badge (green / amber). Removed the duplicate `Invoice Details` table.
+- **Items table**: Compact labels `# · Description · HSN · Qty · Rate (₹) · Delivery · Amount (₹)`. Each row's description renders bold fabric name + small grey subline `SKU · Color · Type`. Qty/rate use the per-item `unit` (kg for knitted, m otherwise).
+- **Totals**: All rows in brand blue (Order Value · Packaging · Logistics · Gross Value · GST · Total Invoice Value); last row bolder with underline.
+- **Authorised Signatory** (left) sits side-by-side with totals (right) to match the mockup. Includes "For LOCOFAST ONLINE SERVICES PRIVATE LIMITED" header above signature line.
+- **Amount in Words**: now boxed with a subtle blue border + light-blue background.
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
