@@ -2577,6 +2577,8 @@ async def cancel_order(order_id: str, data: dict):
         {"$set": {
             "status": "cancelled",
             "cancellation_reason": reason,
+            "cancellation_notes": (data.get('notes') or '').strip(),
+            "cancelled_by": "admin",
             "cancelled_at": now,
             "updated_at": now
         }}
@@ -2588,8 +2590,32 @@ async def cancel_order(order_id: str, data: dict):
         'customer_request': 'Customer Request',
         'other': 'Other'
     }
-    
-    return {"success": True, "message": f"Order cancelled: {reason_labels.get(reason, reason)}"}
+    label = reason_labels.get(reason, reason)
+    notes = (data.get('notes') or '').strip()
+    human_reason = f"{label}: {notes}" if notes else label
+
+    # Notify customer + Locofast internal stakeholders (best-effort)
+    fresh = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0}
+    )
+    try:
+        from email_router import send_order_cancellation_email
+        await send_order_cancellation_email(fresh, reason=human_reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[admin-cancel] customer email failed: {e}")
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.ORDER_CANCELLED, fresh, extra={
+            "reason_code": reason,
+            "reason": human_reason,
+            "cancelled_by": "admin",
+            "notes": notes,
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[admin-cancel] internal event failed: {e}")
+
+    return {"success": True, "message": f"Order cancelled: {label}"}
 
 # ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 

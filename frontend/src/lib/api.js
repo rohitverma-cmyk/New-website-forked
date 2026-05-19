@@ -396,7 +396,7 @@ export const listOrders = (params) => api.get("/orders", { params });
 export const updateOrderStatus = (id, status) => api.put(`/orders/${id}/status?status=${status}`);
 export const updateOrderPaymentStatus = (id, payload) => api.put(`/orders/${id}/payment-status`, payload);
 export const getOrderSellerCommissions = (id) => api.get(`/orders/${id}/seller-commissions`);
-export const cancelOrder = (id, reason) => api.put(`/orders/${id}/cancel`, { reason });
+export const cancelOrder = (id, reason, notes = "") => api.put(`/orders/${id}/cancel`, { reason, notes });
 export const pushOrderToShiprocket = (id, force = false, sellerIds = null) => {
   const url = `/orders/admin/${id}/push-to-shiprocket${force ? "?force=true" : ""}`;
   const body = sellerIds ? { seller_ids: sellerIds } : undefined;

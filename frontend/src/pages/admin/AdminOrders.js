@@ -45,6 +45,8 @@ const AdminOrders = () => {
   // Cancel modal
   const [cancelModal, setCancelModal] = useState(null);
   const [cancelReason, setCancelReason] = useState("");
+  const [cancelNotes, setCancelNotes] = useState("");
+  const [cancelBusy, setCancelBusy] = useState(false);
   // Credit
   const [wallets, setWallets] = useState([]);
   const [creditLoading, setCreditLoading] = useState(false);
@@ -131,15 +133,14 @@ const AdminOrders = () => {
   };
 
 
-  useEffect(() => { fetchOrders(); fetchStats(); }, [statusFilter]);
+  useEffect(() => { fetchOrders(); fetchStats(); }, []);
   useEffect(() => { if (activeTab === "credit") fetchWallets(); }, [activeTab]);
 
   const fetchOrders = async () => {
     setLoading(true);
     try {
-      const params = {};
-      if (statusFilter) params.status = statusFilter;
-      const res = await listOrders(params);
+      // Pull ALL orders so the status tabs can compute counts client-side.
+      const res = await listOrders({ limit: 1000 });
       setOrders(res.data.orders || []);
     } catch { toast.error("Failed to load orders"); }
     setLoading(false);
@@ -283,12 +284,24 @@ const AdminOrders = () => {
 
   const handleCancel = async () => {
     if (!cancelModal || !cancelReason) return;
+    if (cancelReason === "other" && !cancelNotes.trim()) {
+      toast.error("Please add a note explaining the reason");
+      return;
+    }
+    setCancelBusy(true);
     try {
-      await cancelOrder(cancelModal.id, cancelReason);
-      toast.success("Order cancelled");
-      setCancelModal(null); setCancelReason("");
-      fetchOrders(); fetchStats();
-    } catch (err) { toast.error(err.response?.data?.detail || "Failed to cancel"); }
+      await cancelOrder(cancelModal.id, cancelReason, cancelNotes.trim());
+      toast.success("Order cancelled — customer and Locofast Accounts notified");
+      setCancelModal(null);
+      setSelectedOrder(null);
+      setCancelReason("");
+      setCancelNotes("");
+      fetchOrders();
+      fetchStats();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to cancel");
+    }
+    setCancelBusy(false);
   };
 
   const handleEditSave = async () => {
@@ -311,6 +324,8 @@ const AdminOrders = () => {
   };
 
   const filteredOrders = orders.filter(order => {
+    // Status filter first (tab-driven)
+    if (statusFilter && order.status !== statusFilter) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return order.order_number?.toLowerCase().includes(s) || order.customer?.name?.toLowerCase().includes(s) || order.customer?.email?.toLowerCase().includes(s) || order.customer?.phone?.includes(search);
@@ -373,16 +388,52 @@ const AdminOrders = () => {
               </div>
             )}
 
-            {/* Filters */}
+            {/* Status Tabs — replaces the dropdown filter for one-tap access */}
+            <div className="bg-white rounded-lg border mb-4" data-testid="admin-order-status-tabs">
+              <div className="flex items-center gap-1 px-2 py-2 overflow-x-auto">
+                {[
+                  { key: "", label: "All", color: "text-gray-700" },
+                  { key: "payment_pending", label: "Payment Pending", color: "text-yellow-700" },
+                  { key: "provisional", label: "Provisional", color: "text-amber-700" },
+                  { key: "goods_ready", label: "Goods Ready", color: "text-orange-700" },
+                  { key: "confirmed", label: "Confirmed", color: "text-blue-700" },
+                  { key: "processing", label: "Processing", color: "text-indigo-700" },
+                  { key: "shipped", label: "Shipped", color: "text-purple-700" },
+                  { key: "delivered", label: "Delivered", color: "text-emerald-700" },
+                  { key: "cancelled", label: "Cancelled", color: "text-red-700" },
+                ].map((t) => {
+                  const count = t.key === ""
+                    ? orders.length
+                    : orders.filter((o) => o.status === t.key).length;
+                  const active = statusFilter === t.key;
+                  return (
+                    <button
+                      key={t.key || "all"}
+                      type="button"
+                      onClick={() => setStatusFilter(t.key)}
+                      className={`whitespace-nowrap px-3.5 py-1.5 rounded-full text-xs font-medium border transition ${
+                        active
+                          ? "bg-blue-50 border-blue-200 text-blue-700"
+                          : `bg-white border-gray-200 ${t.color} hover:border-gray-300`
+                      }`}
+                      data-testid={`admin-order-tab-${t.key || "all"}`}
+                    >
+                      {t.label}
+                      <span className={`ml-1.5 text-[10px] ${active ? "text-blue-500" : "text-gray-400"}`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Search */}
             <div className="flex flex-col md:flex-row gap-4 mb-6">
               <div className="relative flex-1">
                 <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input type="text" placeholder="Search orders..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-full pl-12 pr-4 py-2.5 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none" />
               </div>
-              <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="px-4 py-2.5 border border-gray-200 rounded-lg bg-white">
-                <option value="">All Statuses</option>
-                {Object.entries(statusConfig).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-              </select>
             </div>
 
             {/* Orders Table */}
@@ -902,6 +953,15 @@ const AdminOrders = () => {
                       })()}
                     </button>
                   )}
+                  {selectedOrder.status !== 'cancelled' && selectedOrder.status !== 'delivered' && (
+                    <button
+                      onClick={() => { setCancelModal(selectedOrder); setCancelReason(""); setCancelNotes(""); }}
+                      className="flex items-center gap-2 px-4 py-2 text-red-700 bg-red-50 hover:bg-red-100 rounded-lg border border-red-200 font-medium"
+                      data-testid="admin-cancel-order-modal-btn"
+                    >
+                      <Ban size={16} />Cancel Order
+                    </button>
+                  )}
                 </div>
                 <button onClick={() => setSelectedOrder(null)} className="px-4 py-2 bg-gray-100 rounded-lg hover:bg-gray-200">Close</button>
               </div>
@@ -918,12 +978,12 @@ const AdminOrders = () => {
                 <div><h3 className="text-lg font-semibold">Cancel Order</h3><p className="text-sm text-gray-500">{cancelModal.order_number}</p></div>
               </div>
               <p className="text-sm text-gray-600 mb-4">Select a reason for cancellation{cancelModal.payment_method === 'credit' ? '. Credit will be refunded to the wallet.' : '.'}</p>
-              <div className="space-y-2 mb-6">
+              <div className="space-y-2 mb-4">
                 {[
                   { value: 'stock_out', label: 'Stock Out', desc: 'Item is no longer available' },
                   { value: 'credit_limit', label: 'Lack of Credit Limit', desc: 'Customer credit insufficient' },
                   { value: 'customer_request', label: 'Customer Request', desc: 'Buyer requested cancellation' },
-                  { value: 'other', label: 'Other', desc: 'Other reason' },
+                  { value: 'other', label: 'Other', desc: 'Other reason (note required)' },
                 ].map(r => (
                   <label key={r.value} className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer ${cancelReason === r.value ? 'border-red-500 bg-red-50' : 'border-gray-200 hover:border-gray-300'}`}>
                     <input type="radio" name="cancelReason" value={r.value} checked={cancelReason === r.value} onChange={() => setCancelReason(r.value)} />
@@ -931,9 +991,26 @@ const AdminOrders = () => {
                   </label>
                 ))}
               </div>
+              <div className="mb-6">
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Additional note (shared with customer & Locofast Ops)
+                  {cancelReason === "other" && <span className="text-red-500 ml-0.5">*</span>}
+                </label>
+                <textarea
+                  value={cancelNotes}
+                  onChange={(e) => setCancelNotes(e.target.value)}
+                  rows={3}
+                  placeholder="e.g. Item back-ordered until June; offered substitute SKU…"
+                  className="w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm focus:border-red-400 focus:outline-none"
+                  data-testid="admin-cancel-notes"
+                />
+              </div>
               <div className="flex gap-3">
                 <button onClick={() => setCancelModal(null)} className="flex-1 px-4 py-2.5 border border-gray-200 rounded-lg hover:bg-gray-50">Keep Order</button>
-                <button onClick={handleCancel} disabled={!cancelReason} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50" data-testid="confirm-cancel-btn">Cancel Order</button>
+                <button onClick={handleCancel} disabled={!cancelReason || cancelBusy} className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-1.5" data-testid="confirm-cancel-btn">
+                  {cancelBusy ? <Loader2 size={14} className="animate-spin" /> : null}
+                  Cancel Order
+                </button>
               </div>
             </div>
           </div>
