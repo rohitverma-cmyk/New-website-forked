@@ -601,6 +601,22 @@ Compliance fix — per Schedule II of the CGST Act, packaging and logistics char
 - **Forward-fix:** Flipped GST auto-fill priority from `legal_name → trade_name` so all new GSTIN verifications save the Trade Name as the customer's company name (which is what the tax invoice prints). Touched `customer_router.py`, `CustomerAccountPage.js`, `AdminCustomers.js`. Desktop CheckoutPage/AdminSellers/SellOnLocofast already preferred trade name.
 - **Backfill tool:** new admin endpoint `POST /api/admin/customers/{id}/resync-gst` + "Resync" button next to GSTIN in `/admin/customers` detail dialog. Re-hits the GST registry, prefers trade_name for `company`, refreshes `city/state/pincode`, stamps `gst_status` + `gst_last_synced_at`. If the GSTIN comes back cancelled/inactive (`sts != "Active"`), we flag `gst_verified=false` and persist the status — but **never wipe** the existing company name (per ops directive).
 
+### Provisional Bulk Orders — Vendor & Admin UIs (Feb 19, 2026) ✅
+Full E2E flow for the 10% advance bulk order workflow shipped. Customer pays 10% advance → Vendor marks goods ready with exact dispatched quantity (with per-roll breakdown) → balance invoice auto-emailed → Customer pays balance OR Admin marks paid offline → Shiprocket push.
+- **Vendor UI** (`/app/frontend/src/pages/vendor/VendorOrders.js`)
+  - `ProvisionalBanner` component renders contextual banners for each payment_status (`pending_advance` / `advance_paid` / `balance_pending` / `paid`).
+  - `MarkGoodsReadyModal`: per-item rolls breakdown (count × length rows), auto-summed total, ±10% variance warning, optional dispatch_note per item. Vendor sees only items where `seller_id` matches their own.
+  - "Mark Goods Ready" CTA visible only when `payment_status === 'advance_paid'`. Submitting calls `POST /api/orders/{id}/mark-goods-ready` and refreshes the modal.
+- **Admin UI** (`/app/frontend/src/pages/admin/AdminOrders.js`)
+  - Top-of-modal `admin-provisional-banner` with Advance / Balance / Stage tiles for any provisional order.
+  - "Mark Balance Paid (₹X)" button in the action footer, visible only when `is_provisional && payment_status === 'balance_pending'`. Confirms then `POST /api/orders/{id}/mark-balance-paid` — flips order to `paid+confirmed`, deducts inventory, materializes payouts, pushes to Shiprocket.
+  - New status configs for `provisional`, `goods_ready`, and payment statuses `pending_advance`, `advance_paid`, `balance_pending`.
+- **Backend** (`/app/backend/orders_router.py`)
+  - `POST /api/orders/{order_id}/mark-goods-ready` extended to accept `rolls: [{count, length}]` and `dispatch_note` per item; auto-derives `actual_quantity` from rolls when omitted.
+  - Replaced async-dependency call with manual JWT parsing inside the endpoint to support both vendor and admin/accounts callers (testing-agent fix).
+  - On `all_ready=true` we recompute actual_total proportional to original packaging/logistics/tax, stamp `balance_amount`, transition payment_status → `balance_pending`, status → `goods_ready`, and fire `send_balance_payment_due_email` to the customer (best-effort).
+- **API helpers** (`/app/frontend/src/lib/api.js`): `vendorMarkGoodsReady(orderId, items)`, `adminMarkBalancePaid(orderId)`. Axios interceptor now forwards the vendor JWT for `mark-goods-ready` calls.
+- **Tests**: `/app/backend/tests/test_provisional_orders.py` — 10/10 pass (state machine, variance band, rolls payload, balance recompute, admin override, full E2E).
 
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
