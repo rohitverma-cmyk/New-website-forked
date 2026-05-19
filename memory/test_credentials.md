@@ -4,6 +4,7 @@
 - Email: admin@locofast.com
 - Password: admin123
 - Login URL: /admin/login
+- **Super-admin only**: can access `/admin/users` to create/reset/deactivate other admin users (gated by `SUPER_ADMIN_EMAIL` env var, default `admin@locofast.com`).
 
 ## Locofast Agent (Sourcing / Sales Team)
 - Email: agent@locofast.com (or deepak.wadhwa@locofast.com for Sujata)

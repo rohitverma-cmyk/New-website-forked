@@ -169,6 +169,7 @@ const AdminCommission = lazy(() => import("./pages/admin/AdminCommission"));
 const AdminBrands = lazy(() => import("./pages/admin/AdminBrands"));
 const AdminBrandFinancials = lazy(() => import("./pages/admin/AdminBrandFinancials"));
 const AdminAccountManagers = lazy(() => import("./pages/admin/AdminAccountManagers"));
+const AdminUserManagement = lazy(() => import("./pages/admin/AdminUserManagement"));
 const ProtectedRoute = lazy(() => import("./components/ProtectedRoute"));
 
 // SEO Landing Pages
@@ -360,6 +361,7 @@ function App() {
           <Route path="/admin/brands" element={<ProtectedRoute><AdminBrands /></ProtectedRoute>} />
           <Route path="/admin/brands/:brandId/financials" element={<ProtectedRoute><AdminBrandFinancials /></ProtectedRoute>} />
           <Route path="/admin/account-managers" element={<ProtectedRoute><AdminAccountManagers /></ProtectedRoute>} />
+          <Route path="/admin/users" element={<ProtectedRoute><AdminUserManagement /></ProtectedRoute>} />
 
           {/* Enterprise Portal routes (Brands + Factories) — canonical /enterprise/*, with /brand/* kept as permanent redirects for backwards compat */}
           <Route path="/enterprise/login" element={<BrandLogin />} />

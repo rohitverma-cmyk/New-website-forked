@@ -230,6 +230,8 @@ async def login_admin(data: AdminLogin):
     admin = await db.admins.find_one({'email': data.email})
     if not admin or not verify_password(data.password, admin['password']):
         raise HTTPException(status_code=401, detail='Invalid credentials')
+    if admin.get('active') is False:
+        raise HTTPException(status_code=403, detail='Account is deactivated. Please contact your administrator.')
     
     token = create_token(admin['id'])
     return TokenResponse(
@@ -624,6 +626,10 @@ app.include_router(brand_router.router, prefix="/api")
 import account_manager_router
 account_manager_router.set_db(db)
 app.include_router(account_manager_router.router, prefix="/api")
+
+import admin_users_router
+admin_users_router.set_db(db)
+app.include_router(admin_users_router.router, prefix="/api")
 
 import commission_router
 commission_router.set_db(db)

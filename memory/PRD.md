@@ -706,5 +706,11 @@ Surfaced both balance-payment controls inside the admin order detail modal so th
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
 
+### Admin User Management (Feb 19, 2026) ✅
+Super-admin (default `admin@locofast.com`, configurable via `SUPER_ADMIN_EMAIL` env var) can now create/reset/deactivate other admin-panel users from a new page `/admin/users` — no more DB shell needed for password resets.
+- **Backend**: new `admin_users_router.py` exposing `GET/POST /api/admin/manage-users`, `POST /api/admin/manage-users/{id}/reset-password`, `PATCH /api/admin/manage-users/{id}` (rename / role / AM flag / active toggle), `DELETE` (soft-delete via `active=false`). Gated by `_require_super_admin` — non-super admins get 403.
+- **Login flow**: `/api/auth/login` now rejects accounts with `active=false` with a friendly 403 "Account is deactivated. Please contact your administrator." Super-admin row cannot be self-deactivated.
+- **Frontend**: new `AdminUserManagement.js` with create-user modal, inline reset-password modal, role dropdown (Admin / Accounts), AM toggle, active/inactive pill, and a footer link pointing Supplier-Manager creation to the dedicated `/admin/supplier-managers` page (those live in a separate collection). Nav link "Admin Users" appears in the sidebar only for the super-admin email.
+
 ## Credentials
 See `/app/memory/test_credentials.md`

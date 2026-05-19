@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee } from "lucide-react";
+import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee, ShieldCheck } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
 const AdminLayout = ({ children }) => {
@@ -8,6 +8,8 @@ const AdminLayout = ({ children }) => {
   const { admin, logout } = useAuth();
 
   const isAccountsRole = admin?.role === "accounts";
+  const SUPER_ADMIN_EMAIL = "admin@locofast.com";
+  const isSuperAdmin = (admin?.email || "").toLowerCase() === SUPER_ADMIN_EMAIL;
 
   // Accounts users get a focused nav surface — only Payouts + Credit
   // Ledger + read-only Sellers + Orders, nothing else. Everything is
@@ -45,6 +47,10 @@ const AdminLayout = ({ children }) => {
   ];
 
   const navItems = isAccountsRole ? accountsNav : fullNav;
+  // Append "Admin Users" only for the super-admin email
+  const finalNav = isSuperAdmin && !isAccountsRole
+    ? [...navItems, { path: "/admin/users", label: "Admin Users", icon: ShieldCheck }]
+    : navItems;
 
   const handleLogout = () => {
     logout();
@@ -71,7 +77,7 @@ const AdminLayout = ({ children }) => {
         </div>
 
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto" data-testid="admin-nav-scroll">
-          {navItems.map((item) => (
+          {finalNav.map((item) => (
             <Link
               key={item.path}
               to={item.path}
