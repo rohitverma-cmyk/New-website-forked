@@ -637,6 +637,14 @@ Final end-to-end workflow shipped. 13/13 tests pass (`/app/backend/tests/test_ve
 - **New endpoints**: `POST /api/orders/{id}/vendor-accept`, `POST /api/orders/{id}/vendor-cancel`, `POST /api/orders/{id}/balance-share-link`, `GET /api/orders/balance-share/{order_id}/{token}`, `POST /api/orders/balance-share/{order_id}/{token}/pay`.
 - **Tests**: 13/13 pass — vendor accept/cancel, multi-vendor 403 isolation, SLA auto-cancel, balance share mint/resolve/pay, internal events firing & logging, qty_type propagation, customer-vs-internal email separation.
 
+### Admin Cancel-with-Reason + Order Status Tabs (Feb 19, 2026) ✅
+Audit-driven hardening of the admin order panel. 7/7 backend tests + all UI checks pass.
+- **Status tabs** (`/admin/orders`): Replaced the status dropdown with 9 one-tap tabs (All / Payment Pending / Provisional / Goods Ready / Confirmed / Processing / Shipped / Delivered / Cancelled). Each tab carries a live count badge. Switched from server-side `?status=` requery → fetch all (limit 1000) once + client-side filter for instant tab switches and accurate counts.
+- **Cancel button in detail modal** (`AdminOrders.js`): Previously only available as a Ban icon in the list row. Now `admin-cancel-order-modal-btn` lives in the order detail modal footer (hidden for `cancelled`/`delivered` orders), so admins don't need to close the modal to cancel.
+- **Free-text cancellation note** (`AdminOrders.js`): Added `admin-cancel-notes` textarea to the cancel modal. **Required** when reason="Other"; the note is appended to the human-readable reason in the customer email and internal mail chain.
+- **Customer email + internal mail chain on admin cancel** (`orders_router.py`): `PUT /api/orders/{id}/cancel` now fires `send_order_cancellation_email` (customer-facing) AND `fire_internal_event(ORDER_CANCELLED)` (separate internal stakeholders' chain). Order doc now stores `cancellation_notes` + `cancelled_by='admin'`. Backend stays lenient on empty notes for "other" (frontend enforces); credit-refund path unchanged.
+- **API helper**: `cancelOrder(id, reason, notes='')` — backward compatible.
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
