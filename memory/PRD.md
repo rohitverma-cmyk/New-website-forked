@@ -645,6 +645,15 @@ Audit-driven hardening of the admin order panel. 7/7 backend tests + all UI chec
 - **Customer email + internal mail chain on admin cancel** (`orders_router.py`): `PUT /api/orders/{id}/cancel` now fires `send_order_cancellation_email` (customer-facing) AND `fire_internal_event(ORDER_CANCELLED)` (separate internal stakeholders' chain). Order doc now stores `cancellation_notes` + `cancelled_by='admin'`. Backend stays lenient on empty notes for "other" (frontend enforces); credit-refund path unchanged.
 - **API helper**: `cancelOrder(id, reason, notes='')` — backward compatible.
 
+### Mark Goods Ready for Non-Provisional Orders + Vendor Status Tabs (Feb 19, 2026) ✅
+Bug-fix + UX from user audit. 9/9 endpoint tests pass.
+- **Bug**: Supplier couldn't see Mark Goods Ready CTA on confirmed (non-provisional) orders — endpoint was gated on `is_provisional=True`, frontend banner only rendered for provisional.
+- **Backend** (`orders_router.py`): `POST /api/orders/{id}/mark-goods-ready` now branches on `is_provisional`. Provisional gating unchanged. Non-provisional now accepts `status ∈ (confirmed, processing, goods_ready)` (the last one enables edits/re-uploads). For non-provisional we only stamp rolls + invoice on items, set `status='goods_ready'`, `goods_ready_at`, `goods_ready_by`. No total/balance recomputation (customer already paid 100%). No balance-due customer email. **Internal GOODS_READY event fires for both paths.**
+- **Frontend Vendor** (`VendorOrders.js`):
+  - New `MarkReadyBanner` (testid `vendor-mark-ready-banner`) renders inside order detail modal when order is non-provisional and status ∈ {confirmed, processing}. Reuses the existing `MarkGoodsReadyModal` (rolls + invoice).
+  - Stamped state (testid `vendor-banner-goods-ready-stamped`) with Edit link for already-marked orders.
+  - **Status tabs** (testid `vendor-order-status-tabs`): 9 tabs (All / Payment Pending / Advance Paid / Confirmed / Goods Ready / Processing / Shipped / Delivered / Cancelled) with live count badges scoped to the current Source filter (Inventory/RFQ).
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
