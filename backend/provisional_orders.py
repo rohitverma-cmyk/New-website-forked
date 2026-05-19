@@ -24,9 +24,11 @@ import os
 from typing import Iterable
 
 DEFAULT_ADVANCE_PCT = float(os.environ.get("PROVISIONAL_ADVANCE_PCT", "10"))
-# ±10 % variance band when supplier enters actual quantity.  Outside this
-# band the goods-ready endpoint will require an admin override.
-VARIANCE_PCT = float(os.environ.get("PROVISIONAL_VARIANCE_PCT", "10"))
+# Default ±3 % variance band when supplier enters actual quantity. Outside
+# this band the goods-ready endpoint requires an admin override. The
+# platform-wide value is overridable via env, and admins can configure a
+# per-category override on the Category record (`variance_pct` field).
+VARIANCE_PCT = float(os.environ.get("PROVISIONAL_VARIANCE_PCT", "3"))
 
 
 def is_bulk_order(items: Iterable[dict]) -> bool:
@@ -57,12 +59,37 @@ def split_amounts(total: float, advance_pct: float) -> tuple[float, float]:
     return advance, balance
 
 
-def within_variance(ordered_qty: float, actual_qty: float) -> bool:
-    """True iff actual is within ±VARIANCE_PCT of ordered."""
+def within_variance(ordered_qty: float, actual_qty: float, pct: float | None = None) -> bool:
+    """True iff actual is within ±`pct` of ordered. When `pct` is None
+    falls back to the platform default. Caller resolves per-category
+    override (see `resolve_category_variance`) and passes it in."""
+    band = float(pct) if pct is not None else VARIANCE_PCT
+    if band < 0:
+        band = 0
     if ordered_qty <= 0:
         return actual_qty == 0
     diff = abs(actual_qty - ordered_qty) / ordered_qty * 100.0
-    return diff <= VARIANCE_PCT
+    return diff <= band
+
+
+async def resolve_category_variance(db, category_id: str | None) -> float:
+    """Resolve the variance % for a fabric line. Reads the Category record
+    and returns its `variance_pct` if set & positive, else the global
+    `VARIANCE_PCT`. Falls back gracefully on db errors."""
+    if not category_id:
+        return VARIANCE_PCT
+    try:
+        cat = await db.categories.find_one({"id": category_id}, {"_id": 0, "variance_pct": 1})
+        if cat and cat.get("variance_pct") is not None:
+            try:
+                val = float(cat["variance_pct"])
+                if val > 0:
+                    return val
+            except (TypeError, ValueError):
+                pass
+    except Exception:
+        pass
+    return VARIANCE_PCT
 
 
 def recalc_item_total(item: dict, actual_qty: float) -> dict:

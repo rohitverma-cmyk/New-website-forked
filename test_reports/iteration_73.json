@@ -1,0 +1,78 @@
+{
+  "summary": "Iteration 73: Tested variance_pct feature for per-category variance bands. 17/19 tests passed, 1 skipped (no provisional orders for vendor variance test), 1 failed (BUG: POST /api/categories doesn't store variance_pct on create). Core variance logic is working correctly: VARIANCE_PCT default is 3.0, within_variance accepts pct kwarg, resolve_category_variance returns category override or default, PUT /api/categories updates variance_pct, GET /api/categories returns variance_pct, mark-goods-ready uses category variance band.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/categories",
+        "issue": "variance_pct field is not stored when creating a new category. The create_category function in category_router.py only stores id, name, description, image_url, created_at - missing variance_pct, slug, seo_title, seo_meta_description, seo_intro, seo_applications",
+        "priority": "HIGH",
+        "file": "/app/backend/category_router.py",
+        "line": "95-108",
+        "fix": "Add all CategoryCreate fields to category_doc in create_category function"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_variance_pct_v73.py",
+    "/app/test_reports/pytest/pytest_variance_pct_v73.xml"
+  ],
+  "action_items": [
+    "FIX: POST /api/categories must include variance_pct (and other CategoryCreate fields) in the document when creating a category"
+  ],
+  "critical_code_review_comments": [
+    "VARIANCE_PCT default correctly changed from 10% to 3%",
+    "within_variance function correctly accepts optional pct argument",
+    "resolve_category_variance correctly returns category.variance_pct if set & positive, else 3.0",
+    "PUT /api/categories correctly updates variance_pct field",
+    "GET /api/categories correctly returns variance_pct on each category",
+    "mark-goods-ready correctly resolves category from fabric_id and uses category variance band",
+    "Error message correctly includes per-item band (e.g., 'Cotton Twill (±5.0%)')",
+    "BUG: POST /api/categories doesn't store variance_pct - only stores id, name, description, image_url, created_at"
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "89% (17/19 passed, 1 skipped, 1 failed - the failure is a bug detection)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123",
+    "vendor_denim": "denimseller@locofast.com / denim@123"
+  },
+  "seed_data_creation": "None - used existing cat-cotton (variance_pct=5.0) for testing",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Variance_pct feature is mostly working. cat-cotton has variance_pct=5.0 set. The only bug is POST /api/categories doesn't store variance_pct on create - needs fix in category_router.py create_category function. All other variance features (default 3%, within_variance with pct kwarg, resolve_category_variance, PUT categories, GET categories, mark-goods-ready variance check) are working correctly.",
+  "tests_verified": {
+    "VARIANCE_PCT_default_is_3": "PASS",
+    "within_variance_default_pct": "PASS",
+    "within_variance_custom_pct": "PASS",
+    "within_variance_zero_ordered": "PASS",
+    "resolve_category_variance_with_override": "PASS - returns 5.0 for cat-cotton",
+    "resolve_category_variance_no_override": "PASS - returns 3.0 for cat-denim",
+    "resolve_category_variance_null_category_id": "PASS - returns 3.0",
+    "resolve_category_variance_nonexistent_category": "PASS - returns 3.0",
+    "GET_categories_returns_variance_pct": "PASS",
+    "PUT_category_update_variance_pct": "PASS",
+    "PUT_category_set_variance_pct_to_zero": "PASS",
+    "POST_category_with_variance_pct": "PASS (endpoint accepts it but doesn't store it)",
+    "mark_goods_ready_error_includes_category_band": "SKIPPED - no provisional orders with advance_paid status",
+    "cotton_category_5pct_variance": "PASS",
+    "default_3pct_variance": "PASS",
+    "variance_boundary_precision": "PASS",
+    "nonprovisional_orders_use_variance_check": "PASS",
+    "variance_pct_persisted_in_db": "PASS",
+    "create_category_stores_variance_pct": "FAIL - BUG DETECTED"
+  },
+  "bug_details": {
+    "location": "/app/backend/category_router.py lines 95-108",
+    "description": "create_category function doesn't include variance_pct in category_doc",
+    "current_code": "category_doc = {'id': category_id, 'name': data.name, 'description': data.description or '', 'image_url': data.image_url or '', 'created_at': datetime.now(timezone.utc).isoformat()}",
+    "missing_fields": ["variance_pct", "slug", "seo_title", "seo_meta_description", "seo_intro", "seo_applications"],
+    "fix_suggestion": "Add all CategoryCreate fields to category_doc: variance_pct=data.variance_pct, slug=data.slug, etc."
+  }
+}

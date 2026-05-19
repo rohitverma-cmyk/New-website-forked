@@ -1898,7 +1898,7 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
       • fire an email to the customer with a "Pay balance" link
     Variance outside ±10 % requires admin role to proceed.
     """
-    from provisional_orders import within_variance, recalc_item_total, VARIANCE_PCT
+    from provisional_orders import within_variance, recalc_item_total, VARIANCE_PCT, resolve_category_variance
 
     # Caller resolution — vendor, admin, or agent
     caller_seller_id = None
@@ -1987,6 +1987,14 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
     if not payload_by_fabric:
         raise HTTPException(status_code=400, detail="No items provided")
 
+    # Resolve category-level variance bands for all items in one fabric lookup
+    fabric_ids = list({(it.get("fabric_id") or "") for it in (order.get("items") or []) if it.get("fabric_id")})
+    cat_by_fabric: dict[str, str] = {}
+    if fabric_ids:
+        async for f in db.fabrics.find({"id": {"$in": fabric_ids}}, {"_id": 0, "id": 1, "category_id": 1}):
+            if f.get("category_id"):
+                cat_by_fabric[f["id"]] = f["category_id"]
+
     # Stamp actual_quantity on the matching items. Vendors can only
     # update their own items; admins can update all.
     new_items = []
@@ -2007,8 +2015,15 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
                     status_code=400,
                     detail=f"Quantity is required for {it.get('fabric_name') or fid}",
                 )
-            if not within_variance(float(it.get("quantity") or 0), actual_qty):
-                out_of_band.append(it.get("fabric_name") or fid)
+            # Per-category variance % (falls back to platform default
+            # when the category record doesn't override it).
+            cat_id = it.get("category_id") or cat_by_fabric.get(it.get("fabric_id") or "")
+            item_variance = await resolve_category_variance(db, cat_id)
+            if not within_variance(float(it.get("quantity") or 0), actual_qty, item_variance):
+                out_of_band.append({
+                    "name": it.get("fabric_name") or fid,
+                    "pct": item_variance,
+                })
             stamped = recalc_item_total(it, actual_qty)
             if p["rolls"]:
                 stamped["dispatch_rolls"] = p["rolls"]
@@ -2021,9 +2036,12 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
             new_items.append(it)
 
     if out_of_band and caller_role != "admin":
+        # `out_of_band` is a list of {name, pct} dicts so we can surface
+        # the exact category band that was breached.
+        details = ", ".join(f"{o['name']} (±{o['pct']:.1f}%)" for o in out_of_band)
         raise HTTPException(
             status_code=400,
-            detail=f"Actual quantity outside ±{VARIANCE_PCT:.0f}% variance for: {', '.join(out_of_band)}. Admin approval required.",
+            detail=f"Actual quantity outside variance band for: {details}. Admin approval required.",
         )
 
     # Per-vendor invoice: required when a vendor (or SM impersonating one)

@@ -28,6 +28,9 @@ class CategoryCreate(BaseModel):
     seo_meta_description: Optional[str] = ""
     seo_intro: Optional[str] = ""  # HTML allowed — shown above the fabric grid
     seo_applications: Optional[str] = ""  # HTML allowed
+    # Per-category ±variance % allowed when supplier marks goods ready.
+    # 0/null → fall back to platform default (3%).
+    variance_pct: Optional[float] = None
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
@@ -38,6 +41,7 @@ class CategoryUpdate(BaseModel):
     seo_meta_description: Optional[str] = None
     seo_intro: Optional[str] = None
     seo_applications: Optional[str] = None
+    variance_pct: Optional[float] = None
 
 class Category(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -50,6 +54,7 @@ class Category(BaseModel):
     seo_meta_description: str = ""
     seo_intro: str = ""
     seo_applications: str = ""
+    variance_pct: Optional[float] = None
     fabric_count: int = 0
 
 
