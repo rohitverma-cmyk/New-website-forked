@@ -712,5 +712,13 @@ Super-admin (default `admin@locofast.com`, configurable via `SUPER_ADMIN_EMAIL` 
 - **Login flow**: `/api/auth/login` now rejects accounts with `active=false` with a friendly 403 "Account is deactivated. Please contact your administrator." Super-admin row cannot be self-deactivated.
 - **Frontend**: new `AdminUserManagement.js` with create-user modal, inline reset-password modal, role dropdown (Admin / Accounts), AM toggle, active/inactive pill, and a footer link pointing Supplier-Manager creation to the dedicated `/admin/supplier-managers` page (those live in a separate collection). Nav link "Admin Users" appears in the sidebar only for the super-admin email.
 
+### Admin Orders Modal — Actual Quantity Display (Feb 19, 2026) ✅
+Closed the loop on the "show actual quantity once goods are ready" work — admin staff now see the same numbers customers and mobile users see (already shipped earlier in `OrderDetailPage.js` / `MOrderDetail.js`).
+- **Items**: each line in the supplier-grouped block uses `item.actual_quantity` when present (falls back to `item.quantity`). Line total = actualQty × price, unit-aware (`item.unit || "m"`). Subtle muted note appears beneath each row when actual ≠ ordered: "_Originally ordered Xm · vendor reported Ym at goods-ready_".
+- **Supplier subtotal** in the green section header recomputes off actual qty.
+- **Payment summary** (`bg-gray-50` block): when `selectedOrder.goods_ready_at` is set AND `actual_total` is populated (provisional path), the entire summary swaps to `actual_subtotal / actual_packaging_charge / actual_logistics_charge / actual_tax / actual_total` with a "Final · Goods Ready" badge in the heading. For non-provisional orders (where customer already paid 100% on original qty), the order-level totals stay unchanged — matching the customer-view contract exactly.
+- **Shiprocket push picker** subtotal also uses actual qty so multi-vendor pushes show the same figures as the modal.
+- Verified live on ORD-UOHM6W (sample, 1m → 1.02m actual): screenshot confirms item line + subtotal show ₹1.02, audit note visible, payment summary stays at ₹117.05 (correct — non-provisional).
+
 ## Credentials
 See `/app/memory/test_credentials.md`

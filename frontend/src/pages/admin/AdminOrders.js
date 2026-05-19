@@ -217,7 +217,10 @@ const AdminOrders = () => {
       if (!byId.has(sid)) byId.set(sid, { seller_id: sid, seller_company: it.seller_company || "", items_count: 0, subtotal: 0 });
       const g = byId.get(sid);
       g.items_count += 1;
-      g.subtotal += Number(it.quantity || 0) * Number(it.price_per_meter || 0);
+      const _qtyForTotal = (it.actual_quantity != null && it.actual_quantity !== "")
+        ? Number(it.actual_quantity)
+        : Number(it.quantity || 0);
+      g.subtotal += _qtyForTotal * Number(it.price_per_meter || 0);
     });
     const shipMap = new Map((selectedOrder.shiprocket_shipments || []).map((s) => [s.seller_id || "", s]));
     return Array.from(byId.values()).map((g) => ({ ...g, shipment: shipMap.get(g.seller_id) || null }));
@@ -673,7 +676,12 @@ const AdminOrders = () => {
                     }
                     const grp = byId.get(sid);
                     grp.items.push({ ...it, _idx: idx });
-                    grp.subtotal += Number(it.quantity || 0) * Number(it.price_per_meter || 0);
+                    // Use actual (vendor-reported) quantity once goods are marked ready;
+                    // otherwise fall back to the originally ordered qty.
+                    const _qtyForTotal = (it.actual_quantity != null && it.actual_quantity !== "")
+                      ? Number(it.actual_quantity)
+                      : Number(it.quantity || 0);
+                    grp.subtotal += _qtyForTotal * Number(it.price_per_meter || 0);
                   });
                   // Build per-seller_id lookup. Each shipment can match
                   // exactly ONE group — once claimed, it can't be reused.
@@ -748,7 +756,12 @@ const AdminOrders = () => {
                               ) : null}
                             </div>
                             <div className="divide-y">
-                              {g.items.map((item) => (
+                              {g.items.map((item) => {
+                                const hasActual = item.actual_quantity != null && item.actual_quantity !== "";
+                                const displayQty = hasActual ? Number(item.actual_quantity) : Number(item.quantity || 0);
+                                const lineTotal = displayQty * Number(item.price_per_meter || 0);
+                                const unit = item.unit || "m";
+                                return (
                                 <div key={item._idx} className="p-4 flex gap-4">
                                   {item.image_url && <img src={item.image_url} alt={item.fabric_name} className="w-16 h-16 object-cover rounded" />}
                                   <div className="flex-1">
@@ -756,14 +769,20 @@ const AdminOrders = () => {
                                     <p className="text-sm text-gray-500">{item.category_name}</p>
                                     <div className="mt-1 flex gap-3 text-sm">
                                       <span className={`px-2 py-0.5 rounded text-xs ${item.order_type === "sample" ? "bg-blue-100 text-blue-700" : "bg-emerald-100 text-emerald-700"}`}>{item.order_type}</span>
-                                      <span className="text-gray-600">{item.quantity}m × ₹{item.price_per_meter}/m</span>
+                                      <span className="text-gray-600">{displayQty}{unit} × ₹{item.price_per_meter}/{unit}</span>
                                     </div>
+                                    {hasActual && Number(item.actual_quantity) !== Number(item.quantity) && (
+                                      <p className="text-[10px] text-gray-400 mt-1" data-testid={`actual-qty-note-${item._idx}`}>
+                                        Originally ordered {item.quantity}{unit} · vendor reported {item.actual_quantity}{unit} at goods-ready
+                                      </p>
+                                    )}
                                   </div>
                                   <div className="text-right">
-                                    <p className="font-medium">₹{(item.quantity * item.price_per_meter).toLocaleString()}</p>
+                                    <p className="font-medium">₹{lineTotal.toLocaleString()}</p>
                                   </div>
                                 </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           </div>
                         );
@@ -771,7 +790,46 @@ const AdminOrders = () => {
                     </div>
                   );
                 })()}
-                <div><h3 className="font-medium mb-3">Payment</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><div className="flex justify-between"><span className="text-gray-600">Order Value</span><span>₹{selectedOrder.subtotal?.toLocaleString()}</span></div>{selectedOrder.packaging_charge > 0 ? (<><div className="flex justify-between"><span className="text-gray-600">Packaging</span><span>₹{selectedOrder.packaging_charge?.toLocaleString()}</span></div><div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_only_charge?.toLocaleString()}</span></div></>) : selectedOrder.logistics_charge > 0 && <div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{selectedOrder.logistics_charge?.toLocaleString()}</span></div>}<div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-dashed border-gray-200"><span>Gross Value</span><span>₹{(Number(selectedOrder.subtotal||0) + Number(selectedOrder.packaging_charge||0) + Number(selectedOrder.logistics_only_charge||selectedOrder.logistics_charge||0)).toLocaleString(undefined,{minimumFractionDigits:2})}</span></div><div className="flex justify-between"><span className="text-gray-600">GST</span><span>₹{selectedOrder.tax?.toLocaleString()}</span></div>{selectedOrder.discount > 0 && <div className="flex justify-between text-emerald-600"><span>Discount</span><span>-₹{selectedOrder.discount?.toLocaleString()}</span></div>}<div className="flex justify-between pt-2 border-t font-semibold"><span>Total Invoice Value</span><span className="text-emerald-600">₹{selectedOrder.total?.toLocaleString()}</span></div><div className="flex justify-between pt-2 text-sm"><span className="text-gray-600">Method</span><span className="font-medium">{selectedOrder.payment_method === 'credit' ? 'Locofast Credit' : 'Razorpay'}</span></div></div></div>
+                <div><h3 className="font-medium mb-3 flex items-center gap-2">Payment{(!!selectedOrder.goods_ready_at && selectedOrder.actual_total != null) && (<span className="text-[10px] font-medium uppercase tracking-wide bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded" data-testid="payment-final-badge">Final · Goods Ready</span>)}</h3>{(() => {
+                  // Once goods are ready, swap the payment summary to the
+                  // recomputed actual_* values so finance/admin see what
+                  // the customer will actually be invoiced.
+                  const useActual = !!selectedOrder.goods_ready_at && selectedOrder.actual_total != null;
+                  const subtotal = useActual ? selectedOrder.actual_subtotal : selectedOrder.subtotal;
+                  const packaging = useActual ? selectedOrder.actual_packaging_charge : selectedOrder.packaging_charge;
+                  const logistics = useActual
+                    ? (selectedOrder.actual_logistics_charge ?? selectedOrder.actual_logistics_only_charge)
+                    : (selectedOrder.logistics_only_charge || selectedOrder.logistics_charge);
+                  const tax = useActual ? selectedOrder.actual_tax : selectedOrder.tax;
+                  const total = useActual ? selectedOrder.actual_total : selectedOrder.total;
+                  const gross = Number(subtotal || 0) + Number(packaging || 0) + Number(logistics || 0);
+                  return (
+                  <div className="bg-gray-50 rounded-lg p-4 space-y-2" data-testid="admin-order-payment-summary">
+                    <div className="flex justify-between"><span className="text-gray-600">Order Value</span><span data-testid="payment-subtotal">₹{Number(subtotal || 0).toLocaleString()}</span></div>
+                    {(packaging || 0) > 0 ? (
+                      <>
+                        <div className="flex justify-between"><span className="text-gray-600">Packaging</span><span>₹{Number(packaging).toLocaleString()}</span></div>
+                        <div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{Number(logistics || 0).toLocaleString()}</span></div>
+                      </>
+                    ) : (logistics || 0) > 0 && (
+                      <div className="flex justify-between"><span className="text-gray-600">Logistics</span><span>₹{Number(logistics).toLocaleString()}</span></div>
+                    )}
+                    <div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-dashed border-gray-200"><span>Gross Value</span><span>₹{gross.toLocaleString(undefined,{minimumFractionDigits:2})}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-600">GST</span><span>₹{Number(tax || 0).toLocaleString()}</span></div>
+                    {selectedOrder.discount > 0 && (
+                      <div className="flex justify-between text-emerald-600"><span>Discount</span><span>-₹{Number(selectedOrder.discount).toLocaleString()}</span></div>
+                    )}
+                    <div className="flex justify-between pt-2 border-t font-semibold"><span>{useActual ? "Final Invoice Value" : "Total Invoice Value"}</span><span className="text-emerald-600" data-testid="payment-total">₹{Number(total || 0).toLocaleString()}</span></div>
+                    {useActual && Number(selectedOrder.advance_amount || 0) > 0 && (
+                      <>
+                        <div className="flex justify-between text-xs text-gray-500"><span>Advance paid</span><span>− ₹{Number(selectedOrder.advance_amount).toLocaleString()}</span></div>
+                        <div className="flex justify-between text-sm font-semibold text-orange-700 border-t border-dashed border-orange-200 pt-1"><span>Balance due</span><span>₹{Number(selectedOrder.balance_amount || 0).toLocaleString()}</span></div>
+                      </>
+                    )}
+                    <div className="flex justify-between pt-2 text-sm"><span className="text-gray-600">Method</span><span className="font-medium">{selectedOrder.payment_method === 'credit' ? 'Locofast Credit' : 'Razorpay'}</span></div>
+                  </div>
+                  );
+                })()}</div>
 
                 <div>
                   <div className="flex items-center justify-between mb-3">
