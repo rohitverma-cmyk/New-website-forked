@@ -1,14 +1,16 @@
-import { useState, useEffect } from "react";
-import { Package, Clock, CheckCircle, Truck, MapPin, Phone, ExternalLink, FileText, Upload, AlertTriangle, Loader2 } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { Package, Clock, CheckCircle, Truck, MapPin, Phone, ExternalLink, FileText, Upload, AlertTriangle, Loader2, Boxes, Plus, Trash2 } from "lucide-react";
 import VendorLayout from "../../components/vendor/VendorLayout";
 import VendorFileUpload from "../../components/vendor/VendorFileUpload";
-import { getVendorOrders } from "../../lib/api";
+import { getVendorOrders, vendorMarkGoodsReady } from "../../lib/api";
 import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
 const statusConfig = {
   payment_pending: { label: "Payment Pending", color: "bg-yellow-100 text-yellow-700", icon: Clock },
+  provisional: { label: "Advance Paid · Pending Goods Ready", color: "bg-amber-100 text-amber-700", icon: Clock },
+  goods_ready: { label: "Goods Ready · Balance Pending", color: "bg-orange-100 text-orange-700", icon: Boxes },
   confirmed: { label: "Confirmed", color: "bg-blue-100 text-blue-700", icon: CheckCircle },
   processing: { label: "Processing", color: "bg-indigo-100 text-indigo-700", icon: Package },
   shipped: { label: "Shipped", color: "bg-purple-100 text-purple-700", icon: Truck },
@@ -23,6 +25,8 @@ const VendorOrders = () => {
   // RFQ-quote-converted orders. RFQ orders carry source: 'rfq', everything
   // else (inventory + agent-assisted + brand) defaults to 'inventory'.
   const [sourceFilter, setSourceFilter] = useState("all");
+  // Provisional "Mark Goods Ready" modal target order (null = closed)
+  const [readyOrder, setReadyOrder] = useState(null);
 
   useEffect(() => {
     fetchOrders();
@@ -202,6 +206,14 @@ const VendorOrders = () => {
               </div>
 
               <div className="p-6 space-y-6">
+                {/* Provisional bulk order banner */}
+                {selectedOrder.is_provisional && (
+                  <ProvisionalBanner
+                    order={selectedOrder}
+                    onMarkReady={() => setReadyOrder(selectedOrder)}
+                  />
+                )}
+
                 {/* Items */}
                 <div>
                   <h3 className="font-medium text-gray-900 mb-3">Items to Prepare</h3>
@@ -237,6 +249,11 @@ const VendorOrders = () => {
                             {item.order_type}
                           </span>
                           <p className="font-medium mt-1">{item.quantity}m</p>
+                          {item.actual_quantity != null && (
+                            <p className="text-[11px] text-emerald-700 mt-0.5">
+                              Ready: <strong>{item.actual_quantity}m</strong>
+                            </p>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -301,12 +318,366 @@ const VendorOrders = () => {
             </div>
           </div>
         )}
+
+        {/* Mark Goods Ready modal — provisional bulk orders only */}
+        {readyOrder && (
+          <MarkGoodsReadyModal
+            order={readyOrder}
+            onClose={() => setReadyOrder(null)}
+            onSuccess={(updated) => {
+              setReadyOrder(null);
+              setSelectedOrder(updated);
+              setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+            }}
+          />
+        )}
       </div>
     </VendorLayout>
   );
 };
 
 export default VendorOrders;
+
+// ─── Provisional bulk-order banner ────────────────────────────────
+const ProvisionalBanner = ({ order, onMarkReady }) => {
+  const paymentStatus = order.payment_status;
+  const advance = Number(order.advance_amount || 0);
+  const balance = Number(order.balance_amount || 0);
+  const advancePct = order.advance_pct || 10;
+
+  if (paymentStatus === "pending_advance") {
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4" data-testid="vendor-provisional-banner-pending">
+        <p className="text-sm font-semibold text-amber-900 flex items-center gap-1.5">
+          <Clock size={14} /> Awaiting customer advance ({advancePct}%)
+        </p>
+        <p className="text-xs text-amber-800 mt-1">
+          The customer hasn't completed the {advancePct}% advance payment yet. You'll be able to mark goods ready once advance is received.
+        </p>
+      </div>
+    );
+  }
+
+  if (paymentStatus === "advance_paid") {
+    return (
+      <div className="bg-amber-50 border border-amber-300 rounded-lg p-4" data-testid="vendor-provisional-banner-ready-action">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <p className="text-sm font-semibold text-amber-900 flex items-center gap-1.5">
+              <Boxes size={14} /> Advance received — please mark goods ready
+            </p>
+            <p className="text-xs text-amber-800 mt-1">
+              Customer paid <strong>₹{advance.toLocaleString("en-IN")}</strong> ({advancePct}% advance).
+              Enter the actual dispatched quantity per item with the roll breakdown. We'll auto-invoice the customer for the balance.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onMarkReady}
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium flex items-center gap-1.5"
+            data-testid="vendor-mark-goods-ready-btn"
+          >
+            <Boxes size={14} /> Mark Goods Ready
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (paymentStatus === "balance_pending") {
+    return (
+      <div className="bg-orange-50 border border-orange-200 rounded-lg p-4" data-testid="vendor-provisional-banner-balance">
+        <p className="text-sm font-semibold text-orange-900 flex items-center gap-1.5">
+          <CheckCircle size={14} /> Goods ready — awaiting balance payment
+        </p>
+        <p className="text-xs text-orange-800 mt-1">
+          Customer balance due: <strong>₹{balance.toLocaleString("en-IN")}</strong>. We've emailed them the
+          balance invoice — shipment will be released to Shiprocket once payment is received.
+        </p>
+        <button
+          type="button"
+          onClick={onMarkReady}
+          className="mt-2 text-xs font-medium text-orange-700 hover:text-orange-900 underline"
+          data-testid="vendor-edit-goods-ready-btn"
+        >
+          Edit dispatched quantities
+        </button>
+      </div>
+    );
+  }
+
+  if (paymentStatus === "paid") {
+    return (
+      <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4" data-testid="vendor-provisional-banner-paid">
+        <p className="text-sm font-semibold text-emerald-900 flex items-center gap-1.5">
+          <CheckCircle size={14} /> Balance paid — ready to ship
+        </p>
+        <p className="text-xs text-emerald-800 mt-1">
+          Customer has settled the balance. Order is being pushed to Shiprocket.
+        </p>
+      </div>
+    );
+  }
+
+  return null;
+};
+
+// ─── Mark Goods Ready modal — provisional bulk orders only ───────
+const MarkGoodsReadyModal = ({ order, onClose, onSuccess }) => {
+  const vendorId = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem("vendor_data") || "{}")?.id || ""; }
+    catch { return ""; }
+  }, []);
+
+  // Items the current vendor is responsible for in this order
+  const myItems = useMemo(
+    () => (order.items || []).filter((it) => (it.order_type || "bulk") === "bulk" && (!vendorId || (it.seller_id || "") === vendorId)),
+    [order, vendorId]
+  );
+
+  // Per-item state: { fabricId: { rolls: [{count, length}], note: "" } }
+  const [state, setState] = useState(() => {
+    const init = {};
+    myItems.forEach((it) => {
+      const existing = it.dispatch_rolls || [];
+      init[it.fabric_id] = {
+        rolls: existing.length ? existing.map((r) => ({ count: r.count, length: r.length })) : [{ count: "", length: "" }],
+        note: it.dispatch_note || "",
+      };
+    });
+    return init;
+  });
+  const [submitting, setSubmitting] = useState(false);
+
+  const updateRoll = (fabricId, idx, field, value) => {
+    setState((prev) => {
+      const rolls = [...(prev[fabricId]?.rolls || [])];
+      rolls[idx] = { ...rolls[idx], [field]: value };
+      return { ...prev, [fabricId]: { ...prev[fabricId], rolls } };
+    });
+  };
+  const addRoll = (fabricId) => {
+    setState((prev) => {
+      const rolls = [...(prev[fabricId]?.rolls || []), { count: "", length: "" }];
+      return { ...prev, [fabricId]: { ...prev[fabricId], rolls } };
+    });
+  };
+  const removeRoll = (fabricId, idx) => {
+    setState((prev) => {
+      const rolls = [...(prev[fabricId]?.rolls || [])];
+      rolls.splice(idx, 1);
+      return { ...prev, [fabricId]: { ...prev[fabricId], rolls: rolls.length ? rolls : [{ count: "", length: "" }] } };
+    });
+  };
+  const setNote = (fabricId, value) => {
+    setState((prev) => ({ ...prev, [fabricId]: { ...prev[fabricId], note: value } }));
+  };
+
+  const totalFor = (fabricId) => {
+    const rolls = state[fabricId]?.rolls || [];
+    return rolls.reduce((s, r) => s + (Number(r.count) || 0) * (Number(r.length) || 0), 0);
+  };
+
+  const variancePct = (fabricId, ordered) => {
+    if (!ordered) return 0;
+    const actual = totalFor(fabricId);
+    return ((actual - ordered) / ordered) * 100;
+  };
+
+  const submit = async () => {
+    const items = myItems.map((it) => {
+      const rolls = (state[it.fabric_id]?.rolls || [])
+        .filter((r) => Number(r.count) > 0 && Number(r.length) > 0)
+        .map((r) => ({ count: Number(r.count), length: Number(r.length) }));
+      const actual = rolls.reduce((s, r) => s + r.count * r.length, 0);
+      return {
+        fabric_id: it.fabric_id,
+        actual_quantity: actual,
+        rolls,
+        dispatch_note: state[it.fabric_id]?.note || "",
+      };
+    });
+
+    // Validate every item has at least one roll
+    const missing = myItems.find((it) => !items.find((p) => p.fabric_id === it.fabric_id && p.rolls.length > 0));
+    if (missing) {
+      toast.error(`Add at least one roll for "${missing.fabric_name}"`);
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await vendorMarkGoodsReady(order.id, items);
+      toast.success(res.data?.all_ready
+        ? "Goods marked ready — balance invoice emailed to customer"
+        : "Quantities saved. Other vendors still need to confirm their items.");
+      onSuccess(res.data.order);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to mark goods ready");
+    }
+    setSubmitting(false);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4"
+      onClick={onClose}
+      data-testid="vendor-mark-ready-modal"
+    >
+      <div
+        className="bg-white rounded-xl max-w-2xl w-full max-h-[88vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-5 border-b border-gray-100 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold flex items-center gap-1.5">
+              <Boxes size={18} className="text-amber-600" /> Mark Goods Ready
+            </h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Order {order.order_number} · Enter exact dispatched quantity per item with the roll breakdown.
+              Customer is auto-invoiced for the balance.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1" aria-label="Close">
+            ✕
+          </button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {myItems.length === 0 ? (
+            <p className="text-sm text-gray-500">No bulk items assigned to you on this order.</p>
+          ) : (
+            myItems.map((item) => {
+              const total = totalFor(item.fabric_id);
+              const ordered = Number(item.quantity || 0);
+              const vPct = variancePct(item.fabric_id, ordered);
+              const outOfBand = Math.abs(vPct) > 10;
+              return (
+                <div
+                  key={item.fabric_id}
+                  className="border border-gray-200 rounded-lg p-4 space-y-3"
+                  data-testid={`mark-ready-item-${item.fabric_id}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{item.fabric_name}</p>
+                      {item.fabric_code && (
+                        <p className="text-xs text-gray-500 font-mono">SKU: {item.fabric_code}</p>
+                      )}
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Ordered: <strong>{ordered}m</strong> @ ₹{item.price_per_meter}/m
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-gray-500">Total entered</p>
+                      <p className={`text-lg font-bold ${outOfBand ? "text-red-600" : "text-emerald-700"}`}>
+                        {total}m
+                      </p>
+                      {ordered > 0 && total > 0 && (
+                        <p className={`text-[11px] ${outOfBand ? "text-red-600" : "text-gray-500"}`}>
+                          {vPct >= 0 ? "+" : ""}{vPct.toFixed(1)}% vs ordered
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Roll rows */}
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-gray-700">Rolls breakdown</p>
+                    {(state[item.fabric_id]?.rolls || []).map((roll, idx) => (
+                      <div key={idx} className="flex items-center gap-2" data-testid={`mark-ready-roll-${item.fabric_id}-${idx}`}>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          placeholder="# rolls"
+                          value={roll.count}
+                          onChange={(e) => updateRoll(item.fabric_id, idx, "count", e.target.value)}
+                          className="w-24 px-2 py-1.5 border border-gray-200 rounded text-sm"
+                          data-testid={`mark-ready-roll-count-${item.fabric_id}-${idx}`}
+                        />
+                        <span className="text-gray-400">×</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          placeholder="length (m)"
+                          value={roll.length}
+                          onChange={(e) => updateRoll(item.fabric_id, idx, "length", e.target.value)}
+                          className="w-32 px-2 py-1.5 border border-gray-200 rounded text-sm"
+                          data-testid={`mark-ready-roll-length-${item.fabric_id}-${idx}`}
+                        />
+                        <span className="text-xs text-gray-500 flex-1">
+                          = {((Number(roll.count) || 0) * (Number(roll.length) || 0)).toFixed(2)}m
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeRoll(item.fabric_id, idx)}
+                          className="p-1 text-gray-400 hover:text-red-600"
+                          aria-label="Remove roll"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => addRoll(item.fabric_id)}
+                      className="text-xs font-medium text-amber-700 hover:text-amber-900 flex items-center gap-1"
+                      data-testid={`mark-ready-add-roll-${item.fabric_id}`}
+                    >
+                      <Plus size={12} /> Add roll
+                    </button>
+                  </div>
+
+                  {outOfBand && (
+                    <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700 flex items-start gap-1.5">
+                      <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                      <span>
+                        Variance is outside the ±10% band. The order will be rejected unless an admin overrides it.
+                        Adjust quantities or contact Locofast operations.
+                      </span>
+                    </div>
+                  )}
+
+                  <input
+                    type="text"
+                    placeholder="Dispatch note (optional) — batch #, lot details, special handling…"
+                    value={state[item.fabric_id]?.note || ""}
+                    onChange={(e) => setNote(item.fabric_id, e.target.value)}
+                    className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-xs"
+                    data-testid={`mark-ready-note-${item.fabric_id}`}
+                  />
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="p-5 border-t border-gray-100 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg text-sm"
+            data-testid="mark-ready-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting || myItems.length === 0}
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium flex items-center gap-1.5 disabled:opacity-50"
+            data-testid="mark-ready-submit"
+          >
+            {submitting ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+            Confirm Goods Ready
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ─── Invoice Upload block inside Order detail modal ───────────────
 const VendorOrderInvoiceBlock = ({ order }) => {

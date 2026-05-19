@@ -11,10 +11,17 @@ api.interceptors.request.use((config) => {
   // Check for vendor token first (for /vendor/* and /cloudinary/* routes when vendor is logged in)
   const vendorToken = localStorage.getItem("vendor_token");
   const agentToken = localStorage.getItem("lf_agent_token");
-  if (config.url?.startsWith('/vendor') && !config.url?.includes('/vendor/login')) {
-    if (vendorToken) {
-      config.headers.Authorization = `Bearer ${vendorToken}`;
-    }
+  
+  // Routes that should use vendor token when vendor is logged in
+  const vendorRoutes = [
+    '/vendor',
+    '/orders/*/mark-goods-ready'  // Provisional order flow
+  ];
+  const isVendorRoute = config.url?.startsWith('/vendor') && !config.url?.includes('/vendor/login');
+  const isMarkGoodsReady = config.url?.includes('/mark-goods-ready');
+  
+  if ((isVendorRoute || isMarkGoodsReady) && vendorToken) {
+    config.headers.Authorization = `Bearer ${vendorToken}`;
   } else if (config.url?.includes('/cloudinary') && vendorToken && !localStorage.getItem("locofast_token")) {
     // Use vendor token for cloudinary uploads when only vendor is logged in
     config.headers.Authorization = `Bearer ${vendorToken}`;
@@ -438,6 +445,10 @@ export const createVendorFabric = (data) => api.post("/vendor/fabrics", data);
 export const updateVendorFabric = (id, data) => api.put(`/vendor/fabrics/${id}`, data);
 export const deleteVendorFabric = (id) => api.delete(`/vendor/fabrics/${id}`);
 export const getVendorOrders = () => api.get("/vendor/orders");
+export const vendorMarkGoodsReady = (orderId, items) =>
+  api.post(`/orders/${orderId}/mark-goods-ready`, { items });
+export const adminMarkBalancePaid = (orderId) =>
+  api.post(`/orders/${orderId}/mark-balance-paid`);
 export const getVendorStats = () => api.get("/vendor/stats");
 export const getVendorCategories = () => api.get("/vendor/categories");
 export const getVendorEnquiries = () => api.get("/vendor/enquiries");

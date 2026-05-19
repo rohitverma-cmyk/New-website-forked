@@ -4,13 +4,15 @@ import AdminLayout from "../../components/admin/AdminLayout";
 import BulkCreditUpload from "../../components/admin/BulkCreditUpload";
 import SetCreditByGstModal from "../../components/admin/SetCreditByGstModal";
 import OrderEmailAudit from "../../components/admin/OrderEmailAudit";
-import { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket, getOrderSellerCommissions } from "../../lib/api";
+import { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket, getOrderSellerCommissions, adminMarkBalancePaid } from "../../lib/api";
 import { toast } from "sonner";
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
 const statusConfig = {
   payment_pending: { label: "Payment Pending", color: "bg-yellow-100 text-yellow-700", icon: Clock },
+  provisional: { label: "Provisional · Advance Paid", color: "bg-amber-100 text-amber-700", icon: Clock },
+  goods_ready: { label: "Goods Ready · Balance Pending", color: "bg-orange-100 text-orange-700", icon: CheckCircle },
   paid: { label: "Paid", color: "bg-green-100 text-green-700", icon: CheckCircle },
   confirmed: { label: "Confirmed", color: "bg-blue-100 text-blue-700", icon: CheckCircle },
   processing: { label: "Processing", color: "bg-indigo-100 text-indigo-700", icon: Package },
@@ -23,6 +25,9 @@ const statusConfig = {
 const paymentStatusConfig = {
   pending: { label: "Pending", color: "bg-gray-100 text-gray-700" },
   initiated: { label: "Initiated", color: "bg-yellow-100 text-yellow-700" },
+  pending_advance: { label: "Advance Pending", color: "bg-amber-100 text-amber-700" },
+  advance_paid: { label: "Advance Paid", color: "bg-amber-100 text-amber-800" },
+  balance_pending: { label: "Balance Pending", color: "bg-orange-100 text-orange-700" },
   paid: { label: "Paid", color: "bg-green-100 text-green-700" },
   failed: { label: "Failed", color: "bg-red-100 text-red-700" },
   refunded: { label: "Refunded", color: "bg-orange-100 text-orange-700" },
@@ -64,6 +69,8 @@ const AdminOrders = () => {
   const [markPayOpen, setMarkPayOpen] = useState(false);
   const [markPayForm, setMarkPayForm] = useState({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" });
   const [markPayBusy, setMarkPayBusy] = useState(false);
+  // Provisional bulk order: Mark Balance Paid (admin override)
+  const [balancePaidBusy, setBalancePaidBusy] = useState(false);
   // Per-seller commission breakdown for the open order
   const [sellerComms, setSellerComms] = useState(null);
   const [commResyncBusy, setCommResyncBusy] = useState(false);
@@ -158,8 +165,28 @@ const AdminOrders = () => {
     setUpdatingStatus(null);
   };
 
-  const handleMarkPaymentStatus = async () => {
+  const handleMarkBalancePaid = async () => {
     if (!selectedOrder) return;
+    const bal = Number(selectedOrder.balance_amount || 0);
+    if (!window.confirm(
+      `Mark balance of ₹${bal.toLocaleString("en-IN")} as paid for ${selectedOrder.order_number}?\n\n` +
+      `This will:\n• Move payment_status → paid\n• Trigger inventory deduction\n• Materialize vendor payouts\n• Push the order to Shiprocket\n\n` +
+      `Only use this when payment was received outside Razorpay (NEFT/UPI/cash).`
+    )) return;
+    setBalancePaidBusy(true);
+    try {
+      const res = await adminMarkBalancePaid(selectedOrder.id);
+      toast.success("Balance marked as paid. Shipment pushed to Shiprocket.");
+      setSelectedOrder(res.data.order);
+      fetchOrders();
+      fetchStats();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to mark balance as paid");
+    }
+    setBalancePaidBusy(false);
+  };
+
+  const handleMarkPaymentStatus = async () => {    if (!selectedOrder) return;
     if (markPayForm.payment_status === "paid" && !markPayForm.payment_method) {
       toast.error("Pick the payment method that was actually used");
       return;
@@ -538,6 +565,48 @@ const AdminOrders = () => {
                 </div>
               </div>
               <div className="p-6 space-y-6">
+                {selectedOrder.is_provisional && (
+                  <div
+                    className={`rounded-lg p-4 border ${
+                      selectedOrder.payment_status === 'paid'
+                        ? 'bg-emerald-50 border-emerald-200'
+                        : selectedOrder.payment_status === 'balance_pending'
+                        ? 'bg-orange-50 border-orange-200'
+                        : 'bg-amber-50 border-amber-200'
+                    }`}
+                    data-testid="admin-provisional-banner"
+                  >
+                    <p className="text-sm font-semibold flex items-center gap-1.5">
+                      <Clock size={14} /> Provisional Bulk Order ({selectedOrder.advance_pct || 10}% advance)
+                    </p>
+                    <div className="grid grid-cols-3 gap-3 mt-2 text-xs">
+                      <div>
+                        <p className="text-gray-500">Advance</p>
+                        <p className="font-semibold">₹{Number(selectedOrder.advance_amount || 0).toLocaleString('en-IN')}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Balance</p>
+                        <p className="font-semibold">₹{Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Stage</p>
+                        <p className="font-semibold uppercase">{selectedOrder.payment_status}</p>
+                      </div>
+                    </div>
+                    {selectedOrder.payment_status === 'pending_advance' && (
+                      <p className="text-xs text-amber-800 mt-2">Awaiting customer to complete the advance payment.</p>
+                    )}
+                    {selectedOrder.payment_status === 'advance_paid' && (
+                      <p className="text-xs text-amber-800 mt-2">Advance received — awaiting vendor to mark goods ready.</p>
+                    )}
+                    {selectedOrder.payment_status === 'balance_pending' && (
+                      <p className="text-xs text-orange-800 mt-2">
+                        Vendor reported ready quantities. Customer balance invoice has been emailed.
+                        Use <strong>Mark Balance Paid</strong> below if the customer paid offline (NEFT/UPI/cash).
+                      </p>
+                    )}
+                  </div>
+                )}
                 <div><h3 className="font-medium mb-3">Customer</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><p className="font-medium">{selectedOrder.customer?.name}</p>{selectedOrder.customer?.company && <p className="text-gray-600">{selectedOrder.customer.company}</p>}<div className="flex items-center gap-2 text-sm text-gray-600"><Mail size={14} />{selectedOrder.customer?.email}</div><div className="flex items-center gap-2 text-sm text-gray-600"><Phone size={14} />{selectedOrder.customer?.phone}</div><div className="flex items-start gap-2 text-sm text-gray-600"><MapPin size={14} className="mt-0.5 flex-shrink-0" /><span>{selectedOrder.customer?.address}, {selectedOrder.customer?.city}, {selectedOrder.customer?.state} {selectedOrder.customer?.pincode}</span></div></div></div>
                 {(() => {
                   // Group items by seller_id so multi-supplier orders show
@@ -727,7 +796,19 @@ const AdminOrders = () => {
               <div className="p-6 border-t flex justify-between">
                 <div className="flex gap-3 flex-wrap">
                   <button onClick={() => handleResendConfirmation(selectedOrder.id)} className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Mail size={16} />Resend Email</button>
-                  {selectedOrder.payment_status !== 'paid' && (
+                  {selectedOrder.is_provisional && selectedOrder.payment_status === 'balance_pending' && (
+                    <button
+                      onClick={handleMarkBalancePaid}
+                      disabled={balancePaidBusy}
+                      className="flex items-center gap-2 px-4 py-2 text-orange-700 bg-orange-50 hover:bg-orange-100 rounded-lg border border-orange-200 font-medium disabled:opacity-50"
+                      data-testid="admin-mark-balance-paid-btn"
+                      title={`Mark balance of ₹${Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')} as paid`}
+                    >
+                      {balancePaidBusy ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                      Mark Balance Paid (₹{Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')})
+                    </button>
+                  )}
+                  {selectedOrder.payment_status !== 'paid' && !(selectedOrder.is_provisional && selectedOrder.payment_status === 'balance_pending') && (
                     <button
                       onClick={() => { setMarkPayForm({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" }); setMarkPayOpen(true); }}
                       className="flex items-center gap-2 px-4 py-2 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 font-medium"

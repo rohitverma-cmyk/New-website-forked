@@ -1846,19 +1846,35 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
     # Caller resolution — vendor, admin, or agent
     caller_seller_id = None
     caller_role = "unknown"
-    try:
-        # Try vendor auth first
-        from vendor_router import get_current_vendor
-        v = get_current_vendor(request)
-        caller_seller_id = v.get("seller_id") or v.get("id")
-        caller_role = "vendor"
-    except HTTPException:
-        # Fall back to admin / accounts
+    
+    # Extract Authorization header manually for auth check
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
         try:
-            await auth_helpers.get_current_admin(request)
-            caller_role = "admin"
-        except HTTPException:
-            raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+            import jwt
+            JWT_SECRET = os.environ.get("JWT_SECRET", "")
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            
+            if payload.get("type") == "vendor":
+                # Vendor token
+                seller_id = payload.get("seller_id")
+                seller = await db.sellers.find_one({"id": seller_id, "is_active": True}, {"_id": 0})
+                if seller:
+                    caller_seller_id = seller.get("id")
+                    caller_role = "vendor"
+            else:
+                # Admin token (no type field or type != vendor)
+                admin_id = payload.get("sub")
+                if admin_id:
+                    admin = await db.admins.find_one({"id": admin_id}, {"_id": 0})
+                    if admin:
+                        caller_role = "admin"
+        except Exception:
+            pass  # Invalid token
+    
+    if caller_role == "unknown":
+        raise HTTPException(status_code=401, detail="Vendor or admin auth required")
 
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
@@ -1871,9 +1887,38 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
             detail=f"Cannot mark goods-ready in payment_status={order.get('payment_status')}",
         )
 
-    actual_by_fabric = {(it.get("fabric_id") or ""): float(it.get("actual_quantity") or 0)
-                       for it in (data.get("items") or [])}
-    if not actual_by_fabric:
+    # Build per-fabric payload map. Each entry may carry actual_quantity,
+    # an optional `rolls` breakdown ([{count:int, length:float}, ...]) and
+    # an optional `dispatch_note`. The latter two are recorded verbatim
+    # for traceability — they don't influence totals.
+    payload_by_fabric: dict[str, dict] = {}
+    for it in (data.get("items") or []):
+        fid = (it.get("fabric_id") or "").strip()
+        if not fid:
+            continue
+        rolls = []
+        for r in (it.get("rolls") or []):
+            try:
+                cnt = int(r.get("count") or 0)
+                ln = float(r.get("length") or 0)
+            except (TypeError, ValueError):
+                continue
+            if cnt > 0 and ln > 0:
+                rolls.append({"count": cnt, "length": round(ln, 2)})
+        # Derive actual_quantity from rolls when caller didn't send it.
+        derived = sum(r["count"] * r["length"] for r in rolls)
+        try:
+            qty_payload = float(it.get("actual_quantity")) if it.get("actual_quantity") is not None else 0.0
+        except (TypeError, ValueError):
+            qty_payload = 0.0
+        actual_qty = qty_payload if qty_payload > 0 else derived
+        payload_by_fabric[fid] = {
+            "actual_quantity": actual_qty,
+            "rolls": rolls,
+            "dispatch_note": (it.get("dispatch_note") or "").strip(),
+        }
+
+    if not payload_by_fabric:
         raise HTTPException(status_code=400, detail="No items provided")
 
     # Stamp actual_quantity on the matching items. Vendors can only
@@ -1882,17 +1927,28 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
     out_of_band = []
     for it in (order.get("items") or []):
         fid = it.get("fabric_id") or ""
-        if fid in actual_by_fabric:
+        if fid in payload_by_fabric:
             if caller_role == "vendor":
                 if (it.get("seller_id") or "") != caller_seller_id:
                     raise HTTPException(
                         status_code=403,
                         detail=f"Item {it.get('fabric_name','?')} is not assigned to this vendor",
                     )
-            actual_qty = actual_by_fabric[fid]
+            p = payload_by_fabric[fid]
+            actual_qty = float(p["actual_quantity"] or 0)
+            if actual_qty <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Quantity is required for {it.get('fabric_name') or fid}",
+                )
             if not within_variance(float(it.get("quantity") or 0), actual_qty):
                 out_of_band.append(it.get("fabric_name") or fid)
-            new_items.append(recalc_item_total(it, actual_qty))
+            stamped = recalc_item_total(it, actual_qty)
+            if p["rolls"]:
+                stamped["dispatch_rolls"] = p["rolls"]
+            if p["dispatch_note"]:
+                stamped["dispatch_note"] = p["dispatch_note"]
+            new_items.append(stamped)
         else:
             # Preserve existing actual_quantity stamp (set by a prior
             # vendor in a multi-supplier order) or leave unset.
