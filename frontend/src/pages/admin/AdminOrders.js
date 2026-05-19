@@ -1,10 +1,10 @@
 import { useState, useEffect } from "react";
-import { Package, Clock, CheckCircle, Truck, XCircle, Search, RefreshCw, RotateCw, ChevronDown, Mail, Phone, MapPin, Eye, FileText, Receipt, Wallet, Upload, Pencil, Ban, X, AlertTriangle, Send, Loader2, Plus } from "lucide-react";
+import { Package, Clock, CheckCircle, Truck, XCircle, Search, RefreshCw, RotateCw, ChevronDown, Mail, Phone, MapPin, Eye, FileText, Receipt, Wallet, Upload, Pencil, Ban, X, AlertTriangle, Send, Loader2, Plus, ExternalLink } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import BulkCreditUpload from "../../components/admin/BulkCreditUpload";
 import SetCreditByGstModal from "../../components/admin/SetCreditByGstModal";
 import OrderEmailAudit from "../../components/admin/OrderEmailAudit";
-import { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket, getOrderSellerCommissions, adminMarkBalancePaid } from "../../lib/api";
+import api, { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket, getOrderSellerCommissions, adminMarkBalancePaid } from "../../lib/api";
 import { toast } from "sonner";
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
@@ -851,16 +851,34 @@ const AdminOrders = () => {
                 <div className="flex gap-3 flex-wrap">
                   <button onClick={() => handleResendConfirmation(selectedOrder.id)} className="flex items-center gap-2 px-4 py-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Mail size={16} />Resend Email</button>
                   {selectedOrder.is_provisional && selectedOrder.payment_status === 'balance_pending' && (
-                    <button
-                      onClick={handleMarkBalancePaid}
-                      disabled={balancePaidBusy}
-                      className="flex items-center gap-2 px-4 py-2 text-orange-700 bg-orange-50 hover:bg-orange-100 rounded-lg border border-orange-200 font-medium disabled:opacity-50"
-                      data-testid="admin-mark-balance-paid-btn"
-                      title={`Mark balance of ₹${Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')} as paid`}
-                    >
-                      {balancePaidBusy ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
-                      Mark Balance Paid (₹{Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')})
-                    </button>
+                    <>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const { data } = await api.post(`/orders/${selectedOrder.id}/balance-share-link`);
+                            await navigator.clipboard.writeText(data.url);
+                            toast.success(`Balance pay link copied · ₹${Number(data.balance_amount).toLocaleString('en-IN')}`);
+                          } catch (e) {
+                            toast.error(e?.response?.data?.detail || "Failed to generate link");
+                          }
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 font-medium"
+                        data-testid="admin-share-balance-link-btn"
+                        title="Copy a public balance-pay URL to send to the customer"
+                      >
+                        <ExternalLink size={16} />Share Balance Link
+                      </button>
+                      <button
+                        onClick={handleMarkBalancePaid}
+                        disabled={balancePaidBusy}
+                        className="flex items-center gap-2 px-4 py-2 text-orange-700 bg-orange-50 hover:bg-orange-100 rounded-lg border border-orange-200 font-medium disabled:opacity-50"
+                        data-testid="admin-mark-balance-paid-btn"
+                        title={`Mark balance of ₹${Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')} as paid`}
+                      >
+                        {balancePaidBusy ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />}
+                        Mark Balance Paid (₹{Number(selectedOrder.balance_amount || 0).toLocaleString('en-IN')})
+                      </button>
+                    </>
                   )}
                   {selectedOrder.payment_status !== 'paid' && !(selectedOrder.is_provisional && selectedOrder.payment_status === 'balance_pending') && (
                     <button

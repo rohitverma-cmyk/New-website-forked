@@ -16,7 +16,7 @@ const AdminLayout = ({ children }) => {
     { path: "/admin/payouts", label: "Vendor Payouts", icon: IndianRupee },
     { path: "/admin/credit-adjustments", label: "Credit Adjustments", icon: Wallet },
     { path: "/admin/credit", label: "Credit Limits", icon: Wallet },
-    { path: "/admin/orders", label: "Orders (read)", icon: ShoppingCart },
+    { path: "/admin/orders", label: "Orders", icon: ShoppingCart },
     { path: "/admin/sellers", label: "Vendors", icon: Building2 },
   ];
 

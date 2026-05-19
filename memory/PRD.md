@@ -695,6 +695,13 @@ Rewrote `generate_invoice_pdf` to exactly match the customer invoice mockup. Ver
 - **Authorised Signatory** (left) sits side-by-side with totals (right) to match the mockup. Includes "For LOCOFAST ONLINE SERVICES PRIVATE LIMITED" header above signature line.
 - **Amount in Words**: now boxed with a subtle blue border + light-blue background.
 
+### Finance Balance-Payment Controls in Admin Order Modal (Feb 19, 2026) ✅
+Surfaced both balance-payment controls inside the admin order detail modal so the Locofast Accounts/Finance team can act without leaving `/admin/orders`.
+- **Share Balance Link** button (testid `admin-share-balance-link-btn`) — copies a public `/pay-balance/{id}/{token}` URL to clipboard. Identical to the agent-side flow but available to admins + accounts role. Endpoint `POST /api/orders/{id}/balance-share-link` already accepted admin tokens (which includes accounts via `db.admins`).
+- **Mark Balance Paid** button stays — fires the existing endpoint, which auto-flips order to `paid+confirmed`, deducts inventory, materializes payouts, pushes to Shiprocket, fires `ORDER_CONFIRMED` + `PAYMENT_CAPTURED` internal events.
+- **AdminLayout**: relabeled the accounts nav entry from `Orders (read)` → `Orders` since accounts now have write capability on the balance-payment flow.
+- **No backend changes needed** — endpoints `mark-balance-paid` and `balance-share-link` already authorize via `get_current_admin`, which resolves both `role=admin` and `role=accounts`. Confirmed end-to-end with finance JWT.
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
