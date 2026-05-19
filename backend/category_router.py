@@ -98,8 +98,14 @@ async def create_category(data: CategoryCreate, admin=Depends(auth_helpers.get_c
     category_doc = {
         'id': category_id,
         'name': data.name,
+        'slug': data.slug or "",
         'description': data.description or "",
         'image_url': data.image_url or "",
+        'seo_title': data.seo_title or "",
+        'seo_meta_description': data.seo_meta_description or "",
+        'seo_intro': data.seo_intro or "",
+        'seo_applications': data.seo_applications or "",
+        'variance_pct': data.variance_pct,  # null → falls back to platform default
         'created_at': datetime.now(timezone.utc).isoformat()
     }
     await db.categories.insert_one(category_doc)

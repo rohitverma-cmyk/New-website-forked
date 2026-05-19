@@ -659,6 +659,13 @@ Bug-fix + UX from user audit. 9/9 endpoint tests pass.
 - **New endpoint** `GET /api/orders/{order_id}/packing-slip` — vendor or admin JWT. Vendors get only their own seller_id's items; admins get every supplier on the order. Returns `application/pdf`. 400 if no quantity data captured yet, 403 if vendor has no items on this order.
 - **Frontend** (`VendorOrders.js`): New `PackingSlipButton` component (testid `vendor-packing-slip-btn`) on the goods-ready stamped banner. Downloads via axios blob, surfaces backend error detail (decoding blob → JSON for nicer toasts). Visible for both non-provisional goods_ready orders AND provisional orders in balance_pending / paid (since rolls + invoice are already captured at that point).
 
+### Per-Category Variance Configuration (Feb 19, 2026) ✅
+Default ±variance band tightened from 10% → 3%. Admins can now configure variance per category (e.g., greige rolls 5–8%, knits 3–5%). 18/19 tests pass; 1 bug caught by testing agent (POST /categories was dropping new fields) fixed in-flight.
+- **Backend** `provisional_orders.py`: `VARIANCE_PCT` env-default lowered to `3`. `within_variance(ordered, actual, pct=None)` now takes an explicit `pct` kwarg. New `resolve_category_variance(db, category_id) -> float` reads `categories.variance_pct` if set & positive, else returns the platform default.
+- **Backend** `orders_router.py` (mark-goods-ready): resolves `cat_by_fabric` in a single fabric lookup (since order items don't carry `category_id`), then applies the per-category band per item. Error message surfaces each line's exact band: `"Cotton Twill (±5.0%), Linen 220 (±3.0%)"`.
+- **Backend** `category_router.py`: `CategoryCreate` / `CategoryUpdate` / `Category` now include optional `variance_pct: float`. POST `/api/categories` and PUT `/api/categories/{id}` accept it; GET returns it. (Bug-fix: POST was previously dropping `variance_pct` + other newer fields — now mirrors full schema.)
+- **Frontend** `AdminCategories.js`: New "Goods-Ready Variance %" input (testid `category-variance-input`) on the category modal — 0–100 range, blank → platform default. Help text spells out typical ranges (knits 3–5%, greige 5–8%).
+
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
