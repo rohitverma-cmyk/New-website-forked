@@ -1757,6 +1757,164 @@ async def admin_push_to_shiprocket(
     }
 
 
+
+@router.post("/admin/{order_id}/cargo-force-recreate")
+async def admin_cargo_force_recreate(
+    order_id: str,
+    payload: Optional[dict] = Body(default=None),
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Cargo-only — archive ALL existing Shiprocket records for this
+    order and create fresh ones from scratch.
+
+    Why this exists:
+      Shiprocket Cargo doesn't expose a public cancel/delete endpoint
+      for B2B orders, so when we end up with orphaned or duplicate
+      cargo_order_ids on their side, the only clean path is to:
+        1. Move our `shiprocket_shipments[]` and top-level mirrors
+           into `shiprocket_shipments_archived[]` for audit
+        2. Reset the order's Shiprocket state
+        3. Call the multi-vendor push fresh — generates new cargo_order_ids
+
+      The OLD cargo_order_ids will still exist on Shiprocket's side. Admin
+      should cancel/discard them via the Shiprocket Cargo panel once the
+      new push succeeds.
+
+    Refuses to act on courier (B2C) shipments — those have a proper
+    cancel API (`/api/v1/external/orders/cancel`) which is exposed via
+    the existing per-row delete; keeping this surgical.
+    """
+    selected_seller_ids: Optional[List[str]] = None
+    if payload and isinstance(payload, dict):
+        raw = payload.get("seller_ids")
+        if isinstance(raw, list):
+            selected_seller_ids = [str(s).strip() for s in raw if str(s).strip()] or None
+
+    order = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    existing = order.get("shiprocket_shipments") or []
+    if not existing and not order.get("shiprocket_order_id"):
+        # Nothing to recreate — fall through to a fresh push
+        existing = []
+
+    # Determine which rows we're recreating. If `selected_seller_ids`
+    # filter is given, only archive+recreate those; the rest stay put.
+    target_rows = (
+        [s for s in existing if (s.get("seller_id") or "") in selected_seller_ids]
+        if selected_seller_ids else existing
+    )
+    cargo_rows = [s for s in target_rows if (s.get("vertical") or "courier") == "cargo"]
+    if existing and not cargo_rows and selected_seller_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected suppliers are not Cargo shipments — use the normal Re-push for courier.",
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    archived = order.get("shiprocket_shipments_archived") or []
+
+    # Move target rows into archive (with the timestamp + actor)
+    for row in cargo_rows:
+        archived.append({
+            **row,
+            "archived_at": now_iso,
+            "archived_by": admin.get("email", ""),
+            "archived_reason": "cargo_force_recreate",
+        })
+
+    # Build the new shipments[] excluding the rows we're recreating.
+    kept = [
+        s for s in existing
+        if s not in cargo_rows  # remove archived cargo rows
+    ]
+
+    # Reset top-level mirrors when no shipments remain at all.
+    reset_mirrors = {}
+    if not kept:
+        reset_mirrors = {
+            "shiprocket_order_id": None,
+            "shiprocket_shipment_id": None,
+            "shiprocket_waybill_no": None,
+            "shiprocket_lrn": None,
+            "shiprocket_label_url": None,
+            "shiprocket_courier_name": None,
+            "shiprocket_awaiting_manual_association": False,
+            "shiprocket_manual_action_reason": None,
+            "shiprocket_pushed": False,
+        }
+
+    await db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": {
+            "shiprocket_shipments": kept,
+            "shiprocket_shipments_archived": archived,
+            "shiprocket_force_recreate_at": now_iso,
+            "shiprocket_force_recreate_by": admin.get("email", ""),
+            **reset_mirrors,
+        }},
+    )
+
+    # Now run a fresh push for the affected sellers
+    fresh_order = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+    only_sellers = (
+        selected_seller_ids
+        if selected_seller_ids
+        else [s.get("seller_id") for s in cargo_rows if s.get("seller_id")]
+        or None
+    )
+    multi = await create_shiprocket_shipments_multi(fresh_order, only_seller_ids=only_sellers)
+
+    # MERGE freshly-pushed shipments into the kept list and persist —
+    # mirrors the logic in `admin_push_to_shiprocket` because the helper
+    # itself doesn't write to DB.
+    new_shipments = multi.get("shipments") or []
+    merged: dict = {s.get("seller_id", ""): s for s in kept}
+    for s in new_shipments:
+        merged[s.get("seller_id", "")] = s  # newer push wins
+    final_shipments = list(merged.values())
+    first_ok = next((s for s in final_shipments if s.get("success")), (final_shipments[0] if final_shipments else {}))
+
+    persist: dict = {
+        "shiprocket_shipments": final_shipments,
+        "shiprocket_pushed": True,
+        "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+        "shiprocket_order_id": first_ok.get("order_id") or None,
+        "shiprocket_shipment_id": first_ok.get("shipment_id"),
+        "shiprocket_awaiting_manual_association": bool(first_ok.get("awaiting_manual_association")),
+        "shiprocket_manual_action_reason": first_ok.get("manual_action_reason", ""),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if first_ok.get("awb_code"):
+        persist["awb_code"] = first_ok["awb_code"]
+    if first_ok.get("courier_name"):
+        persist["courier_name"] = first_ok["courier_name"]
+    await db.orders.update_one({"id": order["id"]}, {"$set": persist})
+
+    final_order = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+    logger.info(
+        f"[cargo-force-recreate] order={fresh_order.get('order_number')} "
+        f"archived={len(cargo_rows)} new_pushed={multi.get('count')} by={admin.get('email')}"
+    )
+    return {
+        "success": True,
+        "archived_count": len(cargo_rows),
+        "new_pushed_count": multi.get("count", 0),
+        "old_cargo_order_ids": [s.get("order_id") for s in cargo_rows if s.get("order_id")],
+        "shipments": final_order.get("shiprocket_shipments", []),
+        "order": final_order,
+        "warning": (
+            "Old Cargo order IDs above still exist in Shiprocket's queue — "
+            "please cancel them manually via the Shiprocket Cargo panel."
+        ),
+    }
+
+
+
 @router.post("/admin/{order_id}/refresh-shiprocket-status")
 async def admin_refresh_shiprocket_status(
     order_id: str,

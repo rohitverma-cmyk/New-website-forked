@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Package, Clock, CheckCircle, Truck, XCircle, Search, RefreshCw, RotateCw, ChevronDown, Mail, Phone, MapPin, Eye, FileText, Receipt, Wallet, Upload, Pencil, Ban, X, AlertTriangle, Send, Loader2, Plus, ExternalLink } from "lucide-react";
+import { Package, Clock, CheckCircle, Truck, XCircle, Search, RefreshCw, RotateCw, ChevronDown, Mail, Phone, MapPin, Eye, FileText, Receipt, Wallet, Upload, Pencil, Ban, X, AlertTriangle, Send, Loader2, Plus, ExternalLink, Trash2 } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import BulkCreditUpload from "../../components/admin/BulkCreditUpload";
 import SetCreditByGstModal from "../../components/admin/SetCreditByGstModal";
@@ -1150,6 +1150,41 @@ const AdminOrders = () => {
                       >
                         <RefreshCw size={14} />
                       </button>
+                      {(selectedOrder.shiprocket_shipments || []).some(s => (s.vertical || 'courier') === 'cargo') && (
+                        <button
+                          onClick={async () => {
+                            const cargoRows = (selectedOrder.shiprocket_shipments || []).filter(s => (s.vertical || 'courier') === 'cargo');
+                            const oldIds = cargoRows.map(s => s.order_id).filter(Boolean).join(', ');
+                            if (!window.confirm(
+                              `Delete & recreate Cargo shipment(s)?\n\n` +
+                              `This will:\n` +
+                              `• Archive the current Cargo record(s) ${oldIds ? '(SR IDs: ' + oldIds + ')' : ''}\n` +
+                              `• Generate fresh Shiprocket Cargo orders for ${cargoRows.length} supplier(s)\n\n` +
+                              `IMPORTANT: The OLD Cargo IDs above will still exist in Shiprocket's queue. You must manually cancel/discard them via cargo.shiprocket.in once the new push succeeds.\n\n` +
+                              `Continue?`
+                            )) return;
+                            try {
+                              const { data } = await api.post(`/orders/admin/${selectedOrder.id}/cargo-force-recreate`);
+                              setSelectedOrder(data.order);
+                              toast.success(`Recreated · ${data.new_pushed_count} new shipment(s) · ${data.archived_count} archived`, { duration: 6000 });
+                              if (data.old_cargo_order_ids?.length) {
+                                toast.warning(
+                                  `Old Cargo IDs still in Shiprocket queue (cancel manually): ${data.old_cargo_order_ids.join(", ")}`,
+                                  { duration: 12000 }
+                                );
+                              }
+                              fetchOrders();
+                            } catch (e) {
+                              toast.error(e.response?.data?.detail || "Failed to recreate");
+                            }
+                          }}
+                          className="px-2 py-2 text-red-600 hover:bg-red-50 rounded-lg text-xs"
+                          title="Cargo only · Archive current SR records and push fresh ones (old IDs stay in Shiprocket queue)"
+                          data-testid="admin-order-cargo-force-recreate-btn"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
                   ) : selectedOrder.shiprocket_order_id ? (
                     <div className="flex items-center gap-2" data-testid="admin-order-sr-status">
