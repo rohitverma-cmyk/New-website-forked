@@ -209,6 +209,63 @@ async def fire_internal_event(
         except Exception:
             pass
 
+    # ── In-app notification fan-out (independent of email success) ──
+    # Every internal event also publishes to the in-app bell so the
+    # team gets a real-time signal even if their email is filtered or
+    # the SMTP send fails.
+    try:
+        await _publish_inapp(event, order, extra)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[internal-events] in-app fan-out failed: {e}")
+
+
+async def _publish_inapp(event: OrderEvent, order: dict, extra: Optional[dict]) -> None:
+    """Mirror the email blast into the in-app notifications collection.
+
+    Audience policy:
+      • All admin + accounts users get every order event
+      • Vendor gets per-event notifications related to *their* shipments
+        (GOODS_READY → admin/accounts only; ORDER_PLACED + ADVANCE_PAID
+        + PAYMENT_CAPTURED → vendor of each item).
+    """
+    from notifications_router import broadcast_to_admins, notify_vendor
+
+    order_number = order.get("order_number") or order.get("id", "")[:8]
+    label = _SUBJECT_LABELS.get(event, event.value)
+    title = f"{label} · {order_number}"
+    body_bits = []
+    cust = (order.get("customer") or {})
+    if cust.get("company"):
+        body_bits.append(cust["company"])
+    elif cust.get("name"):
+        body_bits.append(cust["name"])
+    total = order.get("actual_total") or order.get("total")
+    if total:
+        body_bits.append(_money(total))
+    body = " · ".join(body_bits)
+    link = f"/admin/orders?orderId={order.get('id','')}"
+
+    # 1) Admin + accounts always get it
+    await broadcast_to_admins(title=title, body=body, link=link, kind=f"order.{event.value}")
+
+    # 2) Vendor notifications for events relevant to their fulfillment work
+    VENDOR_EVENTS = {
+        OrderEvent.ORDER_PLACED, OrderEvent.ADVANCE_PAID,
+        OrderEvent.PAYMENT_CAPTURED, OrderEvent.ORDER_CONFIRMED,
+        OrderEvent.ORDER_CANCELLED,
+    }
+    if event in VENDOR_EVENTS:
+        seen: set = set()
+        for it in (order.get("items") or []):
+            sid = it.get("seller_id")
+            if sid and sid not in seen:
+                seen.add(sid)
+                await notify_vendor(
+                    seller_id=sid, title=title, body=body,
+                    link=f"/vendor/orders?orderId={order.get('id','')}",
+                    kind=f"order.{event.value}",
+                )
+
 
 async def _log(event: OrderEvent, order: dict, subject: str, html: str,
                status: str, error: Optional[str], extra: Optional[dict]) -> None:

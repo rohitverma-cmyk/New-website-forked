@@ -441,11 +441,25 @@ async def get_vendor_orders(
     orders = await db.orders.find(base_q, {'_id': 0}).sort('created_at', -1).to_list(500)
 
     # Filter items to only show vendor's fabrics OR vendor's seller_id (rfq path)
+    # Also strip customer PII (phone/email) — vendors only need name + address
+    # for dispatch. Logistics is handled by Shiprocket end-to-end so no need
+    # for direct contact channels.
     for order in orders:
         order['items'] = [
             item for item in order.get('items', [])
             if item.get('fabric_id') in vendor_fabric_ids or item.get('seller_id') == seller_id
         ]
+        cust = order.get('customer') or {}
+        if cust:
+            order['customer'] = {
+                'name': cust.get('name', ''),
+                'company': cust.get('company', ''),
+                'address': cust.get('address', ''),
+                'city': cust.get('city', ''),
+                'state': cust.get('state', ''),
+                'pincode': cust.get('pincode', ''),
+                # phone/email/gst intentionally OMITTED
+            }
         # Always expose source label so vendor UI can render the chip
         if not order.get('source'):
             order['source'] = 'inventory'

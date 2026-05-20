@@ -1,5 +1,6 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee, ShieldCheck } from "lucide-react";
+import NotificationBell from "../NotificationBell";
 import { useAuth } from "../../context/AuthContext";
 
 const AdminLayout = ({ children }) => {
@@ -112,6 +113,9 @@ const AdminLayout = ({ children }) => {
 
       {/* Main Content */}
       <main className="flex-1 ml-64 p-8" data-testid="admin-content">
+        <div className="flex justify-end mb-3">
+          <NotificationBell audience="admin" />
+        </div>
         {children}
       </main>
     </div>

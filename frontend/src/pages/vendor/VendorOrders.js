@@ -374,10 +374,9 @@ const VendorOrders = () => {
                         {selectedOrder.customer?.address}, {selectedOrder.customer?.city}, {selectedOrder.customer?.state} {selectedOrder.customer?.pincode}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2 mt-2 text-sm text-gray-600">
-                      <Phone size={16} />
-                      {selectedOrder.customer?.phone}
-                    </div>
+                    <p className="text-[11px] text-gray-400 mt-2 italic" data-testid="vendor-pii-hidden-note">
+                      Customer contact details are managed by Locofast Ops. Use this address only for dispatch.
+                    </p>
                   </div>
                 </div>
 

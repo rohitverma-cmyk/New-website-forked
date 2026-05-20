@@ -9,7 +9,6 @@ import { BrandAuthProvider } from "./context/BrandAuthContext";
 import { BrandCartProvider } from "./context/BrandCartContext";
 import { ConfirmProvider } from "./components/useConfirm";
 import WhatsAppChat from "./components/WhatsAppChat";
-import TryMobilePreview from "./components/TryMobilePreview";
 import { useEffect, lazy, Suspense } from "react";
 import { isMobileDevice, shouldAutoRedirectToMobile, mapToMobilePath } from "./mobile/utils/mobileDetect";
 import { registerMobileSW } from "./mobile/utils/registerServiceWorker";
@@ -402,7 +401,6 @@ function App() {
         </Routes>
         </Suspense>
         <ConditionalWhatsAppChat />
-        <TryMobilePreview />
       </BrowserRouter>
     </AuthProvider>
     </VendorAuthProvider>

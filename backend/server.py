@@ -637,6 +637,10 @@ import admin_users_router
 admin_users_router.set_db(db)
 app.include_router(admin_users_router.router, prefix="/api")
 
+import notifications_router
+notifications_router.set_db(db)
+app.include_router(notifications_router.router, prefix="/api")
+
 import commission_router
 commission_router.set_db(db)
 app.include_router(commission_router.router)

@@ -1,6 +1,7 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { LayoutDashboard, Layers, Package, ShoppingCart, MessageSquare, LogOut, ArrowLeft, IndianRupee, Users } from "lucide-react";
 import { useVendorAuth } from "../../context/VendorAuthContext";
+import NotificationBell from "../NotificationBell";
 
 const VendorLayout = ({ children }) => {
   const location = useLocation();
@@ -100,6 +101,9 @@ const VendorLayout = ({ children }) => {
 
       {/* Main Content */}
       <main className="flex-1 overflow-auto">
+        <div className="flex justify-end px-6 pt-4">
+          <NotificationBell audience="vendor" />
+        </div>
         {actingAsSm && (
           <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center justify-between gap-3" data-testid="sm-acting-banner">
             <div className="flex items-center gap-2 text-amber-900 text-sm">
