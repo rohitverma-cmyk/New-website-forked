@@ -388,8 +388,43 @@ async def create_cargo_shipment(order: dict, db) -> dict:
         )
     logger.info(f"[cargo-associate] response status={r2.status_code} body={r2.text[:1500]}")
     if r2.status_code not in (200, 201):
+        # Soft-fail policy: when association fails purely because of the
+        # `supporting_docs` host-whitelist restriction, we DON'T raise.
+        # Step-1 succeeded → the cargo order exists in Shiprocket's queue
+        # at `cargo_order_id`, and the user can finish the booking manually
+        # in the Shiprocket Cargo panel by uploading the docs there and
+        # clicking "Associate". This is the workaround until Shiprocket
+        # whitelists our CDN host.
+        body_text = r2.text or ""
+        host_block = (
+            r2.status_code == 400
+            and "supporting_docs" in body_text.lower()
+        )
+        if host_block:
+            logger.warning(
+                f"[cargo-associate] order={order.get('order_number')} → step-2 SOFT-FAIL: "
+                f"host whitelist rejection · cargo_order_id={cargo_order_id} kept. "
+                f"Admin must finish the booking in the Shiprocket Cargo panel."
+            )
+            return {
+                "vertical": "cargo",
+                "shipment_id": None,
+                "order_id": cargo_order_id,
+                "awaiting_manual_association": True,
+                "manual_action_reason": (
+                    "Shiprocket Cargo rejected the supporting_docs URL host. "
+                    "Open the Shiprocket Cargo panel, find this order id, upload "
+                    "the vendor invoice + packing slip, and click Associate / Book Pickup."
+                ),
+                "delivery_partner_name": delivery_partner_name,
+                "transporter_id": create_resp.get("transportar_id"),
+                "mode": create_resp.get("mode"),
+                "raw_create": create_resp,
+                "raw_associate_error": body_text[:1500],
+                "supporting_docs_attempted": supporting_docs,
+            }
         raise RuntimeError(
-            f"Cargo shipment_association failed [{r2.status_code}]: {r2.text[:500]} "
+            f"Cargo shipment_association failed [{r2.status_code}]: {body_text[:500]} "
             f"(cargo_order_id={cargo_order_id})"
         )
     assoc_resp = r2.json()
@@ -415,4 +450,27 @@ async def get_cargo_shipment(shipment_id: int) -> dict:
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(f"{BASE_URL}/api/external/get_shipment/{shipment_id}/", headers=headers)
     r.raise_for_status()
+    return r.json()
+
+
+
+async def get_cargo_order_status(cargo_order_id: int) -> dict:
+    """Fetch the current status of a Cargo order from Shiprocket.
+
+    Used by the admin "Refresh Status" button to pull the latest
+    `current_status`, AWB, LRN, label_url etc. without waiting for
+    Shiprocket's webhook (which sometimes lags or never fires when
+    the order is still in "awaiting manual association" state).
+
+    Returns Shiprocket's raw JSON; the caller maps the fields it cares
+    about onto our `orders` doc.
+    """
+    headers = await _headers()
+    url = f"{BASE_URL}/api/external/get_order/{cargo_order_id}/"
+    logger.info(f"[cargo-status] GET {url}")
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(url, headers=headers)
+    logger.info(f"[cargo-status] response status={r.status_code} body={r.text[:1000]}")
+    if r.status_code != 200:
+        raise RuntimeError(f"Cargo get_order failed [{r.status_code}]: {r.text[:300]}")
     return r.json()

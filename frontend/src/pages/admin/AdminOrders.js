@@ -723,6 +723,28 @@ const AdminOrders = () => {
                     )}
                   </div>
                 )}
+                {/* Shiprocket Cargo soft-fail: step-2 needs manual upload of supporting_docs in Shiprocket panel */}
+                {((selectedOrder.shiprocket_shipments || []).some(s => s.awaiting_manual_association) || selectedOrder.shiprocket_awaiting_manual_association) && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4" data-testid="admin-cargo-manual-banner">
+                    <p className="text-sm font-semibold text-amber-900 flex items-center gap-1.5">
+                      <AlertTriangle size={14} /> Cargo Order Created — Manual Doc Upload Required
+                    </p>
+                    <p className="text-xs text-amber-800 mt-1.5 leading-relaxed">
+                      Step 1 succeeded — the cargo order(s) exist in Shiprocket's queue. Step 2 (booking the pickup) was rejected because Shiprocket hasn't whitelisted our document host yet. To complete the booking:
+                    </p>
+                    <ol className="text-xs text-amber-800 mt-2 ml-4 list-decimal space-y-1">
+                      <li>Open <a className="underline font-medium" href="https://cargo.shiprocket.in" target="_blank" rel="noreferrer">cargo.shiprocket.in</a> and find these Cargo Order IDs:</li>
+                      {(selectedOrder.shiprocket_shipments || []).filter(s => s.awaiting_manual_association).map((s, i) => (
+                        <li key={i} className="font-mono bg-white border border-amber-200 px-2 py-1 rounded mt-1 inline-block mr-2">
+                          {s.seller_company || s.seller_id || '—'}: <strong>#{s.order_id}</strong>
+                        </li>
+                      ))}
+                      <li className="mt-2">Upload vendor tax invoice + packing slip (download from order's <em>Vendor</em> section)</li>
+                      <li>Click <strong>Associate / Book Pickup</strong> in Shiprocket</li>
+                      <li>Click the <RefreshCw size={11} className="inline mb-0.5" /> button here to pull the AWB / status</li>
+                    </ol>
+                  </div>
+                )}
                 <div><h3 className="font-medium mb-3">Customer</h3><div className="bg-gray-50 rounded-lg p-4 space-y-2"><p className="font-medium">{selectedOrder.customer?.name}</p>{selectedOrder.customer?.company && <p className="text-gray-600">{selectedOrder.customer.company}</p>}<div className="flex items-center gap-2 text-sm text-gray-600"><Mail size={14} />{selectedOrder.customer?.email}</div><div className="flex items-center gap-2 text-sm text-gray-600"><Phone size={14} />{selectedOrder.customer?.phone}</div><div className="flex items-start gap-2 text-sm text-gray-600"><MapPin size={14} className="mt-0.5 flex-shrink-0" /><span>{selectedOrder.customer?.address}, {selectedOrder.customer?.city}, {selectedOrder.customer?.state} {selectedOrder.customer?.pincode}</span></div></div></div>
                 {(() => {
                   // Group items by seller_id so multi-supplier orders show
@@ -1057,18 +1079,30 @@ const AdminOrders = () => {
                         const ok = ships.filter((s) => s.success).length;
                         const total = ships.length;
                         const allOk = ok === total;
+                        const anyManual = ships.some((s) => s.awaiting_manual_association);
+                        const currentStatus = (ships[0] && ships[0].current_status) || selectedOrder.shiprocket_current_status;
+                        const badgeClass = anyManual
+                          ? "bg-amber-50 text-amber-800 border border-amber-200"
+                          : allOk
+                            ? "bg-emerald-50 text-emerald-700"
+                            : ok > 0
+                              ? "bg-amber-50 text-amber-700"
+                              : "bg-red-50 text-red-700";
                         return (
                           <span
-                            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium ${
-                              allOk ? "bg-emerald-50 text-emerald-700" : ok > 0 ? "bg-amber-50 text-amber-700" : "bg-red-50 text-red-700"
-                            }`}
-                            title={ships.map((s) => `${s.seller_company || s.seller_id || "?"}: ${s.success ? `SR #${s.order_id}` : (s.error || "failed")}`).join("\n")}
+                            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium ${badgeClass}`}
+                            title={ships.map((s) => `${s.seller_company || s.seller_id || "?"}: ${s.success ? (s.awaiting_manual_association ? `Cargo #${s.order_id} · awaiting manual assoc` : `SR #${s.order_id}` + (s.current_status ? ` · ${s.current_status}` : '')) : (s.error || "failed")}`).join("\n")}
                             data-testid="admin-order-sr-vertical-badge"
                           >
                             <Truck size={14} />
-                            {total > 1 ? `${ok}/${total} shipments` : (
-                              ships[0].success ? `Shiprocket #${ships[0].order_id}` : "Push failed"
-                            )}
+                            {anyManual
+                              ? "Manual association needed"
+                              : total > 1
+                                ? `${ok}/${total} shipments${currentStatus ? " · " + currentStatus : ""}`
+                                : (ships[0].success
+                                    ? (currentStatus || `Shiprocket #${ships[0].order_id}`)
+                                    : "Push failed")
+                            }
                           </span>
                         );
                       })()}
@@ -1099,6 +1133,22 @@ const AdminOrders = () => {
                         data-testid="admin-order-sr-logs-btn"
                       >
                         <FileText size={14} />
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const { data } = await api.post(`/orders/admin/${selectedOrder.id}/refresh-shiprocket-status`);
+                            setSelectedOrder(data.order);
+                            toast.success(`Refreshed ${data.refreshed_count} shipment(s)${data.shiprocket_current_status ? ' · status: ' + data.shiprocket_current_status : ''}`);
+                          } catch (e) {
+                            toast.error(e.response?.data?.detail || "Failed to refresh status");
+                          }
+                        }}
+                        className="px-2 py-2 text-emerald-600 hover:bg-emerald-50 rounded-lg text-xs"
+                        title="Pull latest tracking status from Shiprocket"
+                        data-testid="admin-order-sr-refresh-status-btn"
+                      >
+                        <RefreshCw size={14} />
                       </button>
                     </div>
                   ) : selectedOrder.shiprocket_order_id ? (

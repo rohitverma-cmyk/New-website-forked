@@ -1284,6 +1284,7 @@ async def create_shiprocket_shipment(order: dict, items_override: Optional[List[
                     cargo = await create_cargo_shipment(order, db)
                     # Persist the cargo response onto the order doc so we
                     # don't lose it if the caller forgets to.
+                    awaiting_manual = bool(cargo.get("awaiting_manual_association"))
                     await db.orders.update_one(
                         {"id": order["id"]},
                         {"$set": {
@@ -1296,6 +1297,8 @@ async def create_shiprocket_shipment(order: dict, items_override: Optional[List[
                             "shiprocket_lrn": cargo.get("lrn"),
                             "shiprocket_label_url": cargo.get("label_url"),
                             "shiprocket_courier_name": cargo.get("delivery_partner_name", "Cargo"),
+                            "shiprocket_awaiting_manual_association": awaiting_manual,
+                            "shiprocket_manual_action_reason": cargo.get("manual_action_reason", ""),
                             "shiprocket_meta": {
                                 "transporter_id": cargo.get("transporter_id"),
                                 "mode": cargo.get("mode"),
@@ -1565,6 +1568,10 @@ async def create_shiprocket_shipments_multi(order: dict, only_seller_ids: Option
             "courier_name": result.get("courier_name", ""),
             "vertical": result.get("vertical", "courier"),
             "error": result.get("error", ""),
+            "raw_error": (str(result.get("error") or "") if not result.get("success") else "")[:4000],
+            # Cargo soft-fail propagation (single-supplier path)
+            "awaiting_manual_association": bool(result.get("awaiting_manual_association")),
+            "manual_action_reason": result.get("manual_action_reason", ""),
             "pushed_at": datetime.now(timezone.utc).isoformat(),
         }
         return {"success": single["success"], "count": 1, "shipments": [single]}
@@ -1608,6 +1615,12 @@ async def create_shiprocket_shipments_multi(order: dict, only_seller_ids: Option
             # exactly what Shiprocket said when a push fails. Trimmed to
             # 4 KB to keep the order doc reasonable. Only set on failure.
             "raw_error": (str(res.get("error") or "") if not res.get("success") else "")[:4000],
+            # Cargo soft-fail: step-1 succeeded but step-2 needs manual
+            # action by admin in Shiprocket panel (host whitelist issue).
+            # Treated as "success" so the order isn't pushed to courier
+            # fallback, but flagged for admin attention.
+            "awaiting_manual_association": bool(res.get("awaiting_manual_association")),
+            "manual_action_reason": res.get("manual_action_reason", ""),
             "pushed_at": datetime.now(timezone.utc).isoformat(),
         }
         shipments.append(shipment)
@@ -1736,13 +1749,127 @@ async def admin_push_to_shiprocket(
         "success": True,
         "already_pushed": False,
         "count": len(new_shipments),
-        "shipments": shipments,  # full merged list — UI shows the complete picture
+        "shipments": shipments,
         "pushed_in_this_call": new_shipments,
         "shiprocket_order_id": first_ok.get("order_id"),
         "shipment_id": first_ok.get("shipment_id"),
         "awb_code": first_ok.get("awb_code") or "",
         "courier_name": first_ok.get("courier_name") or "",
         "message": f"Pushed {new_ok}/{len(new_shipments)} shipment{'s' if len(new_shipments) > 1 else ''}",
+    }
+
+
+@router.post("/admin/{order_id}/refresh-shiprocket-status")
+async def admin_refresh_shiprocket_status(
+    order_id: str,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Pull the latest tracking status from Shiprocket for this order's
+    shipment(s) on-demand. Works for both Cargo (B2B) and Courier (B2C).
+
+    Updates per-shipment fields in `shiprocket_shipments[]` (status,
+    awb, lrn, label_url, courier_name) AND the top-level mirrors
+    (`shiprocket_status`, etc.). Returns the refreshed order doc.
+
+    Use this after manually completing the association step in
+    Shiprocket's Cargo panel so the UI catches up without waiting for
+    the next webhook event.
+    """
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    shipments = order.get("shiprocket_shipments") or []
+    # Legacy single-shipment orders — build a synthetic shipment row
+    # from the top-level mirrors so we can refresh them too.
+    if not shipments and order.get("shiprocket_order_id"):
+        shipments = [{
+            "vertical": order.get("shiprocket_vertical") or "courier",
+            "order_id": order.get("shiprocket_order_id"),
+            "shipment_id": order.get("shiprocket_shipment_id"),
+            "awb_code": order.get("shiprocket_waybill_no") or "",
+            "courier_name": order.get("shiprocket_courier_name") or "",
+        }]
+
+    if not shipments:
+        raise HTTPException(status_code=400, detail="No Shiprocket shipments to refresh")
+
+    updates: list[dict] = []
+    refreshed_count = 0
+    overall_status: Optional[str] = None
+
+    for sh in shipments:
+        sr_oid = sh.get("order_id")
+        vertical = sh.get("vertical") or "courier"
+        if not sr_oid:
+            continue
+        try:
+            if vertical == "cargo":
+                from shiprocket.cargo_service import get_cargo_order_status
+                resp = await get_cargo_order_status(int(sr_oid))
+                # Cargo response format varies — pluck the most likely keys.
+                payload = resp.get("data", resp) if isinstance(resp, dict) else {}
+                if isinstance(payload, list):
+                    payload = payload[0] if payload else {}
+                sh_update = {
+                    "current_status": payload.get("current_status") or payload.get("status_name") or payload.get("status"),
+                    "awb_code": sh.get("awb_code") or payload.get("waybill_no") or payload.get("awb_no") or "",
+                    "lrn": sh.get("lrn") or payload.get("lrn") or "",
+                    "label_url": payload.get("label_url") or sh.get("label_url") or "",
+                    "courier_name": payload.get("delivery_partner_name") or sh.get("courier_name") or "",
+                    "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+                    "raw_status": payload,
+                }
+                # If we now have AWB and we previously were awaiting manual
+                # association, flip the flag off — admin completed the
+                # booking on the Shiprocket panel.
+                if sh_update["awb_code"] and sh.get("awaiting_manual_association"):
+                    sh_update["awaiting_manual_association"] = False
+            else:
+                # Courier (B2C) — reuse the existing tracking helper.
+                from shiprocket.services.tracking import TrackingService
+                from shiprocket.services.auth import auth_service
+                import httpx as _httpx
+                async with _httpx.AsyncClient(timeout=30) as cli:
+                    headers = await auth_service.get_headers()
+                    ts = TrackingService(cli, headers)
+                    if sh.get("awb_code"):
+                        result = await ts.track_by_awb(sh["awb_code"])
+                    elif sh.get("shipment_id"):
+                        result = await ts.track_by_shipment_id(int(sh["shipment_id"]))
+                    else:
+                        continue
+                tracking_data = (result or {}).get("tracking_data") or {}
+                first_track = (tracking_data.get("shipment_track") or [{}])[0]
+                cs = first_track.get("current_status") or ""
+                sh_update = {
+                    "current_status": cs,
+                    "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+                    "raw_status": tracking_data,
+                }
+            sh.update(sh_update)
+            refreshed_count += 1
+            if sh_update.get("current_status"):
+                overall_status = sh_update["current_status"]
+        except Exception as e:  # noqa: BLE001
+            sh["last_refresh_error"] = str(e)[:500]
+            logger.warning(f"[refresh-status] shipment refresh failed for {sr_oid}: {e}")
+
+    set_doc: dict = {
+        "shiprocket_shipments": shipments,
+        "shiprocket_last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if overall_status:
+        set_doc["shiprocket_current_status"] = overall_status
+    await db.orders.update_one({"id": order_id}, {"$set": set_doc})
+
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {
+        "success": True,
+        "refreshed_count": refreshed_count,
+        "shipments": fresh.get("shiprocket_shipments", []),
+        "shiprocket_current_status": fresh.get("shiprocket_current_status"),
+        "order": fresh,
     }
 
 
