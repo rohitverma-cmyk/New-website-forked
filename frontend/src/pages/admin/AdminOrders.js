@@ -1150,16 +1150,35 @@ const AdminOrders = () => {
                       >
                         <RefreshCw size={14} />
                       </button>
-                      {(selectedOrder.shiprocket_shipments || []).some(s => (s.vertical || 'courier') === 'cargo') && (
+                      {(() => {
+                        // Cargo recreate button visibility:
+                        //   • Any shiprocket reference exists (shipments[] or top-level)
+                        //   • Order is B2B/bulk (all items have order_type=production)
+                        //     OR was already pushed via Cargo (vertical='cargo' on
+                        //     any shipment or top-level shiprocket_vertical='cargo')
+                        // Legacy orders that didn't store `vertical` still qualify
+                        // when their items are all production-type — Cargo is the
+                        // only path for those.
+                        const ships = selectedOrder.shiprocket_shipments || [];
+                        const hasAnySr = !!(selectedOrder.shiprocket_order_id || ships.length);
+                        if (!hasAnySr) return null;
+                        const isCargoMarked = ships.some(s => (s.vertical || '') === 'cargo')
+                          || selectedOrder.shiprocket_vertical === 'cargo';
+                        const isBulkOrder = (selectedOrder.items || []).length > 0
+                          && (selectedOrder.items || []).every(it => (it.order_type || '').toLowerCase() === 'production');
+                        if (!isCargoMarked && !isBulkOrder) return null;
+                        return (
                         <button
                           onClick={async () => {
-                            const cargoRows = (selectedOrder.shiprocket_shipments || []).filter(s => (s.vertical || 'courier') === 'cargo');
-                            const oldIds = cargoRows.map(s => s.order_id).filter(Boolean).join(', ');
+                            const oldIds = (ships.length
+                              ? ships.map(s => s.order_id).filter(Boolean)
+                              : (selectedOrder.shiprocket_order_id ? [selectedOrder.shiprocket_order_id] : [])
+                            ).join(', ');
                             if (!window.confirm(
                               `Delete & recreate Cargo shipment(s)?\n\n` +
                               `This will:\n` +
-                              `• Archive the current Cargo record(s) ${oldIds ? '(SR IDs: ' + oldIds + ')' : ''}\n` +
-                              `• Generate fresh Shiprocket Cargo orders for ${cargoRows.length} supplier(s)\n\n` +
+                              `• Archive the current Cargo record(s)${oldIds ? ' (SR IDs: ' + oldIds + ')' : ''}\n` +
+                              `• Generate fresh Shiprocket Cargo order(s) for this order\n\n` +
                               `IMPORTANT: The OLD Cargo IDs above will still exist in Shiprocket's queue. You must manually cancel/discard them via cargo.shiprocket.in once the new push succeeds.\n\n` +
                               `Continue?`
                             )) return;
@@ -1184,7 +1203,8 @@ const AdminOrders = () => {
                         >
                           <Trash2 size={14} />
                         </button>
-                      )}
+                        );
+                      })()}
                     </div>
                   ) : selectedOrder.shiprocket_order_id ? (
                     <div className="flex items-center gap-2" data-testid="admin-order-sr-status">

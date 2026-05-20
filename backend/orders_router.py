@@ -1802,10 +1802,34 @@ async def admin_cargo_force_recreate(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    existing = order.get("shiprocket_shipments") or []
-    if not existing and not order.get("shiprocket_order_id"):
-        # Nothing to recreate — fall through to a fresh push
-        existing = []
+    existing = list(order.get("shiprocket_shipments") or [])
+
+    # Backfill: legacy orders may have only the top-level `shiprocket_order_id`
+    # without a `shipments[]` row. Synthesize one so we can archive + recreate
+    # consistently.
+    if not existing and order.get("shiprocket_order_id"):
+        items = order.get("items") or []
+        # Best-effort seller_id: from first item or top-level
+        sid = (items[0].get("seller_id") if items else "") or order.get("seller_id") or ""
+        existing.append({
+            "seller_id": sid,
+            "seller_company": (items[0].get("seller_company") if items else "") or "",
+            "items_count": len(items),
+            "subtotal": round(sum(float(i.get("price_per_meter", 0)) * float(i.get("actual_quantity") or i.get("quantity", 1)) for i in items), 2),
+            "success": True,
+            "order_id": str(order.get("shiprocket_order_id") or ""),
+            "shipment_id": order.get("shiprocket_shipment_id"),
+            "awb_code": order.get("shiprocket_waybill_no") or order.get("awb_code") or "",
+            "courier_name": order.get("shiprocket_courier_name") or order.get("courier_name") or "",
+            "vertical": order.get("shiprocket_vertical") or "",
+            "synthesized_for_recreate": True,
+        })
+
+    if not existing:
+        raise HTTPException(
+            status_code=400,
+            detail="No Shiprocket records to recreate — nothing to delete.",
+        )
 
     # Determine which rows we're recreating. If `selected_seller_ids`
     # filter is given, only archive+recreate those; the rest stay put.
@@ -1813,11 +1837,31 @@ async def admin_cargo_force_recreate(
         [s for s in existing if (s.get("seller_id") or "") in selected_seller_ids]
         if selected_seller_ids else existing
     )
-    cargo_rows = [s for s in target_rows if (s.get("vertical") or "courier") == "cargo"]
-    if existing and not cargo_rows and selected_seller_ids:
+
+    # "Cargo" check: a row counts as cargo if either (a) it has
+    # vertical=='cargo', OR (b) vertical is empty/missing AND the order's
+    # items are all production-type (legacy data didn't store vertical).
+    items = order.get("items") or []
+    order_is_bulk = bool(items) and all(
+        (it.get("order_type") or "").lower() == "production" for it in items
+    )
+    def _is_cargo_row(s):
+        v = (s.get("vertical") or "").strip().lower()
+        if v == "cargo":
+            return True
+        if v in ("", "unknown") and order_is_bulk:
+            return True
+        return False
+
+    cargo_rows = [s for s in target_rows if _is_cargo_row(s)]
+    if not cargo_rows:
         raise HTTPException(
             status_code=400,
-            detail="Selected suppliers are not Cargo shipments — use the normal Re-push for courier.",
+            detail=(
+                "This order has no Cargo shipments to recreate. "
+                "Force-recreate is restricted to Cargo (B2B) — courier shipments "
+                "should use the normal Re-push button."
+            ),
         )
 
     now_iso = datetime.now(timezone.utc).isoformat()
