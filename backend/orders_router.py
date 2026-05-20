@@ -1590,7 +1590,7 @@ async def create_shiprocket_shipments_multi(order: dict, only_seller_ids: Option
             )
         except Exception as e:
             logger.exception(f"[shiprocket-multi] supplier {sid} push raised: {e}")
-            res = {"success": False, "error": str(e)}
+            res = {"success": False, "error": str(e), "raw_error": str(e)}
         shipment = {
             "seller_id": sid if sid != "_unknown" else "",
             "seller_company": (seller_doc or {}).get("company_name") or (seller_doc or {}).get("name") or "",
@@ -1604,6 +1604,10 @@ async def create_shiprocket_shipments_multi(order: dict, only_seller_ids: Option
             "courier_name": res.get("courier_name", ""),
             "vertical": res.get("vertical", "courier"),
             "error": res.get("error", ""),
+            # Persist the raw provider response so the admin can inspect
+            # exactly what Shiprocket said when a push fails. Trimmed to
+            # 4 KB to keep the order doc reasonable. Only set on failure.
+            "raw_error": (str(res.get("error") or "") if not res.get("success") else "")[:4000],
             "pushed_at": datetime.now(timezone.utc).isoformat(),
         }
         shipments.append(shipment)
@@ -1740,6 +1744,70 @@ async def admin_push_to_shiprocket(
         "courier_name": first_ok.get("courier_name") or "",
         "message": f"Pushed {new_ok}/{len(new_shipments)} shipment{'s' if len(new_shipments) > 1 else ''}",
     }
+
+
+@router.get("/admin/shiprocket-logs/{order_id}")
+async def admin_get_shiprocket_logs(
+    order_id: str,
+    lines: int = 200,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Tail the supervisor backend log and return the most recent
+    Shiprocket-related lines for this order. Useful when a push fails
+    and you want to read the exact provider response without SSHing
+    into the container.
+
+    Filter: any line that mentions either the order_id, the order_number,
+    or starts with `[shiprocket`, `[cargo-`, `[shiprocket-route]`.
+    """
+    order = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0, "id": 1, "order_number": 1, "shiprocket_shipments": 1},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    log_paths = [
+        "/var/log/supervisor/backend.err.log",
+        "/var/log/supervisor/backend.out.log",
+    ]
+    # Match lines that mention THIS specific order (by number or id)
+    # AND are Shiprocket/Cargo-related. We don't include the bare
+    # `[shiprocket` tag as a positive — that would pull lines from
+    # unrelated orders into the response.
+    order_keys = [k for k in [order.get("order_number", ""), order.get("id", "")] if k]
+    if not order_keys:
+        return {"order_id": order.get("id"), "order_number": order.get("order_number"), "shipments": order.get("shiprocket_shipments", []), "log_lines": [], "count": 0}
+
+    collected = []
+    for path in log_paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                buf = f.readlines()[-5000:]
+            for ln in buf:
+                low = ln.lower()
+                # Require the order id or number to appear in the line
+                if not any(k.lower() in low for k in order_keys):
+                    continue
+                # And the line must be shiprocket/cargo-related
+                if "shiprocket" not in low and "cargo" not in low:
+                    continue
+                collected.append({"source": os.path.basename(path), "line": ln.rstrip("\n")})
+        except FileNotFoundError:
+            continue
+
+    # Trim to the most recent N
+    collected = collected[-max(50, min(1000, lines)):]
+
+    return {
+        "order_id": order.get("id"),
+        "order_number": order.get("order_number"),
+        "shipments": order.get("shiprocket_shipments", []),
+        "log_lines": collected,
+        "count": len(collected),
+    }
+
+
 
 
 @router.get("/{order_id}")

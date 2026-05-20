@@ -80,6 +80,10 @@ const AdminOrders = () => {
   // Per-seller commission breakdown for the open order
   const [sellerComms, setSellerComms] = useState(null);
   const [commResyncBusy, setCommResyncBusy] = useState(false);
+  // Shiprocket raw-logs viewer state
+  const [srLogsOpen, setSrLogsOpen] = useState(false);
+  const [srLogs, setSrLogs] = useState(null);
+  const [srLogsBusy, setSrLogsBusy] = useState(false);
 
   // Fetch per-seller commissions whenever the selected order changes
   const fetchSellerComms = async (orderId) => {
@@ -1077,6 +1081,25 @@ const AdminOrders = () => {
                       >
                         {pushingShiprocket ? <Loader2 size={14} className="animate-spin" /> : (orderSuppliers.length > 1 ? "Push…" : "Re-push")}
                       </button>
+                      <button
+                        onClick={async () => {
+                          setSrLogsBusy(true); setSrLogs(null); setSrLogsOpen(true);
+                          try {
+                            const { data } = await api.get(`/orders/admin/shiprocket-logs/${selectedOrder.id}?lines=400`);
+                            setSrLogs(data);
+                          } catch (e) {
+                            toast.error(e.response?.data?.detail || "Failed to load logs");
+                            setSrLogs({ log_lines: [], shipments: [] });
+                          } finally {
+                            setSrLogsBusy(false);
+                          }
+                        }}
+                        className="px-2 py-2 text-blue-600 hover:bg-blue-50 rounded-lg text-xs"
+                        title="View raw Shiprocket request/response logs for this order"
+                        data-testid="admin-order-sr-logs-btn"
+                      >
+                        <FileText size={14} />
+                      </button>
                     </div>
                   ) : selectedOrder.shiprocket_order_id ? (
                     <div className="flex items-center gap-2" data-testid="admin-order-sr-status">
@@ -1327,6 +1350,90 @@ const AdminOrders = () => {
                     Push {srPickerSelected.length || ""} shipment{srPickerSelected.length === 1 ? "" : "s"}
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== SHIPROCKET RAW LOGS MODAL ===== */}
+        {srLogsOpen && selectedOrder && (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" data-testid="sr-logs-modal" onClick={() => setSrLogsOpen(false)}>
+            <div className="bg-white rounded-xl w-full max-w-4xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="p-4 border-b flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-gray-900">Shiprocket Logs · {selectedOrder.order_number}</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Raw request/response trace from the Shiprocket Cargo + Courier APIs</p>
+                </div>
+                <button onClick={() => setSrLogsOpen(false)} className="p-1 text-gray-400 hover:text-gray-600"><X size={18} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                {srLogsBusy && <div className="flex justify-center py-12"><Loader2 className="animate-spin text-blue-600" /></div>}
+                {!srLogsBusy && srLogs && (
+                  <>
+                    {/* Per-shipment summary block — raw_error + IDs */}
+                    {srLogs.shipments?.length > 0 && (
+                      <div>
+                        <h4 className="text-xs font-semibold uppercase text-gray-500 mb-2">Shipments</h4>
+                        <div className="space-y-2">
+                          {srLogs.shipments.map((sh, i) => (
+                            <div
+                              key={i}
+                              className={`p-3 rounded-lg border text-xs ${sh.success ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-200'}`}
+                              data-testid={`sr-log-shipment-${i}`}
+                            >
+                              <div className="flex items-center justify-between gap-3 flex-wrap">
+                                <div>
+                                  <p className="font-semibold text-gray-900">{sh.seller_company || sh.seller_id || '—'} {sh.suffix && <span className="text-[10px] text-gray-500">· {sh.suffix}</span>}</p>
+                                  <p className="text-[11px] text-gray-500">vertical={sh.vertical || '—'} · items={sh.items_count} · ₹{Number(sh.subtotal || 0).toLocaleString()}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className={`font-semibold ${sh.success ? 'text-emerald-700' : 'text-red-700'}`}>{sh.success ? 'OK' : 'FAILED'}</p>
+                                  {sh.order_id && <p className="text-[11px] font-mono text-gray-600">SR #{sh.order_id}</p>}
+                                  {sh.shipment_id && <p className="text-[11px] font-mono text-gray-600">ship_id={sh.shipment_id}</p>}
+                                </div>
+                              </div>
+                              {sh.error && (
+                                <pre className="mt-2 p-2 bg-white border border-red-200 rounded text-[11px] font-mono whitespace-pre-wrap break-all text-red-800" data-testid={`sr-log-error-${i}`}>{sh.raw_error || sh.error}</pre>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Backend log tail */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <h4 className="text-xs font-semibold uppercase text-gray-500">Backend log tail ({srLogs.count || 0} lines)</h4>
+                        {srLogs.log_lines?.length > 0 && (
+                          <button
+                            onClick={() => {
+                              const text = srLogs.log_lines.map(l => `[${l.source}] ${l.line}`).join("\n");
+                              navigator.clipboard.writeText(text);
+                              toast.success("Copied to clipboard");
+                            }}
+                            className="text-[11px] text-blue-600 hover:underline"
+                          >Copy all</button>
+                        )}
+                      </div>
+                      {srLogs.log_lines?.length === 0 ? (
+                        <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 text-center text-xs text-gray-500">
+                          No Shiprocket-related log lines found for this order in the recent backend log buffer.
+                          Set <code className="bg-white px-1.5 py-0.5 rounded border">SHIPROCKET_VERBOSE_LOG=true</code> in backend .env to capture full request payloads on the next push.
+                        </div>
+                      ) : (
+                        <div className="bg-gray-900 rounded-lg overflow-hidden">
+                          <pre className="text-[10.5px] font-mono text-emerald-300 p-3 overflow-x-auto whitespace-pre-wrap break-all max-h-[40vh] overflow-y-auto leading-relaxed" data-testid="sr-log-tail">
+{(srLogs.log_lines || []).map(l => `[${l.source}] ${l.line}`).join("\n")}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="p-3 border-t flex justify-end">
+                <button onClick={() => setSrLogsOpen(false)} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Close</button>
               </div>
             </div>
           </div>

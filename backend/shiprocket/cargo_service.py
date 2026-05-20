@@ -242,18 +242,37 @@ async def create_cargo_shipment(order: dict, db) -> dict:
     headers = await _headers()
 
     # ── Step 1: order creation ──
+    create_url = f"{BASE_URL}/api/external/order_creation/"
+    logger.info(
+        f"[cargo-create] order={order.get('order_number')} POST {create_url} "
+        f"src={src['pincode']} dst={dst['pincode']} invoice_value={invoice_value} "
+        f"weight_kg={weight} no_of_packages={no_of_packages}"
+    )
+    # Verbose payload trace — gated by SHIPROCKET_VERBOSE_LOG=true so we
+    # can flip it on in prod without redeploying when there's a bug.
+    if os.environ.get("SHIPROCKET_VERBOSE_LOG", "false").lower() == "true":
+        import json as _json
+        logger.info(f"[cargo-create] payload={_json.dumps(create_payload)[:2000]}")
     async with httpx.AsyncClient(timeout=60) as c:
-        r1 = await c.post(f"{BASE_URL}/api/external/order_creation/", headers=headers, json=create_payload)
+        r1 = await c.post(create_url, headers=headers, json=create_payload)
+    logger.info(f"[cargo-create] response status={r1.status_code} body={r1.text[:1500]}")
     if r1.status_code not in (200, 201):
         raise RuntimeError(f"Cargo order_creation failed [{r1.status_code}]: {r1.text[:500]}")
     create_resp = r1.json()
     if not create_resp.get("success"):
         raise RuntimeError(f"Cargo order_creation returned success=false: {create_resp}")
 
-    cargo_order_id = create_resp["order_id"]
-    mode_id = create_resp["mode_id"]
-    delivery_partner_id = create_resp["delivery_partner_id"]
+    cargo_order_id = create_resp.get("order_id")
+    mode_id = create_resp.get("mode_id")
+    delivery_partner_id = create_resp.get("delivery_partner_id")
     delivery_partner_name = create_resp.get("delivery_partner_name", "")
+    if not cargo_order_id or not mode_id or not delivery_partner_id:
+        # Surface the exact response so we never silently ship a half-baked id.
+        raise RuntimeError(
+            f"Cargo order_creation response missing keys "
+            f"(order_id={cargo_order_id!r}, mode_id={mode_id!r}, delivery_partner_id={delivery_partner_id!r}). "
+            f"Full response: {create_resp}"
+        )
 
     # ── Step 2: shipment association (books the pickup) ──
     pickup_dt = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
@@ -274,14 +293,27 @@ async def create_cargo_shipment(order: dict, db) -> dict:
         "source": "API",
     }
 
+    associate_url = f"{BASE_URL}/api/order_shipment_association/"
+    logger.info(
+        f"[cargo-associate] order={order.get('order_number')} POST {associate_url} "
+        f"cargo_order_id={cargo_order_id} mode_id={mode_id} delivery_partner_id={delivery_partner_id} "
+        f"pickup_dt={pickup_dt} eway_bill_no={eway_bill_no}"
+    )
+    if os.environ.get("SHIPROCKET_VERBOSE_LOG", "false").lower() == "true":
+        import json as _json
+        logger.info(f"[cargo-associate] payload={_json.dumps(associate_payload, default=str)[:2000]}")
     async with httpx.AsyncClient(timeout=60) as c:
         r2 = await c.post(
-            f"{BASE_URL}/api/order_shipment_association/",
+            associate_url,
             headers=headers,
             json=associate_payload,
         )
+    logger.info(f"[cargo-associate] response status={r2.status_code} body={r2.text[:1500]}")
     if r2.status_code not in (200, 201):
-        raise RuntimeError(f"Cargo shipment_association failed [{r2.status_code}]: {r2.text[:500]}")
+        raise RuntimeError(
+            f"Cargo shipment_association failed [{r2.status_code}]: {r2.text[:500]} "
+            f"(cargo_order_id={cargo_order_id})"
+        )
     assoc_resp = r2.json()
 
     return {
