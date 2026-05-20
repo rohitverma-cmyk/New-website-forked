@@ -255,8 +255,11 @@ const VendorOrders = () => {
                     onMarkReady={() => setReadyOrder(selectedOrder)}
                   />
                 )}
-                {/* Non-provisional Mark Ready CTA — supplier uploads rolls + invoice */}
-                {!selectedOrder.is_provisional && ["confirmed", "processing"].includes(selectedOrder.status) && !selectedOrder.goods_ready_at && (
+                {/* Non-provisional Mark Ready CTA — supplier uploads rolls + invoice.
+                    Includes `status='paid'` since some legacy/credit-path orders
+                    don't advance to "confirmed" but are functionally ready for
+                    dispatch the moment payment is captured. */}
+                {!selectedOrder.is_provisional && ["confirmed", "processing", "paid"].includes(selectedOrder.status) && !selectedOrder.goods_ready_at && (
                   <MarkReadyBanner order={selectedOrder} onMarkReady={() => setReadyOrder(selectedOrder)} />
                 )}
                 {/* Goods already marked ready — show summary + packing slip download */}

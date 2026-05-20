@@ -2322,9 +2322,11 @@ async def update_payment_status(order_id: str, payload: dict):
 
     if new_status == "paid":
         set_fields["paid_at"] = datetime.now(timezone.utc).isoformat()
-        # Bump fulfillment status only if still in the pre-pay limbo
+        # Bump fulfillment status only if still in the pre-pay limbo. Once
+        # paid, advance to "confirmed" so vendor's Mark Ready CTA renders
+        # (don't roll backward from goods_ready/shipped/delivered).
         if order.get("status") in ("payment_pending", "pending"):
-            set_fields["status"] = "pending"
+            set_fields["status"] = "confirmed"
 
     # Audit trail (append-only)
     audit = {
