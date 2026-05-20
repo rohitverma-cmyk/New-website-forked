@@ -843,26 +843,24 @@ async def verify_payment(verification: PaymentVerification):
         update_doc["payment_status"] = "advance_paid"
         update_doc["status"] = "provisional"
         update_doc["advance_paid_at"] = now
-        # Provisional advance triggers vendor 24h Accept/Cancel window.
-        # Each item's seller must accept; until then `vendor_acceptance_status`
-        # is `pending`. Auto-cancel sweep enforces SLA.
-        update_doc["vendor_acceptance_status"] = "pending"
-        update_doc["vendor_action_deadline"] = (
-            datetime.now(timezone.utc) + timedelta(hours=24)
-        ).isoformat()
+        # Vendor accept-step removed (Feb 2026 product decision):
+        # the order is considered auto-confirmed at payment-capture
+        # time. Vendor goes straight to "Mark Ready". We still stamp
+        # `accepted` on the field for downstream compatibility.
+        update_doc["vendor_acceptance_status"] = "accepted"
+        update_doc["vendor_accepted_at"] = now
+        update_doc["vendor_accept_step_skipped"] = True
     else:
         update_doc["payment_status"] = "paid"
         update_doc["status"] = "confirmed"
         update_doc["paid_at"] = now
         if payment_stage == "balance":
             update_doc["balance_paid_at"] = now
-        # Non-provisional or balance payment — also opens vendor SLA
-        # window if first payment, but only when fresh order (not balance).
+        # Same: vendor accept-step skipped — orders auto-confirmed.
         if payment_stage == "full":
-            update_doc["vendor_acceptance_status"] = "pending"
-            update_doc["vendor_action_deadline"] = (
-                datetime.now(timezone.utc) + timedelta(hours=24)
-            ).isoformat()
+            update_doc["vendor_acceptance_status"] = "accepted"
+            update_doc["vendor_accepted_at"] = now
+            update_doc["vendor_accept_step_skipped"] = True
 
     await db.orders.update_one(
         {"razorpay_order_id": verification.razorpay_order_id},

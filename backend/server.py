@@ -580,6 +580,12 @@ orders_router.set_db(db)
 import internal_events  # noqa: E402
 internal_events.set_db(db)
 orders_router.init_razorpay()
+
+# Auto-CC every outbound mail to mail@locofast.com (transparency for ops).
+# Must run before any router imports `resend` and caches `Emails.send`.
+import mail_cc_patch  # noqa: E402
+mail_cc_patch.install()
+
 email_router.set_db(db)
 cloudinary_router.set_db(db)
 cloudinary_router.init_cloudinary()

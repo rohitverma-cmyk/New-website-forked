@@ -248,16 +248,6 @@ const VendorOrders = () => {
               </div>
 
               <div className="p-6 space-y-6">
-                {/* Vendor 24h Accept/Cancel banner — visible for pending acceptance */}
-                {selectedOrder.vendor_acceptance_status === "pending" && (
-                  <VendorAcceptanceBanner
-                    order={selectedOrder}
-                    onAction={(updated) => {
-                      setSelectedOrder(updated);
-                      setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
-                    }}
-                  />
-                )}
                 {/* Provisional bulk order banner */}
                 {selectedOrder.is_provisional && (
                   <ProvisionalBanner

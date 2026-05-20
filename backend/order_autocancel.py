@@ -94,56 +94,20 @@ async def cancel_stale_orders(db) -> dict:
 
 
 async def cancel_stale_vendor_orders(db) -> dict:
-    """Vendor 24h SLA sweep. An order with `vendor_acceptance_status: pending`
-    and `vendor_action_deadline` past now is auto-cancelled the same way a
-    vendor-cancellation would: order.status → cancelled, customer email,
-    internal mail chain. Multi-vendor orders are cancelled in full (single
-    payment makes per-vendor partial cancel non-trivial; sales ops can
-    re-place the order against another vendor)."""
-    now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
-    sla_cutoff = now_iso
-    query = {
-        "vendor_acceptance_status": "pending",
-        "vendor_action_deadline": {"$lt": sla_cutoff},
-        "status": {"$nin": ["cancelled", "delivered"]},
-    }
-    cancelled_orders = []
-    async for o in db.orders.find(query, {"_id": 0}):
-        cancelled_orders.append(o)
+    """DEPRECATED (Feb 2026): vendor 24h Accept/Cancel SLA was removed
+    per product decision — orders are auto-confirmed at payment capture
+    and the vendor goes straight to "Mark Ready". This sweep is now a
+    no-op. Kept around so the scheduler still picks it up without
+    blowing up, but it returns 0 every time."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    return {"vendor_auto_cancelled": 0, "swept_at": now_iso, "deprecated": True}
 
-    if not cancelled_orders:
-        return {"vendor_auto_cancelled": 0, "swept_at": now_iso}
-
-    for o in cancelled_orders:
-        await db.orders.update_one(
-            {"id": o["id"]},
-            {"$set": {
-                "status": "cancelled",
-                "vendor_acceptance_status": "auto_cancelled",
-                "cancellation_reason": "vendor_sla_missed",
-                "cancelled_at": now_iso,
-                "auto_cancelled_at": now_iso,
-                "updated_at": now_iso,
-            }}
-        )
-        # Notify customer + internal stakeholders. Best-effort.
-        try:
-            from email_router import send_order_cancellation_email  # type: ignore
-            await send_order_cancellation_email(o, reason="The supplier did not confirm within 24 hours. Your advance will be refunded shortly.")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[vendor-sla] customer cancel email failed for {o.get('order_number')}: {e}")
-        try:
-            from internal_events import fire_internal_event, OrderEvent
-            await fire_internal_event(OrderEvent.VENDOR_AUTO_CANCELLED, o, extra={
-                "reason": "Vendor did not accept within 24h SLA",
-                "deadline": o.get("vendor_action_deadline"),
-            })
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[vendor-sla] internal event failed for {o.get('order_number')}: {e}")
-        logger.info(f"[vendor-sla] auto-cancelled {o.get('order_number')}")
-
-    return {"vendor_auto_cancelled": len(cancelled_orders), "swept_at": now_iso}
+    # ─── Legacy implementation (kept commented for audit, dead code) ───
+    # query = {  # noqa: F841
+    #     "vendor_acceptance_status": "pending",
+    #     "vendor_action_deadline": {"$lt": now_iso},
+    #     "status": {"$nin": ["cancelled", "delivered"]},
+    # }
 
 
 async def start_autocancel_poller(db):
