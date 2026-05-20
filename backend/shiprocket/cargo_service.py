@@ -116,6 +116,73 @@ def _estimate_weight_kg(items: list) -> float:
     return max(10.0, round(total_m * 0.2, 2))
 
 
+async def _build_supporting_docs(order: dict, seller_id: str) -> list:
+    """Assemble the `supporting_docs` array Shiprocket Cargo requires
+    for step-2 (`order_shipment_association`). Per business decision:
+
+      1. Vendor's own tax invoice (from `vendor_invoices` keyed by
+         seller_id, populated when the supplier hits "Mark Goods Ready"
+         and uploads their invoice).
+      2. The packing slip PDF for this supplier — rendered via
+         `packing_slip.generate_packing_slip_pdf(order, seller_id)` and
+         uploaded to Cloudinary (folder `locofast/shiprocket-docs/`).
+         Cached on the order doc under `packing_slip_urls[seller_id]`
+         so re-pushes don't re-upload.
+
+    Returns a list of public URLs (max 5 — Shiprocket's limit).
+    Never raises — if anything fails we log + return whatever we have,
+    because returning an empty list lets the upstream see exactly which
+    side of the integration is missing the doc.
+    """
+    docs: list = []
+
+    # 1. Vendor invoice (uploaded by supplier at "mark goods ready")
+    for vi in (order.get("vendor_invoices") or []):
+        if (vi.get("seller_id") or "") == seller_id and vi.get("url"):
+            docs.append(vi["url"])
+            break
+
+    # 2. Packing slip — generated + cached on first push
+    try:
+        from auth_helpers import db as _db  # late import to avoid cycle
+        cached = (order.get("packing_slip_urls") or {}).get(seller_id)
+        if cached:
+            docs.append(cached)
+        else:
+            # Render fresh PDF and upload to Cloudinary
+            from packing_slip import generate_packing_slip_pdf
+            import cloudinary.uploader
+            pdf_buf = generate_packing_slip_pdf(order, seller_id)
+            order_num = (order.get("order_number") or order.get("id", ""))[:40].replace("/", "-")
+            public_id = f"packing-slip-{order_num}-{seller_id[:8]}"
+            try:
+                result = await asyncio.to_thread(
+                    cloudinary.uploader.upload,
+                    pdf_buf.getvalue(),
+                    folder="locofast/shiprocket-docs",
+                    public_id=public_id,
+                    resource_type="raw",
+                    format="pdf",
+                    overwrite=True,
+                    access_mode="public",
+                )
+                slip_url = result.get("secure_url")
+                if slip_url:
+                    docs.append(slip_url)
+                    # Cache so next push doesn't re-upload
+                    await _db.orders.update_one(
+                        {"id": order["id"]},
+                        {"$set": {f"packing_slip_urls.{seller_id}": slip_url}},
+                    )
+                    logger.info(f"[cargo-docs] packing slip uploaded to {slip_url}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[cargo-docs] packing slip cloudinary upload failed: {e}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[cargo-docs] packing slip generation failed: {e}")
+
+    return docs[:5]
+
+
 async def create_cargo_shipment(order: dict, db) -> dict:
     """Two-step Cargo create flow. Returns a dict mirroring the courier
     flow's shape: { vertical, shipment_id, order_id, waybill_no, label_url,
@@ -274,6 +341,11 @@ async def create_cargo_shipment(order: dict, db) -> dict:
             f"Full response: {create_resp}"
         )
 
+    # Assemble supporting_docs: vendor tax invoice + packing slip PDF
+    # for this specific seller. Cargo step-2 will 400 with
+    # "Supporting docs are mandatory." if this is empty.
+    supporting_docs = await _build_supporting_docs(order, seller_id)
+
     # ── Step 2: shipment association (books the pickup) ──
     pickup_dt = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
     associate_payload = {
@@ -289,9 +361,15 @@ async def create_cargo_shipment(order: dict, db) -> dict:
         "invoice_value": invoice_value,
         "invoice_number": (order.get("order_number") or order.get("id", ""))[:60],
         "invoice_date": (order.get("created_at") or datetime.now(timezone.utc).isoformat())[:10],
-        "supporting_docs": [order.get("invoice_pdf_url")] if order.get("invoice_pdf_url") else [],
+        "supporting_docs": supporting_docs,
         "source": "API",
     }
+    if not supporting_docs:
+        logger.warning(
+            f"[cargo-associate] order={order.get('order_number')} no supporting_docs assembled — "
+            f"vendor_invoice missing for seller={seller_id} and packing slip upload failed. "
+            f"Cargo will reject with 'Supporting docs are mandatory.'"
+        )
 
     associate_url = f"{BASE_URL}/api/order_shipment_association/"
     logger.info(
