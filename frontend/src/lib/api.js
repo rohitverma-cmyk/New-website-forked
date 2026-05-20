@@ -447,8 +447,8 @@ export const deleteVendorFabric = (id) => api.delete(`/vendor/fabrics/${id}`);
 export const getVendorOrders = () => api.get("/vendor/orders");
 export const vendorMarkGoodsReady = (orderId, items, vendor_invoice) =>
   api.post(`/orders/${orderId}/mark-goods-ready`, { items, vendor_invoice });
-export const adminMarkBalancePaid = (orderId) =>
-  api.post(`/orders/${orderId}/mark-balance-paid`);
+export const adminMarkBalancePaid = (orderId, payload = {}) =>
+  api.post(`/orders/${orderId}/mark-balance-paid`, payload);
 export const vendorAcceptOrder = (orderId) => api.post(`/orders/${orderId}/vendor-accept`);
 export const vendorCancelOrder = (orderId, reason) =>
   api.post(`/orders/${orderId}/vendor-cancel`, { reason });

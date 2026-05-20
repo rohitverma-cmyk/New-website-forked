@@ -2707,10 +2707,20 @@ async def start_balance_payment_via_share(order_id: str, token: str):
 
 
 @router.post("/{order_id}/mark-balance-paid")
-async def admin_mark_balance_paid(order_id: str, admin=Depends(auth_helpers.get_current_admin)):
+async def admin_mark_balance_paid(
+    order_id: str,
+    payload: dict = Body(default={}),
+    admin=Depends(auth_helpers.get_current_admin),
+):
     """Finance-only manual marker — same effect as a successful Razorpay
     balance payment. Triggers inventory deduction + payout materialization
-    + Shiprocket push."""
+    + Shiprocket push.
+
+    Optional body fields (recorded for audit):
+      • payment_method: neft | rtgs | imps | upi | cheque | cash | razorpay
+      • utr: bank UTR / reference number
+      • notes: free-form note from the finance team
+    """
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -2718,18 +2728,23 @@ async def admin_mark_balance_paid(order_id: str, admin=Depends(auth_helpers.get_
         raise HTTPException(status_code=400, detail="Balance is not pending — nothing to mark.")
 
     now = datetime.now(timezone.utc).isoformat()
-    await db.orders.update_one(
-        {"id": order_id},
-        {"$set": {
-            "payment_status": "paid",
-            "status": "confirmed",
-            "balance_paid_at": now,
-            "paid_at": now,
-            "balance_paid_manually": True,
-            "balance_paid_by": admin.get("email", "admin"),
-            "updated_at": now,
-        }},
-    )
+    method = (payload.get("payment_method") or "").strip().lower() or None
+    utr = (payload.get("utr") or "").strip() or None
+    notes = (payload.get("notes") or "").strip() or None
+
+    set_doc = {
+        "payment_status": "paid",
+        "status": "confirmed",
+        "balance_paid_at": now,
+        "paid_at": now,
+        "balance_paid_manually": True,
+        "balance_paid_by": admin.get("email", "admin"),
+        "balance_paid_method": method,
+        "balance_paid_utr": utr,
+        "balance_paid_notes": notes,
+        "updated_at": now,
+    }
+    await db.orders.update_one({"id": order_id}, {"$set": set_doc})
 
     # Inventory + payouts + Shiprocket (same trio as the auto-flow).
     fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})

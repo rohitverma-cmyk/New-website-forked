@@ -68,7 +68,11 @@ const AdminOrders = () => {
   const [srPickerSelected, setSrPickerSelected] = useState([]);
   const [srPickerForce, setSrPickerForce] = useState(false);
   // Mark-as-Paid (manual payment status override) state
+  // mode: "initial" (default) or "balance" — balance mode is fired
+  // from the new "Mark Balance Paid" button on goods-ready orders and
+  // sends payment_method/UTR/notes to the balance-paid endpoint.
   const [markPayOpen, setMarkPayOpen] = useState(false);
+  const [markPayMode, setMarkPayMode] = useState("initial");
   const [markPayForm, setMarkPayForm] = useState({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" });
   const [markPayBusy, setMarkPayBusy] = useState(false);
   // Provisional bulk order: Mark Balance Paid (admin override)
@@ -168,22 +172,38 @@ const AdminOrders = () => {
 
   const handleMarkBalancePaid = async () => {
     if (!selectedOrder) return;
-    const bal = Number(selectedOrder.balance_amount || 0);
-    if (!window.confirm(
-      `Mark balance of ₹${bal.toLocaleString("en-IN")} as paid for ${selectedOrder.order_number}?\n\n` +
-      `This will:\n• Move payment_status → paid\n• Trigger inventory deduction\n• Materialize vendor payouts\n• Push the order to Shiprocket\n\n` +
-      `Only use this when payment was received outside Razorpay (NEFT/UPI/cash).`
-    )) return;
+    // Open the same modal but in "balance" mode so finance can record
+    // method + UTR + notes before flipping the order to paid.
+    setMarkPayMode("balance");
+    setMarkPayForm({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" });
+    setMarkPayOpen(true);
+  };
+
+  const handleConfirmMarkBalancePaid = async () => {
+    if (!selectedOrder) return;
+    if (!markPayForm.payment_method) {
+      toast.error("Pick the payment method that was actually used");
+      return;
+    }
+    setMarkPayBusy(true);
     setBalancePaidBusy(true);
     try {
-      const res = await adminMarkBalancePaid(selectedOrder.id);
+      const res = await adminMarkBalancePaid(selectedOrder.id, {
+        payment_method: markPayForm.payment_method,
+        utr: markPayForm.utr,
+        notes: markPayForm.notes,
+      });
       toast.success("Balance marked as paid. Shipment pushed to Shiprocket.");
       setSelectedOrder(res.data.order);
+      setMarkPayOpen(false);
+      setMarkPayMode("initial");
+      setMarkPayForm({ payment_status: "paid", payment_method: "neft", utr: "", notes: "" });
       fetchOrders();
       fetchStats();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed to mark balance as paid");
     }
+    setMarkPayBusy(false);
     setBalancePaidBusy(false);
   };
 
@@ -1312,34 +1332,44 @@ const AdminOrders = () => {
           </div>
         )}
 
-        {/* ===== MARK AS PAID MODAL ===== */}
+        {/* ===== MARK AS PAID MODAL (initial OR balance) ===== */}
         {markPayOpen && selectedOrder && (
           <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" data-testid="mark-paid-modal" onClick={() => !markPayBusy && setMarkPayOpen(false)}>
             <div className="bg-white rounded-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
               <div className="p-5 border-b flex items-center justify-between">
                 <div>
-                  <h3 className="font-semibold text-gray-900">Manual Payment Status Update</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">Order {selectedOrder.order_number} · Currently <strong className="uppercase">{selectedOrder.payment_status || "pending"}</strong></p>
+                  <h3 className="font-semibold text-gray-900">
+                    {markPayMode === "balance" ? "Mark Balance Payment Received" : "Manual Payment Status Update"}
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Order {selectedOrder.order_number}
+                    {markPayMode === "balance"
+                      ? <> · Balance due <strong>₹{Number(selectedOrder.balance_amount || 0).toLocaleString("en-IN")}</strong></>
+                      : <> · Currently <strong className="uppercase">{selectedOrder.payment_status || "pending"}</strong></>
+                    }
+                  </p>
                 </div>
                 <button onClick={() => !markPayBusy && setMarkPayOpen(false)} className="p-1 text-gray-400 hover:text-gray-600" disabled={markPayBusy}><X size={18} /></button>
               </div>
               <div className="p-5 space-y-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">New Payment Status *</label>
-                  <select
-                    value={markPayForm.payment_status}
-                    onChange={(e) => setMarkPayForm({ ...markPayForm, payment_status: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
-                    data-testid="mark-paid-status-select"
-                  >
-                    <option value="paid">Paid</option>
-                    <option value="pending">Pending</option>
-                    <option value="initiated">Initiated</option>
-                    <option value="failed">Failed</option>
-                    <option value="refunded">Refunded</option>
-                  </select>
-                </div>
-                {markPayForm.payment_status === "paid" && (
+                {markPayMode !== "balance" && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">New Payment Status *</label>
+                    <select
+                      value={markPayForm.payment_status}
+                      onChange={(e) => setMarkPayForm({ ...markPayForm, payment_status: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                      data-testid="mark-paid-status-select"
+                    >
+                      <option value="paid">Paid</option>
+                      <option value="pending">Pending</option>
+                      <option value="initiated">Initiated</option>
+                      <option value="failed">Failed</option>
+                      <option value="refunded">Refunded</option>
+                    </select>
+                  </div>
+                )}
+                {(markPayMode === "balance" || markPayForm.payment_status === "paid") && (
                   <>
                     <div>
                       <label className="block text-xs font-medium text-gray-700 mb-1">Payment Method *</label>
@@ -1356,7 +1386,7 @@ const AdminOrders = () => {
                         <option value="cheque">Cheque</option>
                         <option value="cash">Cash</option>
                         <option value="razorpay">Razorpay (manual confirm)</option>
-                        <option value="credit">Locofast Credit</option>
+                        {markPayMode !== "balance" && <option value="credit">Locofast Credit</option>}
                       </select>
                     </div>
                     <div>
@@ -1377,27 +1407,33 @@ const AdminOrders = () => {
                     value={markPayForm.notes}
                     onChange={(e) => setMarkPayForm({ ...markPayForm, notes: e.target.value })}
                     rows={2}
-                    placeholder="e.g. Bank confirmation received via email from accounts team"
+                    placeholder={markPayMode === "balance" ? "e.g. Customer paid via NEFT on 19-May-2026 — confirmed by accounts team" : "e.g. Bank confirmation received via email from accounts team"}
                     className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
                     data-testid="mark-paid-notes"
                   />
                 </div>
-                {markPayForm.payment_status === "paid" && (
+                {markPayMode === "balance" ? (
+                  <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 text-xs text-orange-800">
+                    Confirming will: flip the order to <strong>paid + confirmed</strong>, deduct inventory, materialize vendor payouts, and push to Shiprocket. Only use this when payment was received outside Razorpay (NEFT / UPI / cheque / cash).
+                  </div>
+                ) : markPayForm.payment_status === "paid" && (
                   <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-800">
                     Marking as <strong>paid</strong> will: send the order confirmation email to the customer, materialize vendor payouts, and bump the fulfillment status to <strong>pending</strong> if it was waiting on payment.
                   </div>
                 )}
               </div>
               <div className="p-4 border-t flex items-center justify-end gap-2">
-                <button onClick={() => setMarkPayOpen(false)} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg" disabled={markPayBusy}>Cancel</button>
+                <button onClick={() => { setMarkPayOpen(false); setMarkPayMode("initial"); }} className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg" disabled={markPayBusy}>Cancel</button>
                 <button
-                  onClick={handleMarkPaymentStatus}
+                  onClick={markPayMode === "balance" ? handleConfirmMarkBalancePaid : handleMarkPaymentStatus}
                   disabled={markPayBusy}
                   className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-60 flex items-center gap-1"
                   data-testid="mark-paid-confirm"
                 >
                   {markPayBusy && <Loader2 size={14} className="animate-spin" />}
-                  Confirm
+                  {markPayMode === "balance"
+                    ? `Confirm Balance Paid (₹${Number(selectedOrder.balance_amount || 0).toLocaleString("en-IN")})`
+                    : "Confirm"}
                 </button>
               </div>
             </div>
