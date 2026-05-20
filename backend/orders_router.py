@@ -852,7 +852,12 @@ async def verify_payment(verification: PaymentVerification):
         update_doc["vendor_accept_step_skipped"] = True
     else:
         update_doc["payment_status"] = "paid"
-        update_doc["status"] = "confirmed"
+        # Don't roll the order's lifecycle status backward — if the vendor
+        # has already marked goods ready (or it's been shipped/delivered),
+        # paying the balance should NOT undo that. Only set "confirmed"
+        # when status is at or before that point.
+        if order.get("status") not in ("goods_ready", "shipped", "delivered"):
+            update_doc["status"] = "confirmed"
         update_doc["paid_at"] = now
         if payment_stage == "balance":
             update_doc["balance_paid_at"] = now
@@ -3085,7 +3090,6 @@ async def admin_mark_balance_paid(
 
     set_doc = {
         "payment_status": "paid",
-        "status": "confirmed",
         "balance_paid_at": now,
         "paid_at": now,
         "balance_paid_manually": True,
@@ -3095,6 +3099,10 @@ async def admin_mark_balance_paid(
         "balance_paid_notes": notes,
         "updated_at": now,
     }
+    # Preserve forward lifecycle status — don't roll back from
+    # goods_ready/shipped/delivered when finance marks balance paid.
+    if order.get("status") not in ("goods_ready", "shipped", "delivered"):
+        set_doc["status"] = "confirmed"
     await db.orders.update_one({"id": order_id}, {"$set": set_doc})
 
     # Inventory + payouts + Shiprocket (same trio as the auto-flow).

@@ -256,7 +256,7 @@ const VendorOrders = () => {
                   />
                 )}
                 {/* Non-provisional Mark Ready CTA — supplier uploads rolls + invoice */}
-                {!selectedOrder.is_provisional && ["confirmed", "processing"].includes(selectedOrder.status) && (
+                {!selectedOrder.is_provisional && ["confirmed", "processing"].includes(selectedOrder.status) && !selectedOrder.goods_ready_at && (
                   <MarkReadyBanner order={selectedOrder} onMarkReady={() => setReadyOrder(selectedOrder)} />
                 )}
                 {/* Goods already marked ready — show summary + packing slip download */}
