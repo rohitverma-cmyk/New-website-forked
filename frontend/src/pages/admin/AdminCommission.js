@@ -41,6 +41,7 @@ const AdminCommission = () => {
     max_value: "",
     source: "inventory",
     commission_pct: "",
+    applies_to: "",
     is_active: true,
   });
 
@@ -69,7 +70,7 @@ const AdminCommission = () => {
     } catch {}
   };
 
-  const resetForm = () => setForm({ rule_type: "vendor", vendor_id: "", vendor_name: "", category_id: "", category_name: "", pattern: "", min_value: "", max_value: "", source: "inventory", commission_pct: "", is_active: true });
+  const resetForm = () => setForm({ rule_type: "vendor", vendor_id: "", vendor_name: "", category_id: "", category_name: "", pattern: "", min_value: "", max_value: "", source: "inventory", commission_pct: "", applies_to: "", is_active: true });
 
   const handleSave = async () => {
     if (!form.commission_pct || isNaN(form.commission_pct)) {
@@ -120,6 +121,7 @@ const AdminCommission = () => {
       max_value: rule.max_value ?? "",
       source: rule.source || "inventory",
       commission_pct: rule.commission_pct,
+      applies_to: rule.applies_to || "",
       is_active: rule.is_active !== false,
     });
     setEditRule(rule);
@@ -361,6 +363,24 @@ const AdminCommission = () => {
                       data-testid="rule-commission-pct"
                     />
                   </div>
+                </div>
+
+                {/* Applies to (sample / bulk / both) */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Applies to</label>
+                  <select
+                    value={form.applies_to || ""}
+                    onChange={(e) => setForm({ ...form, applies_to: e.target.value })}
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm"
+                    data-testid="rule-applies-to"
+                  >
+                    <option value="">Both (sample + bulk)</option>
+                    <option value="bulk">Bulk orders only</option>
+                    <option value="sample">Sample orders only</option>
+                  </select>
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    Note: All sample orders are charged 0% commission regardless of rules. This filter still applies for fine-grained reporting.
+                  </p>
                 </div>
 
                 {/* Active toggle */}

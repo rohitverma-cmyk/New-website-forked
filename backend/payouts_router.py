@@ -74,15 +74,22 @@ def _is_super_admin(user: dict) -> bool:
 # ─────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────
-async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str = "", category_name: str = "", pattern: str = "") -> float:
+async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str = "", category_name: str = "", pattern: str = "", order_type: str = "") -> float:
     """Look up the CURRENT commission % for a fabric/seller/category.
 
     Resolution order (most-specific wins) — must mirror the checkout-time
     calculator in `commission_router.calculate_commission`:
+      0. SAMPLES are ALWAYS 0% (product decision Feb 2026) — overrides
+         every rule. Bulk/production items continue through the ladder.
       1. Vendor rule (rule_type=vendor, vendor_id matches seller_id)
       2. Category + Pattern (rule_type=category_pattern)
       3. Category (rule_type=category)
       4. Platform default (5%)
+
+    Rules can ALSO be scoped to a specific order_type via the optional
+    `applies_to` field on the rule doc ("sample" | "bulk" | absent=both).
+    Rules whose `applies_to` doesn't match the item's order_type are
+    skipped entirely at lookup time.
 
     If `category_name` / `pattern` weren't stamped on the order item
     (common for agent-created carts / RFQ accepts / brand-credit orders),
@@ -90,6 +97,10 @@ async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str =
     this lookup, category-level rules silently never match.
     """
     from auth_helpers import db as _db
+
+    # Hard zero for samples regardless of any rule.
+    if (order_type or "").strip().lower() == "sample":
+        return 0.0
 
     # Backfill category_name + pattern from the fabric doc when missing.
     if (not category_name or not pattern) and fabric_id:
@@ -103,13 +114,27 @@ async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str =
             if not pattern:
                 pattern = (fab.get("pattern") or fab.get("design_pattern") or "").strip()
 
+    # Match `applies_to` against the item's order_type: rules with
+    # `applies_to` absent/empty are type-agnostic; otherwise they must
+    # match the item's order_type. We use the same `$in` trick across
+    # all three rule_type lookups below.
+    order_type_norm = (order_type or "bulk").lower()
+    applies_to_filter = {
+        "$or": [
+            {"applies_to": {"$exists": False}},
+            {"applies_to": ""},
+            {"applies_to": None},
+            {"applies_to": {"$in": [order_type_norm, "both", "all"]}},
+        ]
+    }
+
     # 1. Vendor-specific
     # Only run this lookup when we have an actual seller_id — otherwise
     # a missing seller_id could accidentally match a malformed rule with
     # `vendor_id: null` / `vendor_id: ""` and short-circuit the chain.
     if seller_id:
         rule = await _db.commission_rules.find_one(
-            {"rule_type": "vendor", "vendor_id": seller_id, "is_active": True},
+            {"rule_type": "vendor", "vendor_id": seller_id, "is_active": True, **applies_to_filter},
             {"_id": 0, "commission_pct": 1},
         )
         if rule:
@@ -123,6 +148,7 @@ async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str =
                 "category_name": {"$regex": f"^{re.escape(category_name)}$", "$options": "i"},
                 "pattern": {"$regex": f"^{re.escape(pattern)}$", "$options": "i"},
                 "is_active": True,
+                **applies_to_filter,
             },
             {"_id": 0, "commission_pct": 1},
         )
@@ -136,6 +162,7 @@ async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str =
                 "rule_type": "category",
                 "category_name": {"$regex": f"^{re.escape(category_name)}$", "$options": "i"},
                 "is_active": True,
+                **applies_to_filter,
             },
             {"_id": 0, "commission_pct": 1},
         )
@@ -215,6 +242,7 @@ async def resync_payouts_for_actual_qty(order: dict) -> dict:
                     it.get("category_id", ""),
                     it.get("category_name", ""),
                     it.get("pattern", ""),
+                    order_type=it.get("order_type", ""),
                 )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             new_lines.append({
@@ -352,6 +380,7 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
                     it.get("category_id", ""),
                     it.get("category_name", ""),
                     it.get("pattern", ""),
+                    order_type=it.get("order_type", ""),
                 )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             line_breakdown.append({
@@ -668,7 +697,7 @@ async def get_order_seller_commissions(order_id: str):
             )
             rate = float(it.get("price_per_meter", 0) or 0)
             line_gross = qty * rate
-            pct = await _resolve_commission(sid, it.get("fabric_id", ""), it.get("category_id", ""))
+            pct = await _resolve_commission(sid, it.get("fabric_id", ""), it.get("category_id", ""), it.get("order_type", ""))
             comm_total += round(line_gross * pct / 100.0, 2)
             gross += line_gross
         gst_on_comm = round(comm_total * comm_gst_pct / 100.0, 2)
@@ -780,6 +809,7 @@ async def resync_order_commission(
                     it.get("category_id", ""),
                     it.get("category_name", ""),
                     it.get("pattern", ""),
+                    order_type=it.get("order_type", ""),
                 )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             new_lines.append({
@@ -924,6 +954,7 @@ async def backfill_pending_payouts_commission(user=Depends(get_current_accounts_
                     it.get("category_id", ""),
                     it.get("category_name", ""),
                     it.get("pattern", ""),
+                    order_type=it.get("order_type", ""),
                 )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             new_lines.append({

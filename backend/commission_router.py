@@ -47,6 +47,7 @@ class CommissionRule(BaseModel):
     max_value: Optional[float] = None
     source: Optional[str] = None  # "inventory" or "rfq"
     commission_pct: float
+    applies_to: Optional[str] = ""  # "sample" | "bulk" | "" (=both)
     is_active: bool = True
 
 
@@ -65,6 +66,16 @@ async def calculate_commission(order_data: dict, items: list) -> dict:
     seller_id = items[0].get("seller_id", "") if items else ""
     category_name = (items[0].get("category_name", "") if items else "") or ""
     pattern = (items[0].get("pattern", "") if items else "") or ""
+    # If every item in the cart is a sample → flat 0% commission
+    # (product policy, Feb 2026). Mixed carts are not expected since
+    # cart splitting is done by order_type at checkout; if one ever
+    # slips through we still favour 0% so finance never over-charges
+    # commission on samples.
+    is_all_samples = bool(items) and all(
+        (it.get("order_type") or "").lower() == "sample" for it in items
+    )
+    if is_all_samples:
+        return {"commission_pct": 0.0, "commission_amount": 0.0, "rule_applied": "sample:zero"}
 
     # If items don't carry category_name / pattern (older shapes from
     # agent-created carts, RFQ accept flows, brand credit orders…), pull
@@ -85,6 +96,18 @@ async def calculate_commission(order_data: dict, items: list) -> dict:
     is_rfq = order_data.get("source") == "rfq"
 
     rules = await db.commission_rules.find({"is_active": True}, {"_id": 0}).to_list(500)
+
+    # Filter rules by item's order_type ("sample" | "bulk").
+    # Rule docs may carry an optional `applies_to` field — when present,
+    # the rule only matches that order_type. When absent/empty, the rule
+    # is type-agnostic (matches both). Determine the cart's order_type
+    # by majority (cart split-by-type happens at checkout so this is
+    # stable in practice).
+    cart_order_type = (items[0].get("order_type") or "bulk").lower() if items else "bulk"
+    rules = [
+        r for r in rules
+        if not r.get("applies_to") or r.get("applies_to", "").lower() in ("", cart_order_type, "both", "all")
+    ]
 
     # 1. Vendor-specific (skip when no seller_id — treat as Null and fall
     # through to category+pattern → category. Prevents accidental match
