@@ -744,3 +744,30 @@ Closed the loop on the "show actual quantity once goods are ready" work — admi
 
 ## Credentials
 See `/app/memory/test_credentials.md`
+
+### 6-Tab Order Lifecycle Overhaul (Feb 21, 2026) ✅
+Unified the entire order pipeline behind 6 read-time stages — single source of truth (`/app/backend/order_pipeline.py · compute_pipeline_stage`) rendered identically on Admin, Vendor and Customer surfaces.
+
+**Pipeline stages (in order)**:
+1. `awaiting_confirm` — bulk order placed, vendor hasn't marked goods ready (samples auto-confirm)
+2. `cancelled` — terminal
+3. `confirmed_pending_dispatch` — goods marked ready, balance payment pending
+4. `prepare_dispatch` — balance paid; vendor must upload tax invoice → triggers Shiprocket push
+5. `dispatched` — courier has AWB / e-way bill uploaded / sample (eway skipped)
+6. `delivered` — Shiprocket marked delivered
+
+**Backend** (`/app/backend/orders_router.py`, `vendor_router.py`, `customer_router.py`)
+- New helper `_attach_pipeline(order)` injects `pipeline_stage` + `pipeline_label` at read time — no DB migration, soft-migrates legacy orders.
+- `GET /api/orders`, `GET /api/orders/{id}`, `GET /api/vendor/orders`, `GET /api/customer/orders`, `GET /api/customer/orders/{id}` all return `pipeline_stage`/`pipeline_label`. List endpoint accepts optional `?pipeline_stage=` filter.
+- `POST /api/orders/{id}/mark-goods-ready` — tax invoice is now OPTIONAL (was previously a hard requirement that 400'd vendors). Invoice collection moved to the Prepare Dispatch step.
+- NEW endpoint `POST /api/orders/{id}/vendor-upload-invoice` — vendor uploads tax invoice at the Prepare Dispatch stage. Persists `vendor_invoices` and fires Shiprocket push best-effort. Stage-gated (must be `prepare_dispatch` or `dispatched`).
+- Vendor orders now expose `customer.gst_number` (required on supplier tax invoices) while still hiding `phone`/`email`.
+
+**Frontend** (`AdminOrders.js`, `VendorOrders.js`)
+- Tab arrays replaced with the 6-stage pipeline (testids `admin-order-tab-*` and `vendor-order-tab-*`). Filtering switched from `status` to `pipeline_stage`.
+- Vendor `MarkGoodsReadyModal`: invoice upload block removed; replaced with a deferred-note indicator (testid `mark-ready-invoice-deferred-note`).
+- New `PrepareDispatchBanner` component (testid `vendor-prepare-dispatch-banner`) — shows Locofast Bill-To (GSTIN `07AADCL8794N1ZM`) + customer Ship-To with GSTIN, takes tax invoice file + number + date + amount, posts to `/vendor-upload-invoice` which atomically saves and pushes to Shiprocket.
+- Vendor order Ship-To section now renders `customer.gst_number` when present (testid `vendor-customer-gstin`).
+- Admin status badge in orders table now uses `pipeline_label` for consistency with the tab labels.
+
+**Verified via testing_agent_v3_fork (iteration 75)** — 100% backend (11/12 passed, 1 skipped for lack of live `prepare_dispatch` order), 100% frontend.
