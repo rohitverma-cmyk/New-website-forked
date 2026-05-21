@@ -3,9 +3,11 @@ import { format } from "date-fns";
 import { toast } from "sonner";
 import { Trash2 } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
+import { useConfirm } from "../../components/useConfirm";
 import { getEnquiries, updateEnquiryStatus, deleteEnquiry } from "../../lib/api";
 
 const AdminEnquiries = () => {
+  const confirm = useConfirm();
   const [enquiries, setEnquiries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedEnquiry, setSelectedEnquiry] = useState(null);
@@ -40,7 +42,7 @@ const AdminEnquiries = () => {
 
   const handleDelete = async (enquiryId, e) => {
     e.stopPropagation();
-    if (!window.confirm("Are you sure you want to delete this enquiry?")) return;
+    if (!(await confirm({ title: "Delete enquiry", message: "Are you sure you want to delete this enquiry?", tone: "danger", confirmLabel: "Delete" }))) return;
     
     setDeleting(enquiryId);
     try {

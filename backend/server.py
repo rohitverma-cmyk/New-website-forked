@@ -49,7 +49,13 @@ JWT_EXPIRATION_HOURS = 24
 UPLOAD_DIR = ROOT_DIR / 'uploads'
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-app = FastAPI()
+app = FastAPI(
+    title="Locofast API",
+    version="2.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
 
@@ -338,6 +344,10 @@ async def create_rfq_lead(data: dict):
     fabric_url = data.get('fabric_url', '')
     fabric_name = data.get('fabric_name', '')
     location = data.get('location', '')
+    # New fields from PDP modal (fabric-aware)
+    quantity_value = data.get('quantity_value', 0) or 0
+    quantity_unit = (data.get('quantity_unit', '') or '').lower()
+    notes_message = data.get('message', '') or ''
     # GST-verified fields (auto-populated from frontend)
     gst_legal_name = data.get('gst_legal_name', '')
     gst_trade_name = data.get('gst_trade_name', '')
@@ -376,6 +386,67 @@ async def create_rfq_lead(data: dict):
         'created_at': datetime.now(timezone.utc).isoformat()
     }
     await db.enquiries.insert_one(enquiry_doc)
+
+    # ALSO write a parallel rfq_submissions doc so the lead shows up in
+    # /admin/rfqs (the dedicated RFQ workspace), not just /admin/enquiries.
+    # This unifies the two entry points (PDP modal + /rfq form) into one
+    # place admins triage from.
+    rfq_id = str(uuid.uuid4())
+    rfq_number_simple = f"RFQ-{enquiry_id[:6].upper()}"
+    try:
+        # Resolve customer if logged in (so the lead links back to their profile)
+        customer_id = ""
+        # request not available here without changes; we use header-less anonymous id resolution
+        # Best-effort: match by email/phone in customers
+        match_or = []
+        if email:
+            match_or.append({"email": email.lower().strip()})
+        if phone:
+            cleaned = phone.replace(" ", "").lstrip("+")
+            for variant in {phone, cleaned, cleaned.lstrip("91")}:
+                if variant:
+                    match_or.append({"phone": variant})
+        if match_or:
+            existing = await db.customers.find_one({"$or": match_or}, {"_id": 0, "id": 1})
+            if existing:
+                customer_id = existing.get("id", "")
+
+        # Best-effort category guess from the fabric_type free-text
+        guessed_category = "cotton"
+        if fabric_type:
+            t = fabric_type.lower()
+            if "denim" in t:
+                guessed_category = "denim"
+            elif "knit" in t:
+                guessed_category = "knits"
+            elif "viscose" in t:
+                guessed_category = "viscose"
+
+        await db.rfq_submissions.insert_one({
+            "id": rfq_id,
+            "rfq_number": rfq_number_simple,
+            "customer_id": customer_id,
+            "category": guessed_category,
+            "fabric_requirement_type": fabric_type or "",
+            "quantity_value": float(quantity_value) if quantity_value else 0,
+            "quantity_unit": quantity_unit,
+            "full_name": name,
+            "email": email,
+            "phone": phone,
+            "company": company_name,
+            "gst_number": gst_number,
+            "delivery_city": gst_city,
+            "delivery_state": gst_state,
+            "fabric_url": fabric_url,
+            "fabric_name": fabric_name,
+            "lead_source": "SKU Page RFQ" if fabric_url else "Homepage RFQ",
+            "ingested_via": "rfq_lead_modal",
+            "message": notes_message,
+            "status": "new",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logging.warning(f"Failed to mirror rfq_lead to rfq_submissions: {str(e)}")
     
     # Send email to marketing@locofast.com
     try:
@@ -537,6 +608,10 @@ import brand_router
 brand_router.set_db(db)
 app.include_router(brand_router.router, prefix="/api")
 
+import account_manager_router
+account_manager_router.set_db(db)
+app.include_router(account_manager_router.router, prefix="/api")
+
 import commission_router
 commission_router.set_db(db)
 app.include_router(commission_router.router)
@@ -576,6 +651,30 @@ import customer_queries_router
 customer_queries_router.set_db(db)
 app.include_router(customer_queries_router.router)
 
+# External lead-ingest API (CRM, partner integrations) — protected by X-API-Key
+import external_rfq_router
+external_rfq_router.set_db(db)
+app.include_router(external_rfq_router.router)
+
+# ── Shiprocket integration (full module port) ──
+# Mounts orders/courier/tracking/pickup/returns/webhooks under /api/shiprocket.
+# Webhooks fan out into orders.status so the customer order-detail timeline
+# (Payment → Paid → Processing → Shipped → Delivered) auto-advances.
+from shiprocket.api import (
+    orders_router as sr_orders_router,
+    courier_router as sr_courier_router,
+    tracking_router as sr_tracking_router,
+    pickup_router as sr_pickup_router,
+    returns_router as sr_returns_router,
+    webhooks_router as sr_webhooks_router,
+)
+from shiprocket.api import webhooks as _sr_webhooks_module
+
+_sr_webhooks_module.set_db(db)
+for _r in (sr_orders_router, sr_courier_router, sr_tracking_router,
+           sr_pickup_router, sr_returns_router, sr_webhooks_router):
+    app.include_router(_r, prefix="/api/shiprocket")
+
 import credit_router
 credit_router.set_db(db)
 app.include_router(credit_router.router, prefix="/api")
@@ -595,6 +694,10 @@ app.include_router(migrations_router.router)
 app.include_router(sitemap_router.router)
 app.include_router(reviews_router.router)
 app.include_router(upload_router.router)
+
+import admin_customers_router
+admin_customers_router.set_db(db)
+app.include_router(admin_customers_router.router)
 
 # Serve uploaded files
 app.mount("/api/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")

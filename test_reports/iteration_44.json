@@ -1,0 +1,83 @@
+{
+  "summary": "Phase 47 Tracking History Drawer - All 13 backend tests passed, all frontend UI tests passed. Tracking endpoint returns 5 seeded events newest-first with location/activity. Drawer UI shows vertical timeline with dot colors, Latest badge, AWB header, Shiprocket link, close via X/backdrop, body scroll lock, and empty state.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_tracking_history.py",
+    "/app/test_reports/pytest/pytest_tracking_history.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_tracking_history.py"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "test_credentials": {
+    "customer_with_orders": "deepak.wadhwa@locofast.com (OTP-based login)",
+    "test_order_id": "220475e5-fa34-40c5-ae1d-8738781996b1 (ORD-BGFIJQ)",
+    "test_awb_code": "SR-DEMO-AWB-2901",
+    "cross_access_customer": "profile-test@locofast.com"
+  },
+  "seed_data_creation": "None - used existing 5 seeded events for test order",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 47 Tracking History fully tested. Key features: (1) GET /api/customer/orders/{id}/tracking returns order tracking with events array sorted newest-first. (2) Each event includes raw_status, mapped_status, courier_name, location, activity, event_time, received_at. (3) Cross-customer scoping returns 404. (4) Webhook handlers extract location and activity fields from payloads. (5) Frontend TrackingHistoryDrawer shows vertical timeline with dot colors (green=delivered, blue=shipped, amber=processing, red=cancelled). (6) Drawer has Latest badge on first event, AWB header, View on Shiprocket link, close via X/backdrop, body scroll lock. (7) Empty state shows 'No tracking events yet' with truck icon. (8) Button visibility: shown when order.awb_code OR order.shiprocket_last_event OR status in [processing, shipped, delivered].",
+  "features_tested": {
+    "tracking_endpoint": {
+      "status": "PASS",
+      "tests": [
+        "GET /api/customer/orders/{id}/tracking returns 200 for owner",
+        "Response includes order_id, order_number, awb_code, courier_name, shipped_at, delivered_at, status, events[]",
+        "Each event has raw_status, mapped_status, courier_name, location, activity, event_time, received_at",
+        "Events sorted newest-first by event_time",
+        "5 seeded events with locations Gurugram → Mumbai → Bangalore → Bangalore (delivered)",
+        "Cross-customer access returns 404",
+        "No auth returns 401",
+        "Non-existent order returns 404"
+      ]
+    },
+    "webhook_location_extraction": {
+      "status": "PASS",
+      "tests": [
+        "Tracking webhook extracts location and activity fields",
+        "Order-status webhook extracts location and activity fields",
+        "Graceful handling of payloads without location/activity (no crash)"
+      ]
+    },
+    "tracking_drawer_ui": {
+      "status": "PASS",
+      "tests": [
+        "Drawer opens when 'Tracking history' button clicked",
+        "Header shows 'AWB <code> · <courier>' when AWB exists",
+        "Header shows 'No AWB allocated yet' when no AWB",
+        "Vertical timeline of events with Latest badge on first (newest) event",
+        "Each event shows raw_status as title, activity as subtitle, location with MapPin icon, courier_name, formatted timestamp",
+        "Dot color: green for delivered, blue for shipped, amber for processing",
+        "View on Shiprocket link points to https://shiprocket.co/tracking/<awb>",
+        "Close via X button works",
+        "Close via backdrop click works",
+        "Body scroll locked while drawer open",
+        "Body scroll restored on close",
+        "Empty state shows 'No tracking events yet' with truck icon"
+      ]
+    },
+    "button_visibility_rules": {
+      "status": "PASS",
+      "tests": [
+        "Button visible for delivered order with AWB",
+        "Button NOT visible for payment_pending order with no AWB and no shiprocket_last_event",
+        "Button visible for processing order (even without AWB)"
+      ]
+    }
+  }
+}

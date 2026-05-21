@@ -24,7 +24,7 @@ import {
   Search,
 } from "lucide-react";
 import VendorLayout from "../../components/vendor/VendorLayout";
-import { getVendorRfqs, getVendorRfqStats, pickVendorRfq } from "../../lib/api";
+import { getVendorRfqs, getVendorRfqStats, closeVendorRfq } from "../../lib/api";
 import {
   STATUS_TABS,
   PERIOD_TABS,
@@ -57,9 +57,10 @@ const StatTile = ({ label, value, sub, Icon }) => (
   </div>
 );
 
-const RfqCard = ({ rfq, onPick, onOpen, busy }) => {
-  const isPicked = ["picked", "submitted"].includes(rfq.effective_status);
+const RfqCard = ({ rfq, onSubmitQuote, onClose, onOpen, busy }) => {
   const isSubmitted = rfq.effective_status === "submitted";
+  const isClosed = rfq.effective_status === "closed";
+  const isShortfall = !!rfq.is_shortfall;
   return (
     <div
       onClick={onOpen}
@@ -72,15 +73,25 @@ const RfqCard = ({ rfq, onPick, onOpen, busy }) => {
             <h3 className="font-semibold text-gray-900 truncate">{rfqTitle(rfq)}</h3>
             <span className="text-gray-300">|</span>
             <span className="text-gray-700 font-medium">{rfq.quantity_label || "—"}</span>
-            {!isPicked && (
+            {isShortfall && (
+              <span className="ml-1 text-[10px] font-bold tracking-wide bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">
+                SHORTFALL
+              </span>
+            )}
+            {!isSubmitted && !isClosed && !isShortfall && (
               <span className="ml-1 text-[10px] font-bold tracking-wide bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">
-                UNREAD
+                NEW
               </span>
             )}
           </div>
           <p className="text-[12px] text-gray-500 truncate">
             {rfq.full_name} · {rfq.email}
           </p>
+          {isShortfall && rfq.linked_fabric_code ? (
+            <p className="text-[11px] text-amber-700 mt-1">
+              Linked to inventory order — {rfq.linked_inventory_qty || 0} m taken from stock
+            </p>
+          ) : null}
         </div>
         <span className="text-[11px] uppercase tracking-wide text-gray-400 font-medium whitespace-nowrap">
           {rfq.fabric_requirement_type || "Greige"}
@@ -106,21 +117,35 @@ const RfqCard = ({ rfq, onPick, onOpen, busy }) => {
             <span className="text-[12px] text-blue-600">
               Submitted on {formatDate(rfq.my_quote?.updated_at || rfq.my_quote?.created_at)}
             </span>
-          ) : isPicked ? (
-            <span className="text-[12px] text-amber-600">Picked · awaiting quote</span>
+          ) : isClosed ? (
+            <span className="text-[12px] text-gray-500">Closed</span>
           ) : (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onPick();
-              }}
-              disabled={busy}
-              className="inline-flex items-center gap-1.5 border border-violet-300 text-violet-700 rounded-full px-3 py-1 text-xs font-medium hover:bg-violet-50 disabled:opacity-60"
-              data-testid={`vendor-rfq-pick-${rfq.rfq_number}`}
-            >
-              <CheckCircle2 size={13} /> Pick
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose();
+                }}
+                disabled={busy}
+                className="text-[12px] text-gray-500 hover:text-gray-800 px-2 py-1"
+                data-testid={`vendor-rfq-close-${rfq.rfq_number}`}
+              >
+                Not interested
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSubmitQuote();
+                }}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full px-3 py-1 text-xs font-medium disabled:opacity-60"
+                data-testid={`vendor-rfq-submit-${rfq.rfq_number}`}
+              >
+                Submit Quote ›
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -130,7 +155,7 @@ const RfqCard = ({ rfq, onPick, onOpen, busy }) => {
 
 const VendorRfqs = () => {
   const navigate = useNavigate();
-  const [statusKey, setStatusKey] = useState("new");
+  const [statusKey, setStatusKey] = useState("all");
   const [rfqs, setRfqs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
@@ -171,14 +196,13 @@ const VendorRfqs = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period]);
 
-  const handlePick = async (rfqId) => {
+  const handleClose = async (rfqId) => {
     setBusyId(rfqId);
     try {
-      await pickVendorRfq(rfqId);
+      await closeVendorRfq(rfqId);
       await fetchList();
-      await fetchStats();
     } catch (e) {
-      alert(e?.response?.data?.detail || "Could not pick this RFQ");
+      alert(e?.response?.data?.detail || "Could not close this RFQ");
     } finally {
       setBusyId(null);
     }
@@ -306,7 +330,8 @@ const VendorRfqs = () => {
                 key={r.id}
                 rfq={r}
                 busy={busyId === r.id}
-                onPick={() => handlePick(r.id)}
+                onSubmitQuote={() => navigate(`/vendor/rfqs/${r.id}?action=submit`)}
+                onClose={() => handleClose(r.id)}
                 onOpen={() => navigate(`/vendor/rfqs/${r.id}`)}
               />
             ))}

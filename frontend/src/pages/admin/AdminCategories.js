@@ -3,8 +3,11 @@ import { Plus, Pencil, Trash2, X, Upload } from "lucide-react";
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
 import api, { getCategories, createCategory, updateCategory, deleteCategory, uploadImage } from "../../lib/api";
+import { useConfirm } from "../../components/useConfirm";
 
 const AdminCategories = () => {
+  const confirm = useConfirm();
+
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -96,7 +99,7 @@ const AdminCategories = () => {
   };
 
   const handleDelete = async (category) => {
-    if (!window.confirm(`Delete "${category.name}"? This will not delete associated fabrics.`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${category.name}"? This will not delete associated fabrics.`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteCategory(category.id);
       toast.success("Category deleted");
@@ -112,7 +115,7 @@ const AdminCategories = () => {
 
   const migrateBlended = async (mode) => {
     const label = mode === "all_to_linen" ? "move all Blended → Linen" : "smart-migrate Blended";
-    if (!window.confirm(`This will ${label} and delete the Blended category. Proceed?`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `This will ${label} and delete the Blended category. Proceed?`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       // Dry run first so we can show counts in the confirm
       const dryRes = await api.post(`/migrate/blended?mode=${mode}`);
@@ -122,7 +125,7 @@ const AdminCategories = () => {
         fetchCategories();
         return;
       }
-      if (!window.confirm(`Found ${total} Blended fabrics. Apply the migration?`)) return;
+      if (!(await confirm({ title: "Confirm action", message: `Found ${total} Blended fabrics. Apply the migration?`, tone: "danger", confirmLabel: "Confirm" }))) return;
       const res = await api.post(`/migrate/blended?apply=true&mode=${mode}`);
       toast.success(`Migrated ${res.data?.reassigned || 0} fabrics. Blended deleted: ${res.data?.blended_deleted}`);
       fetchCategories();
@@ -132,7 +135,7 @@ const AdminCategories = () => {
   };
 
   const migrateKnits = async () => {
-    if (!window.confirm("This will move every Knits fabric → Polyester Fabrics and delete the Knits category. Proceed?")) return;
+    if (!(await confirm({ title: "Confirm action", message: "This will move every Knits fabric → Polyester Fabrics and delete the Knits category. Proceed?", tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       const dryRes = await api.post("/migrate/knits");
       const total = dryRes.data?.knits_fabrics_total || 0;
@@ -141,7 +144,7 @@ const AdminCategories = () => {
         fetchCategories();
         return;
       }
-      if (!window.confirm(`Found ${total} Knits fabrics. Move them all to Polyester Fabrics and delete the Knits category?`)) return;
+      if (!(await confirm({ title: "Confirm action", message: `Found ${total} Knits fabrics. Move them all to Polyester Fabrics and delete the Knits category?`, tone: "danger", confirmLabel: "Confirm" }))) return;
       const res = await api.post("/migrate/knits?apply=true");
       toast.success(`Migrated ${res.data?.reassigned || 0} fabrics → Polyester. Knits deleted: ${res.data?.knits_deleted}`);
       fetchCategories();
@@ -165,7 +168,7 @@ const AdminCategories = () => {
         );
         return;
       }
-      if (!window.confirm("Greige is empty. Delete the category? (Greige is now available as a Pattern, not a Category.)")) return;
+      if (!(await confirm({ title: "Confirm action", message: "Greige is empty. Delete the category? (Greige is now available as a Pattern, not a Category.)", tone: "danger", confirmLabel: "Confirm" }))) return;
       const res = await api.post("/migrate/greige?apply=true");
       toast.success(res.data?.greige_deleted ? "Greige category deleted." : "Nothing changed.");
       fetchCategories();

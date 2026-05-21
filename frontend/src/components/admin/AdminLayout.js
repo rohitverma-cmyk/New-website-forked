@@ -10,12 +10,14 @@ const AdminLayout = ({ children }) => {
   const navItems = [
     { path: "/admin", label: "Dashboard", icon: LayoutDashboard },
     { path: "/admin/orders", label: "Orders", icon: ShoppingCart },
+    { path: "/admin/customers", label: "Customers", icon: Users },
     { path: "/admin/rfq", label: "RFQ", icon: ClipboardList },
     { path: "/admin/fabrics", label: "Fabrics", icon: Layers },
     { path: "/admin/articles", label: "Articles", icon: Palette },
     { path: "/admin/categories", label: "Categories", icon: FolderOpen },
     { path: "/admin/sellers", label: "Sellers", icon: Building2 },
     { path: "/admin/brands", label: "Enterprises", icon: Briefcase },
+    { path: "/admin/account-managers", label: "Acc. Managers", icon: Users },
     { path: "/admin/reviews", label: "Reviews", icon: MessageSquare },
     { path: "/admin/collections", label: "Collections", icon: Package },
     { path: "/admin/coupons", label: "Coupons", icon: Tag },
@@ -51,7 +53,7 @@ const AdminLayout = ({ children }) => {
           <p className="text-neutral-500 text-sm">Admin Panel</p>
         </div>
 
-        <nav className="flex-1 p-4 space-y-1">
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto" data-testid="admin-nav-scroll">
           {navItems.map((item) => (
             <Link
               key={item.path}

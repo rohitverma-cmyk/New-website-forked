@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useBrandAuth } from "../../context/BrandAuthContext";
 import { useBrandCart } from "../../context/BrandCartContext";
 import BrandLayout from "./BrandLayout";
-import { ShoppingCart, Trash2, ArrowRight, CheckCircle, Loader2, MapPin, Beaker, Upload, Factory, Send, X } from "lucide-react";
+import { ShoppingCart, Trash2, ArrowRight, ArrowLeft, CheckCircle, Loader2, MapPin, Beaker, Upload, Factory, Send, X, Plus, Check } from "lucide-react";
 import { toast } from "sonner";
 import { fmtINR, fmtLacs, fmtCount } from "../../lib/inr";
 import { thumbImage } from "../../lib/imageUrl";
@@ -71,6 +71,23 @@ const BrandCart = () => {
   const [placing, setPlacing] = useState(false);
   const [success, setSuccess] = useState(null);
   const [enterpriseType, setEnterpriseType] = useState("brand");
+  const [savedAddresses, setSavedAddresses] = useState([]);
+  const [selectedAddressId, setSelectedAddressId] = useState("");
+  const [showAddNew, setShowAddNew] = useState(false);
+
+  // Pick a saved address card → autofill the address state used by checkout
+  const pickSavedAddress = (a) => {
+    setSelectedAddressId(a.id);
+    setAddress({
+      ship_to_name: a.name || user?.name || "",
+      ship_to_phone: a.phone || "",
+      ship_to_address: a.address || "",
+      ship_to_city: a.city || "",
+      ship_to_state: a.state || "",
+      ship_to_pincode: a.pincode || "",
+      notes: address.notes || "",
+    });
+  };
   const [factory, setFactory] = useState({
     po_file_url: "",
     tech_pack_url: "",
@@ -101,19 +118,34 @@ const BrandCart = () => {
         const me = await fetch(`${API}/api/brand/me`, { headers: { Authorization: `Bearer ${token}` } });
         const meData = await me.json();
         setEnterpriseType(meData?.brand?.type || "brand");
-        const defAddr = meData?.brand?.default_ship_to || {};
-        if (defAddr.address) {
-          setAddress((a) => ({
-            ...a,
-            ship_to_name: defAddr.name || user.name || "",
-            ship_to_phone: defAddr.phone || "",
-            ship_to_address: defAddr.address || "",
-            ship_to_city: defAddr.city || "",
-            ship_to_state: defAddr.state || "",
-            ship_to_pincode: defAddr.pincode || "",
-          }));
+
+        // Load full saved-address book (own + factory addresses)
+        const adRes = await fetch(`${API}/api/brand/addresses`, { headers: { Authorization: `Bearer ${token}` } });
+        const adData = await adRes.json();
+        const saved = adData?.addresses || [];
+        setSavedAddresses(saved);
+
+        // Auto-pick default address (or first one) when present
+        const def = saved.find((x) => x.is_default) || saved[0];
+        if (def) {
+          pickSavedAddress(def);
         } else {
-          setAddress((a) => ({ ...a, ship_to_name: user.name || "" }));
+          // Fall back to legacy default_ship_to or empty form for "Add new" flow
+          const defAddr = meData?.brand?.default_ship_to || {};
+          if (defAddr.address) {
+            setAddress((a) => ({
+              ...a,
+              ship_to_name: defAddr.name || user.name || "",
+              ship_to_phone: defAddr.phone || "",
+              ship_to_address: defAddr.address || "",
+              ship_to_city: defAddr.city || "",
+              ship_to_state: defAddr.state || "",
+              ship_to_pincode: defAddr.pincode || "",
+            }));
+          } else {
+            setAddress((a) => ({ ...a, ship_to_name: user.name || "" }));
+            setShowAddNew(true);
+          }
         }
       } catch { /* noop */ }
     })();
@@ -419,6 +451,19 @@ const BrandCart = () => {
 
   return (
     <BrandLayout>
+      {/* #3: Back-to-catalog so brands don't lose their browsing context after
+          adding to cart. Uses history when available so filters survive. */}
+      <button
+        type="button"
+        onClick={() => {
+          if (window.history.length > 1) navigate(-1);
+          else navigate("/enterprise/fabrics");
+        }}
+        className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-gray-900 mb-3 transition-colors"
+        data-testid="brand-cart-back"
+      >
+        <ArrowLeft size={14} /> Back to catalog
+      </button>
       <div className="mb-6">
         <h1 className="text-2xl font-semibold text-gray-900 flex items-center gap-2">
           <ShoppingCart size={22} /> Shopping Cart
@@ -490,24 +535,77 @@ const BrandCart = () => {
             </div>
           )}
 
-          {/* Address */}
+          {/* Address — saved-address picker + Add-new */}
           <div className="bg-white border border-gray-200 rounded-xl p-5" data-testid="brand-cart-address">
-            <h3 className="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-1.5">
-              <MapPin size={14} /> Shipping Address
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <input required placeholder="Contact name *" value={address.ship_to_name} onChange={(e) => setAddress({ ...address, ship_to_name: e.target.value })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-name" />
-              <input required placeholder="Phone *" value={address.ship_to_phone} onChange={(e) => setAddress({ ...address, ship_to_phone: e.target.value })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-phone" />
-              <textarea required placeholder="Address * (street, landmark, etc.)" value={address.ship_to_address} onChange={(e) => setAddress({ ...address, ship_to_address: e.target.value })} rows={2} className="sm:col-span-2 px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none" data-testid="brand-ship-address" />
-              <input required placeholder="City *" value={address.ship_to_city} onChange={(e) => setAddress({ ...address, ship_to_city: e.target.value })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-city" />
-              <input required placeholder="State *" value={address.ship_to_state} onChange={(e) => setAddress({ ...address, ship_to_state: e.target.value })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-state" />
-              <input required placeholder="Pincode *" maxLength={6} value={address.ship_to_pincode} onChange={(e) => setAddress({ ...address, ship_to_pincode: e.target.value.replace(/\D/g, "") })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-pincode" />
-              <textarea placeholder="Order notes (optional)" value={address.notes} onChange={(e) => setAddress({ ...address, notes: e.target.value })} rows={2} className="sm:col-span-2 px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none" />
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
+                <MapPin size={14} /> Shipping Address
+              </h3>
+              {savedAddresses.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddNew((s) => !s)}
+                  className="text-xs text-emerald-700 font-medium inline-flex items-center gap-1 hover:underline"
+                  data-testid="brand-cart-add-new-toggle"
+                >
+                  {showAddNew ? <><X size={11} /> Cancel</> : <><Plus size={11} /> Add new address</>}
+                </button>
+              )}
             </div>
-            <label className="flex items-center gap-2 mt-3 text-xs text-gray-600">
-              <input type="checkbox" checked={saveDefault} onChange={(e) => setSaveDefault(e.target.checked)} />
-              Save as default shipping address for my enterprise
-            </label>
+
+            {savedAddresses.length === 0 || showAddNew ? (
+              <>
+                {savedAddresses.length === 0 && (
+                  <p className="text-xs text-gray-500 mb-3">No saved addresses yet. Fill the form below — we'll save it for next time.</p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <input required placeholder="Contact name *" value={address.ship_to_name} onChange={(e) => setAddress({ ...address, ship_to_name: e.target.value })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-name" />
+                  <input required placeholder="Phone *" value={address.ship_to_phone} onChange={(e) => setAddress({ ...address, ship_to_phone: e.target.value })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-phone" />
+                  <textarea required placeholder="Address * (street, landmark, etc.)" value={address.ship_to_address} onChange={(e) => setAddress({ ...address, ship_to_address: e.target.value })} rows={2} className="sm:col-span-2 px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none" data-testid="brand-ship-address" />
+                  <input required placeholder="City *" value={address.ship_to_city} onChange={(e) => setAddress({ ...address, ship_to_city: e.target.value })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-city" />
+                  <input required placeholder="State *" value={address.ship_to_state} onChange={(e) => setAddress({ ...address, ship_to_state: e.target.value })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-state" />
+                  <input required placeholder="Pincode *" maxLength={6} value={address.ship_to_pincode} onChange={(e) => setAddress({ ...address, ship_to_pincode: e.target.value.replace(/\D/g, "") })} className="px-3 py-2 border border-gray-300 rounded-lg text-sm" data-testid="brand-ship-pincode" />
+                  <textarea placeholder="Order notes (optional)" value={address.notes} onChange={(e) => setAddress({ ...address, notes: e.target.value })} rows={2} className="sm:col-span-2 px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none" />
+                </div>
+                <label className="flex items-center gap-2 mt-3 text-xs text-gray-600">
+                  <input type="checkbox" checked={saveDefault} onChange={(e) => setSaveDefault(e.target.checked)} />
+                  Save as default shipping address for my enterprise
+                </label>
+              </>
+            ) : (
+              <div className="space-y-2" data-testid="brand-cart-saved-addresses">
+                {savedAddresses.map((a) => {
+                  const selected = selectedAddressId === a.id;
+                  return (
+                    <button
+                      type="button"
+                      key={a.id}
+                      onClick={() => pickSavedAddress(a)}
+                      className={`w-full text-left p-3 rounded-lg border-2 transition ${selected ? "border-emerald-500 bg-emerald-50/40" : "border-gray-200 hover:border-emerald-300"}`}
+                      data-testid={`brand-cart-saved-${a.id}`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {a.label && <span className="text-[10px] uppercase tracking-wide text-emerald-700 font-semibold">{a.label}</span>}
+                            <span className="font-medium text-sm text-gray-900">{a.name || "—"}</span>
+                            {a.is_default && <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">Default</span>}
+                            {a.source === "factory" && <span className="text-[9px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-medium">Factory · {a.factory_name}</span>}
+                            {a.source === "gst" && !a.factory_name && <span className="text-[9px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-medium">GST-seeded</span>}
+                          </div>
+                          <p className="text-xs text-gray-700 mt-1">{a.address}</p>
+                          <p className="text-[11px] text-gray-500">{[a.city, a.state, a.pincode].filter(Boolean).join(", ")}{a.phone ? ` · ${a.phone}` : ""}</p>
+                        </div>
+                        <div className={`w-4 h-4 rounded-full border-2 flex-shrink-0 mt-1 ${selected ? "border-emerald-500 bg-emerald-500" : "border-gray-300"}`}>
+                          {selected && <Check size={10} className="text-white m-0.5" />}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+                <textarea placeholder="Order notes (optional)" value={address.notes} onChange={(e) => setAddress({ ...address, notes: e.target.value })} rows={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none mt-2" />
+              </div>
+            )}
           </div>
 
           {/* Factory-only attachments */}

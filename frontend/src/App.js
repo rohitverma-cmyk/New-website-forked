@@ -7,6 +7,7 @@ import { CustomerAuthProvider } from "./context/CustomerAuthContext";
 import { AgentAuthProvider } from "./context/AgentAuthContext";
 import { BrandAuthProvider } from "./context/BrandAuthContext";
 import { BrandCartProvider } from "./context/BrandCartContext";
+import { ConfirmProvider } from "./components/useConfirm";
 import WhatsAppChat from "./components/WhatsAppChat";
 import { useEffect, lazy, Suspense } from "react";
 
@@ -90,6 +91,8 @@ const RFQPage = lazy(() => import("./pages/RFQPage"));
 const SupplierDetailPage = lazy(() => import("./pages/SupplierDetailPage"));
 const SupplierProfilePage = lazy(() => import("./pages/SupplierProfilePage"));
 const CustomerAccountPage = lazy(() => import("./pages/CustomerAccountPage"));
+const OrderDetailPage = lazy(() => import("./pages/OrderDetailPage"));
+const LoginPreview = lazy(() => import("./pages/LoginPreview"));
 const CustomerQueryDetail = lazy(() => import("./pages/CustomerQueryDetail"));
 const SharedCartPage = lazy(() => import("./pages/SharedCartPage"));
 
@@ -108,6 +111,8 @@ const BrandOrders = lazy(() => import("./pages/brand/BrandOrders"));
 const BrandCart = lazy(() => import("./pages/brand/BrandCart"));
 const BrandFactories = lazy(() => import("./pages/brand/BrandFactories"));
 const BrandAllocations = lazy(() => import("./pages/brand/BrandAllocations"));
+const BrandQueries = lazy(() => import("./pages/brand/BrandQueries"));
+const BrandQueryDetail = lazy(() => import("./pages/brand/BrandQueryDetail"));
 
 // Vendor pages
 const VendorLogin = lazy(() => import("./pages/vendor/VendorLogin"));
@@ -139,6 +144,7 @@ const AdminSellers = lazy(() => import("./pages/admin/AdminSellers"));
 const AdminCollections = lazy(() => import("./pages/admin/AdminCollections"));
 const AdminArticles = lazy(() => import("./pages/admin/AdminArticles"));
 const AdminEnquiries = lazy(() => import("./pages/admin/AdminEnquiries"));
+const AdminCustomers = lazy(() => import("./pages/admin/AdminCustomers"));
 const AdminOrders = lazy(() => import("./pages/admin/AdminOrders"));
 const AdminRFQ = lazy(() => import("./pages/admin/AdminRFQ"));
 const AdminCoupons = lazy(() => import("./pages/admin/AdminCoupons"));
@@ -151,6 +157,8 @@ const AdminCreditApplications = lazy(() => import("./pages/admin/AdminCreditAppl
 const AdminAgents = lazy(() => import("./pages/admin/AdminAgents"));
 const AdminCommission = lazy(() => import("./pages/admin/AdminCommission"));
 const AdminBrands = lazy(() => import("./pages/admin/AdminBrands"));
+const AdminBrandFinancials = lazy(() => import("./pages/admin/AdminBrandFinancials"));
+const AdminAccountManagers = lazy(() => import("./pages/admin/AdminAccountManagers"));
 const ProtectedRoute = lazy(() => import("./components/ProtectedRoute"));
 
 // SEO Landing Pages
@@ -179,6 +187,7 @@ const PolyKnitManufacturers = lazy(() => import("./pages/seo/poly-knit/PolyKnitM
 function App() {
   return (
     <HelmetProvider>
+    <ConfirmProvider>
     <CustomerAuthProvider>
     <AgentAuthProvider>
     <BrandAuthProvider>
@@ -217,7 +226,9 @@ function App() {
           
           {/* Customer Account */}
           <Route path="/account" element={<CustomerAccountPage />} />
+          <Route path="/dev/login-preview" element={<Suspense fallback={<PageLoader />}><LoginPreview /></Suspense>} />
           <Route path="/account/queries/:rfqId" element={<Suspense fallback={<PageLoader />}><CustomerQueryDetail /></Suspense>} />
+          <Route path="/account/orders/:orderId" element={<Suspense fallback={<PageLoader />}><OrderDetailPage /></Suspense>} />
           
           {/* Shared Cart (customer-facing) */}
           <Route path="/shared-cart/:token" element={<SharedCartPage />} />
@@ -287,6 +298,7 @@ function App() {
           <Route path="/admin/collections" element={<ProtectedRoute><AdminCollections /></ProtectedRoute>} />
           <Route path="/admin/articles" element={<ProtectedRoute><AdminArticles /></ProtectedRoute>} />
           <Route path="/admin/enquiries" element={<ProtectedRoute><AdminEnquiries /></ProtectedRoute>} />
+          <Route path="/admin/customers" element={<ProtectedRoute><AdminCustomers /></ProtectedRoute>} />
           <Route path="/admin/orders" element={<ProtectedRoute><AdminOrders /></ProtectedRoute>} />
           <Route path="/admin/rfq" element={<ProtectedRoute><AdminRFQ /></ProtectedRoute>} />
           <Route path="/admin/coupons" element={<ProtectedRoute><AdminCoupons /></ProtectedRoute>} />
@@ -297,6 +309,8 @@ function App() {
           <Route path="/admin/agents" element={<ProtectedRoute><AdminAgents /></ProtectedRoute>} />
           <Route path="/admin/commission" element={<ProtectedRoute><AdminCommission /></ProtectedRoute>} />
           <Route path="/admin/brands" element={<ProtectedRoute><AdminBrands /></ProtectedRoute>} />
+          <Route path="/admin/brands/:brandId/financials" element={<ProtectedRoute><AdminBrandFinancials /></ProtectedRoute>} />
+          <Route path="/admin/account-managers" element={<ProtectedRoute><AdminAccountManagers /></ProtectedRoute>} />
 
           {/* Enterprise Portal routes (Brands + Factories) — canonical /enterprise/*, with /brand/* kept as permanent redirects for backwards compat */}
           <Route path="/enterprise/login" element={<BrandLogin />} />
@@ -309,6 +323,8 @@ function App() {
           <Route path="/enterprise/cart" element={<BrandCart />} />
           <Route path="/enterprise/factories" element={<BrandFactories />} />
           <Route path="/enterprise/allocations" element={<BrandAllocations />} />
+          <Route path="/enterprise/queries" element={<BrandQueries />} />
+          <Route path="/enterprise/queries/:rfqId" element={<BrandQueryDetail />} />
           <Route path="/enterprise" element={<Navigate to="/enterprise/fabrics" replace />} />
 
           {/* Legacy /brand/* → /enterprise/* (permanent) */}
@@ -339,6 +355,7 @@ function App() {
     </BrandAuthProvider>
     </AgentAuthProvider>
     </CustomerAuthProvider>
+    </ConfirmProvider>
     </HelmetProvider>
   );
 }

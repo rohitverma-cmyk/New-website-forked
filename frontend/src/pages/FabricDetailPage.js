@@ -7,6 +7,7 @@ import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import ExpandableText from "../components/ExpandableText";
 import RFQModal from "../components/RFQModal";
+import InventoryShortfallModal from "../components/InventoryShortfallModal";
 import { getFabric, createEnquiry, getFabricSEO, getRelatedFabrics, getOtherSellers } from "../lib/api";
 import { toWebVideoUrl, videoPosterUrl } from "../lib/videoUrl";
 import { thumbImage, mediumImage, largeImage, fabricCoverImage } from "../lib/imageUrl";
@@ -32,6 +33,7 @@ const FabricDetailPage = () => {
   
   const [orderModalType, setOrderModalType] = useState(null); // 'sample' | 'bulk' | null
   const [showBookModal, setShowBookModal] = useState(false);
+  const [shortfallState, setShortfallState] = useState(null); // { qty, available, color }
   const [sampleQty, setSampleQty] = useState(1);
   const [bulkQty, setBulkQty] = useState("");
   // Buyer-side color selection for Sample / Bulk booking (null = none picked yet)
@@ -1175,11 +1177,12 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
         </div>
 
         {/* RFQ Modal - Same flow as homepage and header, with fabric URL */}
-        <RFQModal 
-          open={showRfqModal} 
-          onClose={() => setShowRfqModal(false)} 
+        <RFQModal
+          open={showRfqModal}
+          onClose={() => setShowRfqModal(false)}
           fabricUrl={`${window.location.origin}/fabrics/${fabric.id}`}
           fabricName={fabric.name}
+          fabric={fabric}
         />
 
         {/* Order Modal (Sample/Bulk) - Simple Enquiry Form */}
@@ -1498,6 +1501,25 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                   }
                   const qty = orderModalType === "sample" ? sampleQty : parseInt(bulkQty) || fabric.moq || 100;
                   const price = orderModalType === "sample" ? (actions.samplePrice || 0) : (fabric.rate_per_meter || 0);
+                  // Shortfall trigger — only on bulk + ready-stock + qty > available.
+                  // MTO and sample paths fall through to the normal checkout.
+                  const isReadyStock = (fabric.stock_type || "ready_stock") !== "made_to_order";
+                  if (
+                    orderModalType === "bulk" &&
+                    isReadyStock &&
+                    maxBulkQty != null &&
+                    maxBulkQty > 0 &&
+                    qty > maxBulkQty
+                  ) {
+                    setShortfallState({
+                      qty,
+                      available: maxBulkQty,
+                      colorQuery: selectedBookingVariant
+                        ? `&color=${encodeURIComponent(selectedBookingVariant.color_name)}&color_hex=${encodeURIComponent(selectedBookingVariant.color_hex || '')}`
+                        : '',
+                    });
+                    return;
+                  }
                   trackAddToCart(fabric, orderModalType, qty, price);
                   const colorQuery = selectedBookingVariant
                     ? `&color=${encodeURIComponent(selectedBookingVariant.color_name)}&color_hex=${encodeURIComponent(selectedBookingVariant.color_hex || '')}`
@@ -1506,7 +1528,6 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                 }}
                 disabled={
                   (orderModalType === "bulk" && (!bulkQty || parseInt(bulkQty) < 1)) ||
-                  (orderModalType === "bulk" && maxBulkQty != null && parseInt(bulkQty) > maxBulkQty) ||
                   (hasColorVariants && bookableVariants.length === 0) ||
                   (hasColorVariants && bookingVariantIdx == null)
                 }
@@ -1519,6 +1540,32 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
           </div>
         </div>
       )}
+
+      <InventoryShortfallModal
+        open={!!shortfallState}
+        fabric={fabric}
+        requestedQty={shortfallState?.qty || 0}
+        availableQty={shortfallState?.available || 0}
+        unit="m"
+        showContactFields={true}
+        onCancel={() => setShortfallState(null)}
+        onConfirm={({ shortfallRfq }) => {
+          // Inventory portion goes to checkout for the available qty;
+          // the shortfall RFQ is already filed server-side. Toast the
+          // RFQ # so the buyer knows where to track it.
+          const inventoryQty = shortfallState.available;
+          const colorQuery = shortfallState.colorQuery || "";
+          const price = fabric.rate_per_meter || 0;
+          trackAddToCart(fabric, "bulk", inventoryQty, price);
+          toast.success(
+            `RFQ ${shortfallRfq.rfq_number} sent for ${shortfallRfq.shortfall_qty} m. Track in Account → My Queries.`
+          );
+          setShortfallState(null);
+          if (inventoryQty > 0) {
+            navigate(`/checkout/?fabric_id=${fabric.id}&type=bulk&qty=${inventoryQty}${colorQuery}`);
+          }
+        }}
+      />
 
       <Footer />
     </div>

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useBrandAuth } from "../../context/BrandAuthContext";
 import BrandLayout from "./BrandLayout";
-import { ShoppingBag, Loader2 } from "lucide-react";
+import { ShoppingBag, Loader2, FileText, Receipt } from "lucide-react";
 import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -51,6 +51,7 @@ const BrandOrders = () => {
                 <th className="px-4 py-2 text-right">Total</th>
                 <th className="px-4 py-2 text-left">Paid with</th>
                 <th className="px-4 py-2 text-left">Status</th>
+                <th className="px-4 py-2 text-left">Documents</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -64,6 +65,22 @@ const BrandOrders = () => {
                   <td className="px-4 py-3 text-xs text-gray-600">{o.payment_method === "sample_credit" ? "Sample Credits" : "Credit Line"}</td>
                   <td className="px-4 py-3">
                     <span className="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700">{o.status}</span>
+                  </td>
+                  <td className="px-4 py-3" data-testid={`brand-order-docs-${o.id}`}>
+                    <div className="flex items-center gap-1.5">
+                      {o.invoice?.file_url ? (
+                        <a href={o.invoice.file_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100" title={`Invoice ${o.invoice.invoice_number}`} data-testid={`brand-order-invoice-${o.id}`}>
+                          <FileText size={11} /> Invoice
+                        </a>
+                      ) : (
+                        <span className="text-[10px] text-gray-400 italic">no invoice</span>
+                      )}
+                      {o.invoice?.eway_bill_url && (
+                        <a href={o.invoice.eway_bill_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-purple-50 text-purple-700 rounded hover:bg-purple-100" title={`E-way Bill ${o.invoice.eway_bill_number || ''}`} data-testid={`brand-order-eway-${o.id}`}>
+                          <Receipt size={11} /> E-way
+                        </a>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { User, Package, Mail, Phone, Building2, MapPin, Pencil, Save, Loader2, LogOut, ArrowRight, Clock, CheckCircle, Truck, XCircle, MessageSquare } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { User, Package, Mail, Phone, Building2, MapPin, Pencil, Save, Loader2, LogOut, ArrowRight, Clock, CheckCircle, Truck, XCircle, MessageSquare, FileText, ShieldCheck } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
@@ -21,14 +21,18 @@ const statusConfig = {
 const CustomerAccountPage = () => {
   const { customer, token, isLoggedIn, logout, updateCustomer } = useCustomerAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState("orders");
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab") === "queries" ? "queries" : searchParams.get("tab") === "profile" ? "profile" : "orders";
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [orders, setOrders] = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [profileForm, setProfileForm] = useState({
-    name: "", phone: "", company: "", address: "", city: "", state: "", pincode: ""
+    name: "", phone: "", company: "", gstin: "", address: "", city: "", state: "", pincode: ""
   });
+  const [gstVerified, setGstVerified] = useState(false);
+  const [errors, setErrors] = useState({});
 
   useEffect(() => {
     if (!isLoggedIn) { navigate("/"); return; }
@@ -40,7 +44,8 @@ const CustomerAccountPage = () => {
     try {
       const res = await getCustomerProfile(token);
       const p = res.data;
-      setProfileForm({ name: p.name || "", phone: p.phone || "", company: p.company || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
+      setProfileForm({ name: p.name || "", phone: p.phone || "", company: p.company || "", gstin: p.gstin || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
+      setGstVerified(!!p.gst_verified);
     } catch {}
   };
 
@@ -54,13 +59,38 @@ const CustomerAccountPage = () => {
   };
 
   const handleSaveProfile = async () => {
+    // Client-side mandatory validation
+    const e = {};
+    const name = (profileForm.name || "").trim();
+    const phone = (profileForm.phone || "").trim();
+    const gstin = (profileForm.gstin || "").trim().toUpperCase();
+    if (!name) e.name = "Contact Person Name is required";
+    if (!phone) e.phone = "Phone is required";
+    else if (phone.replace(/\D/g, "").length < 10) e.phone = "Phone must be at least 10 digits";
+    if (!gstin) e.gstin = "GST Number is required";
+    else if (gstin.length !== 15) e.gstin = "GSTIN must be 15 characters";
+    setErrors(e);
+    if (Object.keys(e).length) {
+      toast.error("Please fix the highlighted fields");
+      return;
+    }
+
     setSaving(true);
     try {
-      const res = await updateCustomerProfile(token, profileForm);
-      updateCustomer(res.data);
-      toast.success("Profile updated");
+      const res = await updateCustomerProfile(token, { ...profileForm, gstin });
+      const p = res.data;
+      setProfileForm({ name: p.name || "", phone: p.phone || "", company: p.company || "", gstin: p.gstin || "", address: p.address || "", city: p.city || "", state: p.state || "", pincode: p.pincode || "" });
+      setGstVerified(!!p.gst_verified);
+      updateCustomer(p);
+      toast.success("Profile updated · GST verified");
       setEditing(false);
-    } catch { toast.error("Failed to update"); }
+      setErrors({});
+    } catch (err) {
+      const msg = err?.response?.data?.detail || "Failed to update profile";
+      toast.error(msg);
+      // Surface server error against gstin field if it's GST-related
+      if (/GST|GSTIN/i.test(msg)) setErrors((prev) => ({ ...prev, gstin: msg }));
+    }
     setSaving(false);
   };
 
@@ -83,7 +113,14 @@ const CustomerAccountPage = () => {
           <div className="flex items-center justify-between mb-8">
             <div>
               <h1 className="text-2xl font-semibold text-gray-900">My Account</h1>
-              <p className="text-gray-500 mt-1">{customer?.email}</p>
+              <p className="text-gray-500 mt-1">
+                {(() => {
+                  const e = customer?.email || "";
+                  const isPlaceholder = e.endsWith("@phone.locofast.local");
+                  if (isPlaceholder) return customer?.phone ? `+${customer.phone}` : "Phone-only account";
+                  return e;
+                })()}
+              </p>
             </div>
             <button onClick={handleLogout} className="flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg border border-red-200" data-testid="logout-btn">
               <LogOut size={16} />Logout
@@ -126,7 +163,7 @@ const CustomerAccountPage = () => {
                     const si = statusConfig[order.status] || statusConfig.payment_pending;
                     const SI = si.icon;
                     return (
-                      <div key={order.id} className="bg-white rounded-xl border p-6 hover:shadow-sm transition-shadow" data-testid={`order-card-${order.order_number}`}>
+                      <div key={order.id} onClick={() => navigate(`/account/orders/${order.id}`)} className="bg-white rounded-xl border p-6 hover:shadow-sm hover:border-blue-200 transition-all cursor-pointer" data-testid={`order-card-${order.order_number}`}>
                         <div className="flex items-start justify-between mb-4">
                           <div>
                             <p className="font-semibold text-gray-900">{order.order_number}</p>
@@ -167,6 +204,11 @@ const CustomerAccountPage = () => {
                             Cancelled: {order.cancellation_reason === 'stock_out' ? 'Stock Out' : order.cancellation_reason === 'credit_limit' ? 'Credit Limit' : order.cancellation_reason}
                           </div>
                         )}
+                        <div className="flex items-center justify-end mt-3 pt-3 border-t border-gray-100">
+                          <span className="text-xs font-medium text-[#2563EB] hover:underline inline-flex items-center gap-1">
+                            View details <ArrowRight size={12} />
+                          </span>
+                        </div>
                       </div>
                     );
                   })}
@@ -179,47 +221,161 @@ const CustomerAccountPage = () => {
           {activeTab === "profile" && (
             <div className="bg-white rounded-xl border p-8 max-w-2xl" data-testid="profile-section">
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-lg font-semibold">Profile Details</h2>
+                <div>
+                  <h2 className="text-lg font-semibold">Profile Details</h2>
+                  <p className="text-xs text-gray-500 mt-1">Fields marked <span className="text-red-500">*</span> are mandatory. GST is verified live with the GSTN.</p>
+                </div>
                 {!editing ? (
                   <button onClick={() => setEditing(true)} className="flex items-center gap-2 text-sm text-[#2563EB] hover:underline" data-testid="edit-profile-btn"><Pencil size={14} />Edit</button>
                 ) : (
                   <button onClick={handleSaveProfile} disabled={saving} className="flex items-center gap-2 px-4 py-2 bg-[#2563EB] text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50" data-testid="save-profile-btn">
-                    {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}{saving ? "Saving..." : "Save"}
+                    {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}{saving ? "Verifying GST..." : "Save"}
                   </button>
                 )}
               </div>
 
               <div className="space-y-4">
-                <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                  <Mail size={16} className="text-gray-400" />
-                  <div><p className="text-xs text-gray-500">Email</p><p className="font-medium">{customer?.email}</p></div>
-                </div>
+                {/* Email — mandatory but immutable (login identity).
+                    For phone-OTP customers we hide the synthetic placeholder
+                    and prompt them to add a real email instead. */}
+                {(() => {
+                  const e = customer?.email || "";
+                  const isPlaceholder = e.endsWith("@phone.locofast.local");
+                  return (
+                    <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                      <Mail size={16} className="text-gray-400" />
+                      <div className="flex-1">
+                        <p className="text-xs text-gray-500">Email <span className="text-gray-400 font-normal">· optional</span></p>
+                        <p className="font-medium">
+                          {isPlaceholder
+                            ? <span className="text-gray-400 font-normal">Add an email so we can send invoices and updates</span>
+                            : e}
+                        </p>
+                      </div>
+                      {!isPlaceholder && <span className="text-xs text-gray-400">login identity</span>}
+                    </div>
+                  );
+                })()}
 
-                {[
-                  { key: "name", label: "Full Name", icon: User, placeholder: "Your name" },
-                  { key: "phone", label: "Phone", icon: Phone, placeholder: "+91 98765 43210" },
-                  { key: "company", label: "Company", icon: Building2, placeholder: "Your company" },
-                  { key: "address", label: "Address", icon: MapPin, placeholder: "Street address" },
-                ].map(({ key, label, icon: Icon, placeholder }) => (
-                  <div key={key} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                    <Icon size={16} className="text-gray-400 flex-shrink-0" />
-                    <div className="flex-1">
-                      <p className="text-xs text-gray-500">{label}</p>
+                {/* GST Number — mandatory, verified */}
+                <div className="p-3 bg-gray-50 rounded-lg" data-testid="profile-gstin-row">
+                  <div className="flex items-start gap-3">
+                    <FileText size={16} className="text-gray-400 mt-1 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-gray-500 flex items-center gap-2">
+                        GST Number <span className="text-red-500">*</span>
+                        {gstVerified && !editing && (
+                          <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
+                            <ShieldCheck size={12} /> Verified
+                          </span>
+                        )}
+                      </p>
                       {editing ? (
-                        <input
-                          type="text"
-                          value={profileForm[key]}
-                          onChange={(e) => setProfileForm({ ...profileForm, [key]: e.target.value })}
-                          placeholder={placeholder}
-                          className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg focus:border-[#2563EB] focus:outline-none text-sm"
-                          data-testid={`profile-${key}`}
-                        />
+                        <>
+                          <input
+                            type="text"
+                            value={profileForm.gstin}
+                            onChange={(e) => setProfileForm({ ...profileForm, gstin: e.target.value.toUpperCase() })}
+                            placeholder="22AAAAA0000A1Z5"
+                            maxLength={15}
+                            className={`w-full mt-1 px-3 py-2 border rounded-lg focus:outline-none text-sm font-mono uppercase ${errors.gstin ? "border-red-400 focus:border-red-500" : "border-gray-300 focus:border-[#2563EB]"}`}
+                            data-testid="profile-gstin"
+                          />
+                          {errors.gstin ? (
+                            <p className="text-xs text-red-600 mt-1">{errors.gstin}</p>
+                          ) : (
+                            <p className="text-xs text-gray-500 mt-1">Company Name will be auto-filled from the GST registry on save.</p>
+                          )}
+                        </>
                       ) : (
-                        <p className="font-medium">{profileForm[key] || <span className="text-gray-400">Not set</span>}</p>
+                        <p className="font-medium font-mono">{profileForm.gstin || <span className="text-gray-400 font-sans">Not set</span>}</p>
                       )}
                     </div>
                   </div>
-                ))}
+                </div>
+
+                {/* Company Name — auto-filled from GST, read-only */}
+                <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+                  <Building2 size={16} className="text-gray-400 flex-shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-xs text-gray-500">Company Name <span className="text-red-500">*</span> <span className="text-gray-400 font-normal">· auto-filled from GST</span></p>
+                    <p className="font-medium" data-testid="profile-company">
+                      {profileForm.company || <span className="text-gray-400 font-normal">Will populate after GST verification</span>}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Contact Person Name — mandatory */}
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <User size={16} className="text-gray-400 mt-1 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-xs text-gray-500">Contact Person Name <span className="text-red-500">*</span></p>
+                      {editing ? (
+                        <>
+                          <input
+                            type="text"
+                            value={profileForm.name}
+                            onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+                            placeholder="Full name"
+                            className={`w-full mt-1 px-3 py-2 border rounded-lg focus:outline-none text-sm ${errors.name ? "border-red-400" : "border-gray-300 focus:border-[#2563EB]"}`}
+                            data-testid="profile-name"
+                          />
+                          {errors.name && <p className="text-xs text-red-600 mt-1">{errors.name}</p>}
+                        </>
+                      ) : (
+                        <p className="font-medium">{profileForm.name || <span className="text-gray-400">Not set</span>}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Phone — mandatory */}
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <Phone size={16} className="text-gray-400 mt-1 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-xs text-gray-500">Phone <span className="text-red-500">*</span></p>
+                      {editing ? (
+                        <>
+                          <input
+                            type="text"
+                            value={profileForm.phone}
+                            onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                            placeholder="+91 98765 43210"
+                            className={`w-full mt-1 px-3 py-2 border rounded-lg focus:outline-none text-sm ${errors.phone ? "border-red-400" : "border-gray-300 focus:border-[#2563EB]"}`}
+                            data-testid="profile-phone"
+                          />
+                          {errors.phone && <p className="text-xs text-red-600 mt-1">{errors.phone}</p>}
+                        </>
+                      ) : (
+                        <p className="font-medium">{profileForm.phone || <span className="text-gray-400">Not set</span>}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Address — optional */}
+                <div className="p-3 bg-gray-50 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <MapPin size={16} className="text-gray-400 mt-1 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-xs text-gray-500">Address <span className="text-gray-400 font-normal">· optional</span></p>
+                      {editing ? (
+                        <input
+                          type="text"
+                          value={profileForm.address}
+                          onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
+                          placeholder="Street address"
+                          className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg focus:border-[#2563EB] focus:outline-none text-sm"
+                          data-testid="profile-address"
+                        />
+                      ) : (
+                        <p className="font-medium">{profileForm.address || <span className="text-gray-400">Not set</span>}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
 
                 {editing && (
                   <div className="grid grid-cols-3 gap-4">

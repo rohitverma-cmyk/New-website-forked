@@ -104,7 +104,7 @@ const OrderConfirmationPage = () => {
                   <div className="flex items-center gap-3 flex-wrap">
                     {isPaid && (
                       <a
-                        href={downloadInvoice(order.order_number)}
+                        href={downloadInvoice(order.id || order.order_number)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors text-sm font-medium"

@@ -2,8 +2,11 @@ import { useState, useEffect } from "react";
 import { Star, Plus, Trash2, Building2, Calendar, X } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { getSellers, getReviews, createReview, deleteReview } from "../../lib/api";
+import { useConfirm } from "../../components/useConfirm";
 
 const AdminReviews = () => {
+  const confirm = useConfirm();
+
   const [reviews, setReviews] = useState([]);
   const [sellers, setSellers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -55,7 +58,7 @@ const AdminReviews = () => {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Delete this review?")) return;
+    if (!(await confirm({ title: "Confirm action", message: "Delete this review?", tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteReview(id);
       fetchData();

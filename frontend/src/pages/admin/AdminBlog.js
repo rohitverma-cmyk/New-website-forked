@@ -3,6 +3,7 @@ import { Plus, Pencil, Trash2, X, FileText, Tag, FolderOpen, Eye, Search, Chevro
 import { toast } from "sonner";
 import MDEditor from "@uiw/react-md-editor";
 import AdminLayout from "../../components/admin/AdminLayout";
+import { useConfirm } from "../../components/useConfirm";
 import {
   getBlogPosts, getBlogCategories, getBlogTags,
   createBlogPost, updateBlogPost, deleteBlogPost,
@@ -12,6 +13,8 @@ import {
 } from "../../lib/api";
 
 const AdminBlog = () => {
+  const confirm = useConfirm();
+
   const [activeTab, setActiveTab] = useState("posts");
   const [posts, setPosts] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -140,7 +143,7 @@ const AdminBlog = () => {
   };
 
   const handleDeletePost = async (post) => {
-    if (!window.confirm(`Delete "${post.title}"?`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${post.title}"?`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteBlogPost(post.id);
       toast.success("Post deleted");
@@ -208,7 +211,7 @@ const AdminBlog = () => {
   };
 
   const handleDeleteCategory = async (cat) => {
-    if (!window.confirm(`Delete "${cat.name}"? Posts in this category will become uncategorized.`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${cat.name}"? Posts in this category will become uncategorized.`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteBlogCategory(cat.id);
       toast.success("Category deleted");
@@ -238,7 +241,7 @@ const AdminBlog = () => {
   };
 
   const handleDeleteTag = async (tag) => {
-    if (!window.confirm(`Delete "${tag.name}"?`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${tag.name}"?`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteBlogTag(tag.id);
       toast.success("Tag deleted");

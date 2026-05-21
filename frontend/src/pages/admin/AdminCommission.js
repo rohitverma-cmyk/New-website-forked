@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Plus, Trash2, X, RefreshCw, Pencil, Percent, Building2, FolderOpen, ShoppingCart, Ruler, ArrowRightLeft, Layers } from "lucide-react";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { toast } from "sonner";
+import { useConfirm } from "../../components/useConfirm";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -20,6 +21,8 @@ const RULE_TYPES = [
 ];
 
 const AdminCommission = () => {
+  const confirm = useConfirm();
+
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -97,7 +100,7 @@ const AdminCommission = () => {
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm("Delete this commission rule?")) return;
+    if (!(await confirm({ title: "Confirm action", message: "Delete this commission rule?", tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await fetch(`${API}/api/commission/rules/${id}`, { method: "DELETE", headers });
       toast.success("Rule deleted");

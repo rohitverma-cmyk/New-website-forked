@@ -6,8 +6,12 @@ import { getFabrics, getCategories, getSellers, getArticles, createFabric, updat
 import useCompositionOptions from "../../hooks/useCompositionOptions";
 import { getDispatchOptions } from "../../lib/dispatchOptions";
 import { CERTIFICATIONS } from "../../lib/certifications";
+import { useConfirm, useInputDialog } from "../../components/useConfirm";
 
 const AdminFabrics = () => {
+  const confirm = useConfirm();
+  const promptInput = useInputDialog();
+
   const compositionOptions = useCompositionOptions();
   const [fabrics, setFabrics] = useState([]);
   const [filteredFabrics, setFilteredFabrics] = useState([]);
@@ -460,8 +464,8 @@ const AdminFabrics = () => {
     setVideoUploadProgress(0);
   };
 
-  const addVideoUrl = () => {
-    const url = window.prompt("Enter video URL (YouTube, Vimeo, or direct link):");
+  const addVideoUrl = async () => {
+    const url = await promptInput({ title: "Add video", placeholder: "YouTube, Vimeo, or direct link", confirmLabel: "Add" });
     if (url && url.trim()) {
       setForm({ ...form, videos: [url.trim()] });
     }
@@ -678,7 +682,7 @@ const AdminFabrics = () => {
   };
 
   const handleDelete = async (fabric) => {
-    if (!window.confirm(`Delete "${fabric.name}"?`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Delete "${fabric.name}"?`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await deleteFabric(fabric.id);
       toast.success("Fabric deleted");
@@ -699,7 +703,7 @@ const AdminFabrics = () => {
   };
 
   const handleReject = async (fabric) => {
-    if (!window.confirm(`Reject "${fabric.name}"? The vendor will be notified.`)) return;
+    if (!(await confirm({ title: "Confirm action", message: `Reject "${fabric.name}"? The vendor will be notified.`, tone: "danger", confirmLabel: "Confirm" }))) return;
     try {
       await rejectFabric(fabric.id);
       toast.success("Fabric rejected");
@@ -730,12 +734,10 @@ const AdminFabrics = () => {
         .slice(0, 5)
         .map((p) => `• ${p.old_name} → ${p.new_name}`)
         .join("\n");
-      const ok = window.confirm(
-        `Will append GSM/oz to ${dry.will_update} fabric name${dry.will_update === 1 ? "" : "s"} ` +
+      const ok = await confirm({ title: "Confirm action", message: `Will append GSM/oz to ${dry.will_update} fabric name${dry.will_update === 1 ? "" : "s"} ` +
           `(out of ${dry.total_scanned} scanned).\n\nPreview:\n${preview}${
             dry.will_update > 5 ? `\n...and ${dry.will_update - 5} more` : ""
-          }\n\nProceed?`
-      );
+          }\n\nProceed?`, tone: "danger", confirmLabel: "Confirm" });
       if (!ok) return;
 
       // 2. Apply

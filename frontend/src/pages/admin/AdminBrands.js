@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import api, { uploadToCloudinary } from "../../lib/api";
 import AdminLayout from "../../components/admin/AdminLayout";
+import BrandUserModal from "../../components/admin/BrandUserModal";
+import BrandResetPasswordModal from "../../components/admin/BrandResetPasswordModal";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import { Plus, Building2, Users, X, Loader2, Trash2, Copy, Wallet, ShieldCheck, Upload, ImageIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -46,6 +49,16 @@ const AdminBrands = () => {
   const [sampleOtpSent, setSampleOtpSent] = useState(null);
   const [sampleOtpCode, setSampleOtpCode] = useState("");
   const [sampleBusy, setSampleBusy] = useState(false);
+
+  // In-app dialog state — replaces native prompt/confirm/alert popups
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [resetPwUser, setResetPwUser] = useState(null);
+  const [suspendUserCandidate, setSuspendUserCandidate] = useState(null);
+  const [hardDeleteUserCandidate, setHardDeleteUserCandidate] = useState(null);
+  const [hardDeleteConfirmText, setHardDeleteConfirmText] = useState("");
+  const [suspendBrandCandidate, setSuspendBrandCandidate] = useState(null);
+  const [emptyCategoriesPending, setEmptyCategoriesPending] = useState(null); // submit event payload
+  const [actionBusy, setActionBusy] = useState(false);
 
   // Allowed-categories inline editor (slide-over)
   const [editCats, setEditCats] = useState(false);
@@ -142,9 +155,16 @@ const AdminBrands = () => {
     if (!form.name || !form.admin_user_email || !form.admin_user_name) {
       toast.error("Name, brand admin email and name are required"); return;
     }
-    if (form.allowed_category_ids.length === 0) {
-      if (!window.confirm("No categories selected. The brand will see an empty catalog until you update this. Continue?")) return;
+    if (form.allowed_category_ids.length === 0 && !emptyCategoriesPending) {
+      // Stash the form action and surface an in-app confirm before continuing
+      setEmptyCategoriesPending(true);
+      return;
     }
+    await actuallyCreateBrand();
+  };
+
+  const actuallyCreateBrand = async () => {
+    setEmptyCategoriesPending(null);
     setCreating(true);
     try {
       const res = await api.post("/admin/brands", form);
@@ -158,12 +178,17 @@ const AdminBrands = () => {
     setCreating(false);
   };
 
-  const suspendBrand = async (brand) => {
-    if (!window.confirm(`Soft-delete '${brand.name}' and suspend all users?`)) return;
+  const suspendBrand = (brand) => setSuspendBrandCandidate(brand);
+
+  const confirmSuspendBrand = async () => {
+    if (!suspendBrandCandidate) return;
+    setActionBusy(true);
     try {
-      await api.delete(`/admin/brands/${brand.id}`);
+      await api.delete(`/admin/brands/${suspendBrandCandidate.id}`);
       toast.success("Brand suspended"); load();
     } catch { toast.error("Delete failed"); }
+    setActionBusy(false);
+    setSuspendBrandCandidate(null);
   };
 
   const handleLogoUpload = async (e) => {
@@ -181,30 +206,19 @@ const AdminBrands = () => {
     setLogoUploading(false);
   };
 
-  const addUserToBrand = async () => {
-    const email = window.prompt("New user email:"); if (!email) return;
-    const name = window.prompt("User full name:"); if (!name) return;
-    const designation = window.prompt(`Designation? One of: ${DESIGNATIONS.join(", ")}`, "Merchandiser") || "Merchandiser";
-    if (!DESIGNATIONS.includes(designation)) return toast.error("Invalid designation");
-    const role = window.prompt("Access level (brand_admin or brand_user):", "brand_user") || "brand_user";
-    const customPw = window.prompt("Set a specific password? (leave blank to auto-generate; min 8 chars)", "") || "";
-    if (customPw && customPw.length < 8) return toast.error("Password must be ≥8 characters");
-    try {
-      const payload = { email, name, role, designation };
-      if (customPw) payload.password = customPw;
-      const res = await api.post(`/admin/brands/${selected.id}/users`, payload);
-      toast.success("User created — welcome email sent");
-      refreshDetail();
-      alert(`Password for ${email} (save this, emailed too):\n${res.data.temporary_password_for_reference}`);
-    } catch (err) { toast.error(err?.response?.data?.detail || "Create failed"); }
-  };
+  const addUserToBrand = () => setShowAddUser(true);
 
-  const removeUser = async (userId) => {
-    if (!window.confirm("Suspend this user? (Reversible — they won't be able to log in but account stays on record.)")) return;
+  const removeUser = (userId) => setSuspendUserCandidate(userId);
+
+  const confirmRemoveUser = async () => {
+    if (!suspendUserCandidate) return;
+    setActionBusy(true);
     try {
-      await api.delete(`/admin/brands/${selected.id}/users/${userId}`);
+      await api.delete(`/admin/brands/${selected.id}/users/${suspendUserCandidate}`);
       refreshDetail(); toast.success("User suspended");
     } catch { toast.error("Failed"); }
+    setActionBusy(false);
+    setSuspendUserCandidate(null);
   };
 
   const reactivateUser = async (userId) => {
@@ -214,36 +228,29 @@ const AdminBrands = () => {
     } catch { toast.error("Failed"); }
   };
 
-  const hardDeleteUser = async (userId, email) => {
-    if (!window.confirm(`PERMANENTLY delete ${email}? This cannot be undone. Use Suspend instead if you might want to restore access.`)) return;
-    const confirm2 = window.prompt(`Type "DELETE ${email}" to confirm:`);
-    if (confirm2 !== `DELETE ${email}`) return toast.error("Confirmation text did not match — aborted");
-    try {
-      await api.delete(`/admin/brands/${selected.id}/users/${userId}?hard=true`);
-      refreshDetail(); toast.success("User deleted");
-    } catch { toast.error("Failed"); }
+  const hardDeleteUser = (userId, email) => {
+    setHardDeleteConfirmText("");
+    setHardDeleteUserCandidate({ id: userId, email });
   };
 
-  const resetUserPassword = async (userId, email) => {
-    const customPw = window.prompt(
-      `Reset password for ${email}?\n\n` +
-      `• Leave blank to auto-generate a temp password\n` +
-      `• Or type one yourself (min 8 chars)\n\n` +
-      `In either case, the user will be forced to change it on next login.`,
-      ""
-    );
-    if (customPw === null) return;  // cancelled
-    if (customPw && customPw.length < 8) return toast.error("Password must be ≥8 characters");
-    const sendEmail = window.confirm("Send the password to the user via email?\n(OK = yes, Cancel = no, you'll share it manually)");
+  const confirmHardDeleteUser = async () => {
+    if (!hardDeleteUserCandidate) return;
+    if (hardDeleteConfirmText !== `DELETE ${hardDeleteUserCandidate.email}`) {
+      toast.error("Confirmation text doesn't match");
+      return;
+    }
+    setActionBusy(true);
     try {
-      const res = await api.post(
-        `/admin/brands/${selected.id}/users/${userId}/reset-password`,
-        { new_password: customPw || null, send_email: sendEmail }
-      );
-      refreshDetail();
-      toast.success(sendEmail ? "Password reset — email sent" : "Password reset");
-      alert(`New password for ${email}:\n\n${res.data.temporary_password_for_reference}\n\n${sendEmail ? "Already emailed." : "Share this with the user securely (WhatsApp/in-person)."}`);
-    } catch (err) { toast.error(err?.response?.data?.detail || "Reset failed"); }
+      await api.delete(`/admin/brands/${selected.id}/users/${hardDeleteUserCandidate.id}?hard=true`);
+      refreshDetail(); toast.success("User deleted");
+    } catch { toast.error("Failed"); }
+    setActionBusy(false);
+    setHardDeleteUserCandidate(null);
+    setHardDeleteConfirmText("");
+  };
+
+  const resetUserPassword = (userId, email) => {
+    setResetPwUser({ id: userId, email });
   };
 
   // === Credit line OTP flow ===
@@ -401,7 +408,11 @@ const AdminBrands = () => {
                       {(b.type || "brand") === "factory" ? (
                         <div>
                           <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-100 text-amber-800">Factory</span>
-                          {b.parent_brand_name && <div className="text-[11px] text-gray-500 mt-0.5">↳ {b.parent_brand_name}</div>}
+                          {b.parent_brand_name ? (
+                            <div className="text-[11px] text-gray-500 mt-0.5">↳ {b.parent_brand_name}</div>
+                          ) : (
+                            <div className="text-[11px] text-gray-400 mt-0.5 italic">Standalone</div>
+                          )}
                         </div>
                       ) : (
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-100 text-blue-800">Brand</span>
@@ -461,15 +472,14 @@ const AdminBrands = () => {
 
                 {form.type === "factory" && (
                   <div>
-                    <p className="text-xs font-medium text-gray-600 mb-1.5">Parent Brand *</p>
+                    <p className="text-xs font-medium text-gray-600 mb-1.5">Parent Brand <span className="text-gray-400 font-normal">(optional — leave standalone if the factory buys for itself)</span></p>
                     <select
-                      required
                       value={form.parent_brand_id}
                       onChange={(e) => setForm({ ...form, parent_brand_id: e.target.value })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
                       data-testid="create-enterprise-parent-brand"
                     >
-                      <option value="">Select parent brand…</option>
+                      <option value="">— Standalone (no parent brand) —</option>
                       {brands.filter((b) => (b.type || "brand") === "brand").map((b) => (
                         <option key={b.id} value={b.id}>{b.name}</option>
                       ))}
@@ -704,6 +714,13 @@ const AdminBrands = () => {
                 )}
               </div>
 
+              {/* Quick link to full Financials portal */}
+              <div className="mb-4 flex justify-end">
+                <a href={`/admin/brands/${detail.brand?.id}/financials`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 bg-gray-900 hover:bg-black text-white px-3 py-1.5 rounded-lg text-xs font-medium" data-testid="admin-brand-financials-link">
+                  <Wallet size={12} /> Open Financials Portal
+                </a>
+              </div>
+
               {/* Sample Credits */}
               <div className="mb-6 border border-amber-200 rounded-xl p-4" data-testid="admin-brand-sample-panel">
                 <div className="flex items-center justify-between mb-3">
@@ -829,6 +846,113 @@ const AdminBrands = () => {
           </div>
         )}
       </div>
+
+      {/* === In-app dialogs replacing native popups === */}
+      <BrandUserModal
+        open={showAddUser}
+        brandId={selected?.id}
+        brandName={selected?.name || detail?.brand?.name || ""}
+        onClose={() => setShowAddUser(false)}
+        onCreated={() => refreshDetail()}
+      />
+      <BrandResetPasswordModal
+        open={!!resetPwUser}
+        brandId={selected?.id}
+        user={resetPwUser}
+        onClose={() => setResetPwUser(null)}
+        onDone={() => refreshDetail()}
+      />
+      <ConfirmDialog
+        open={!!suspendUserCandidate}
+        title="Suspend user"
+        message="They won't be able to log in, but the account stays on record. You can reactivate later."
+        confirmLabel="Suspend"
+        onCancel={() => setSuspendUserCandidate(null)}
+        onConfirm={confirmRemoveUser}
+        busy={actionBusy}
+        testId="confirm-suspend-user"
+      />
+      <ConfirmDialog
+        open={!!suspendBrandCandidate}
+        title={suspendBrandCandidate ? `Suspend "${suspendBrandCandidate.name}"?` : ""}
+        message="This soft-deletes the brand and suspends all of its users. Reversible from the database, but not from this UI."
+        confirmLabel="Suspend brand"
+        tone="danger"
+        onCancel={() => setSuspendBrandCandidate(null)}
+        onConfirm={confirmSuspendBrand}
+        busy={actionBusy}
+        testId="confirm-suspend-brand"
+      />
+      <ConfirmDialog
+        open={!!emptyCategoriesPending}
+        title="No categories selected"
+        message="The brand will see an empty catalog until you assign categories from the Allowed Categories section. Continue creating?"
+        confirmLabel="Create anyway"
+        onCancel={() => setEmptyCategoriesPending(null)}
+        onConfirm={actuallyCreateBrand}
+        busy={creating}
+        testId="confirm-empty-categories"
+      />
+
+      {/* Hard-delete user — requires typed confirmation */}
+      {hardDeleteUserCandidate ? (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+          onClick={(e) => { if (e.target === e.currentTarget && !actionBusy) setHardDeleteUserCandidate(null); }}
+        >
+          <div className="bg-white rounded-xl max-w-md w-full shadow-xl" data-testid="confirm-hard-delete-user">
+            <div className="p-5 flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 grid place-items-center flex-shrink-0">
+                <Trash2 className="text-red-600" size={20} />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-base font-semibold text-gray-900">
+                  Permanently delete {hardDeleteUserCandidate.email}
+                </h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  This cannot be undone. Use <span className="font-medium">Suspend</span>{" "}
+                  if you might want to restore access later.
+                </p>
+                <p className="mt-3 text-xs text-gray-600">
+                  Type{" "}
+                  <code className="bg-gray-100 px-1 rounded">DELETE {hardDeleteUserCandidate.email}</code>{" "}
+                  to confirm:
+                </p>
+                <input
+                  type="text"
+                  autoFocus
+                  value={hardDeleteConfirmText}
+                  onChange={(e) => setHardDeleteConfirmText(e.target.value)}
+                  className="mt-1 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:border-red-400 focus:outline-none"
+                  data-testid="confirm-hard-delete-input"
+                />
+              </div>
+            </div>
+            <div className="px-5 pb-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => setHardDeleteUserCandidate(null)}
+                className="px-4 py-2 text-sm rounded-lg border border-gray-200 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  actionBusy ||
+                  hardDeleteConfirmText !== `DELETE ${hardDeleteUserCandidate.email}`
+                }
+                onClick={confirmHardDeleteUser}
+                className="px-4 py-2 text-sm rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="confirm-hard-delete-confirm"
+              >
+                {actionBusy ? "Deleting…" : "Delete permanently"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </AdminLayout>
   );
 };

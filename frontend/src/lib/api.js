@@ -110,9 +110,17 @@ export const getCreditBalance = (email) => api.get("/credit/balance", { params: 
 // Customer Auth (OTP)
 export const sendCustomerOTP = (email) => api.post("/customer/send-otp", { email });
 export const verifyCustomerOTP = (email, otp) => api.post("/customer/verify-otp", { email, otp });
+export const sendCustomerWhatsAppOTP = (phone) => api.post("/customer/send-whatsapp-otp", { phone });
+export const verifyCustomerWhatsAppOTP = (phone, otp) => api.post("/customer/verify-whatsapp-otp", { phone, otp });
 export const getCustomerProfile = (token) => api.get("/customer/profile", { headers: { Authorization: `Bearer ${token}` } });
 export const updateCustomerProfile = (token, data) => api.put("/customer/profile", data, { headers: { Authorization: `Bearer ${token}` } });
 export const getCustomerOrders = (token) => api.get("/customer/orders", { headers: { Authorization: `Bearer ${token}` } });
+export const getCustomerOrder = (token, orderId) =>
+  api.get(`/customer/orders/${orderId}`, { headers: { Authorization: `Bearer ${token}` } });
+export const getOrderPayContext = (token, orderId) =>
+  api.get(`/customer/orders/${orderId}/pay-context`, { headers: { Authorization: `Bearer ${token}` } });
+export const getOrderTracking = (token, orderId) =>
+  api.get(`/customer/orders/${orderId}/tracking`, { headers: { Authorization: `Bearer ${token}` } });
 
 // Customer Queries (RFQ pipeline)
 export const getCustomerQueries = (token, status = "received") =>
@@ -149,18 +157,34 @@ export const deleteCollection = (id) => api.delete(`/collections/${id}`);
 // Stats
 export const getStats = () => api.get("/stats");
 
-// Upload — do not set Content-Type for FormData; browser must send multipart boundary.
+// Upload - Local storage (legacy fallback)
 export const uploadImage = (file) => {
   const formData = new FormData();
   formData.append("file", file);
-  return api.post("/upload", formData);
+  
+  // Explicitly get the token and include it
+  const token = localStorage.getItem("locofast_token");
+  
+  return api.post("/upload", formData, {
+    headers: { 
+      "Content-Type": "multipart/form-data",
+      ...(token && { Authorization: `Bearer ${token}` })
+    },
+  });
 };
 
 export const uploadVideo = (file, onProgress) => {
   const formData = new FormData();
   formData.append("file", file);
-
+  
+  // Explicitly get the token and include it
+  const token = localStorage.getItem("locofast_token");
+  
   return api.post("/upload/video", formData, {
+    headers: { 
+      "Content-Type": "multipart/form-data",
+      ...(token && { Authorization: `Bearer ${token}` })
+    },
     timeout: 300000, // 5 min timeout for large files
     onUploadProgress: (progressEvent) => {
       if (onProgress) {
@@ -343,9 +367,12 @@ export const bulkUploadCreditWallets = (wallets, mode = "replace") => api.post("
 export const getCreditApplications = () => api.get("/credit/applications");
 export const approveCreditApplication = (id, credit_limit) => api.put(`/credit/applications/${id}/approve`, { credit_limit });
 export const rejectCreditApplication = (id, reason) => api.put(`/credit/applications/${id}/reject`, { reason });
-export const downloadInvoice = (orderId) => {
+export const downloadInvoice = (orderIdOrNumber) => {
   const API_URL = process.env.REACT_APP_BACKEND_URL;
-  return `${API_URL}/api/orders/${orderId}/invoice`;
+  // Order numbers contain slashes (e.g. "LF/ORD/014") which break path
+  // matching, so we URL-encode the segment. Callers should prefer the
+  // UUID `order.id` whenever it's available.
+  return `${API_URL}/api/orders/${encodeURIComponent(orderIdOrNumber)}/invoice`;
 };
 
 // Email
@@ -383,6 +410,8 @@ export const submitVendorQuote = (rfqId, payload) =>
   api.post(`/vendor/rfqs/${rfqId}/quote`, payload);
 export const updateVendorQuote = (quoteId, payload) =>
   api.put(`/vendor/rfqs/quotes/${quoteId}`, payload);
+export const closeVendorRfq = (rfqId) => api.post(`/vendor/rfqs/${rfqId}/close`);
+export const reopenVendorRfq = (rfqId) => api.delete(`/vendor/rfqs/${rfqId}/close`);
 export const getVendorRfqStats = (period = "7d") =>
   api.get(`/vendor/rfqs/stats?period=${period}`);
 
