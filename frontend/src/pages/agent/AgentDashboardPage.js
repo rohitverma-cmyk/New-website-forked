@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAgentAuth } from "../../context/AgentAuthContext";
-import { Search, ShoppingCart, Send, Package, LogOut, Plus, Minus, Trash2, ExternalLink, Copy, Loader2, Eye, Clock, CheckCircle, XCircle, FileText, Store, SlidersHorizontal, X } from "lucide-react";
+import { Search, ShoppingCart, Send, Package, LogOut, Plus, Minus, Trash2, ExternalLink, Copy, Loader2, Eye, Clock, CheckCircle, XCircle, FileText, Store, SlidersHorizontal, X, Mail, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import axios from "axios";
-import { getFabrics, getFabricsCount, getCategories, getFabricFilterOptions } from "../../lib/api";
+import { getFabrics, getFabricsCount, getCategories, getFabricFilterOptions, getSellers } from "../../lib/api";
 import { getCheapestBulkPrice, formatQtyThreshold } from "../../lib/pricing";
 import { thumbImage } from "../../lib/imageUrl";
 import Watermark from "../../components/Watermark";
@@ -36,9 +36,12 @@ const AgentDashboardPage = () => {
   // Catalog filters (mirror B2C /fabrics)
   const [categories, setCategories] = useState([]);
   const [filterOptions, setFilterOptions] = useState({ colors: [], patterns: [], widths: [], compositions: [] });
+  const [sellers, setSellers] = useState([]);     // Supplier filter options (full active vendor roster)
   const [showFilters, setShowFilters] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState("");
   const [selectedType, setSelectedType] = useState("");
+  const [selectedSupplier, setSelectedSupplier] = useState("");    // Supplier filter (seller_id)
+  const [supplierSearch, setSupplierSearch] = useState("");        // typeahead within the dropdown
   const [availabilityFilter, setAvailabilityFilter] = useState(""); // bulk | enquiry
   const [gsmRange, setGsmRange] = useState({ min: "", max: "" });
   const [weightRange, setWeightRange] = useState({ min: "", max: "" });
@@ -61,11 +64,11 @@ const AgentDashboardPage = () => {
 
   // Share modal
   const [sharing, setSharing] = useState(false);
-  const [customerEmail, setCustomerEmail] = useState("");
-  const [paymentProofUrl, setPaymentProofUrl] = useState("");
-  const [uploading, setUploading] = useState(false);
   const [dispatchCountry, setDispatchCountry] = useState("india");
   const [usdRate, setUsdRate] = useState(null);
+  // Inline credit-limit checker (India only). Lets the agent confirm
+  // a buyer's GSTIN has an approved credit line before sharing the cart.
+  const [creditCheck, setCreditCheck] = useState({ gst: "", loading: false, balance: null, company: "", error: "" });
   // PI buyer fields (Bangladesh)
   const [showPIForm, setShowPIForm] = useState(false);
   const [piGenerating, setPiGenerating] = useState(false);
@@ -81,6 +84,7 @@ const AgentDashboardPage = () => {
       const params = { page, limit: 20 };
       if (searchQuery) params.search = searchQuery;
       if (selectedCategory) params.category_id = selectedCategory;
+      if (selectedSupplier) params.seller_id = selectedSupplier;
       if (selectedType) params.fabric_type = selectedType;
       if (availabilityFilter === "bulk") params.bookable_only = true;
       if (availabilityFilter === "enquiry") params.enquiry_only = true;
@@ -105,7 +109,7 @@ const AgentDashboardPage = () => {
       toast.error("Failed to load fabrics");
     }
     setFabricsLoading(false);
-  }, [page, searchQuery, selectedCategory, selectedType, availabilityFilter, gsmRange, weightRange, priceRange, selectedPattern, selectedColor, selectedWidth, selectedComposition]);
+  }, [page, searchQuery, selectedCategory, selectedSupplier, selectedType, availabilityFilter, gsmRange, weightRange, priceRange, selectedPattern, selectedColor, selectedWidth, selectedComposition]);
 
   const fetchSharedCarts = async () => {
     setCartsLoading(true);
@@ -113,6 +117,7 @@ const AgentDashboardPage = () => {
       const res = await fetch(`${API}/api/agent/shared-carts`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (res.status === 401) { logout(); navigate("/agent/login"); return; }
       setSharedCarts(await res.json());
     } catch {}
     setCartsLoading(false);
@@ -124,6 +129,7 @@ const AgentDashboardPage = () => {
       const res = await fetch(`${API}/api/agent/orders`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (res.status === 401) { logout(); navigate("/agent/login"); return; }
       setOrders(await res.json());
     } catch {}
     setOrdersLoading(false);
@@ -133,22 +139,32 @@ const AgentDashboardPage = () => {
   useEffect(() => { if (activeTab === "shared") fetchSharedCarts(); }, [activeTab]);
   useEffect(() => { if (activeTab === "orders") fetchOrders(); }, [activeTab]);
 
-  // Load categories + filter options once
+  // Load categories + filter options + sellers once
   useEffect(() => {
     getCategories().then(res => setCategories(res.data || [])).catch(() => {});
     getFabricFilterOptions().then(res => setFilterOptions(res.data || { colors: [], patterns: [], widths: [], compositions: [] })).catch(() => {});
+    // Sellers roster for the "Supplier" filter. Sorted alphabetically by
+    // company_name so the dropdown is scannable. We keep inactive sellers
+    // out (default include_inactive=false).
+    getSellers()
+      .then(res => {
+        const list = Array.isArray(res.data) ? res.data : (res.data?.sellers || []);
+        list.sort((a, b) => (a.company_name || a.name || "").localeCompare(b.company_name || b.name || ""));
+        setSellers(list);
+      })
+      .catch(() => setSellers([]));
   }, []);
 
   // Reset to page 1 when any filter changes
-  useEffect(() => { setPage(1); }, [searchQuery, selectedCategory, selectedType, availabilityFilter, gsmRange, weightRange, priceRange, selectedPattern, selectedColor, selectedWidth, selectedComposition]);
+  useEffect(() => { setPage(1); }, [searchQuery, selectedCategory, selectedSupplier, selectedType, availabilityFilter, gsmRange, weightRange, priceRange, selectedPattern, selectedColor, selectedWidth, selectedComposition]);
 
   const activeFilterCount = [
-    selectedCategory, selectedType, availabilityFilter, selectedPattern, selectedColor, selectedWidth, selectedComposition,
+    selectedCategory, selectedSupplier, selectedType, availabilityFilter, selectedPattern, selectedColor, selectedWidth, selectedComposition,
     gsmRange.min, gsmRange.max, weightRange.min, weightRange.max, priceRange.min, priceRange.max,
   ].filter(Boolean).length;
 
   const clearAllFilters = () => {
-    setSelectedCategory(""); setSelectedType(""); setAvailabilityFilter("");
+    setSelectedCategory(""); setSelectedSupplier(""); setSelectedType(""); setAvailabilityFilter("");
     setGsmRange({ min: "", max: "" }); setWeightRange({ min: "", max: "" }); setPriceRange({ min: "", max: "" });
     setSelectedPattern(""); setSelectedColor(""); setSelectedWidth(""); setSelectedComposition("");
   };
@@ -193,30 +209,45 @@ const AgentDashboardPage = () => {
     setCart(cart.map((c) => c.fabric_id === fabricId ? { ...c, quantity: Math.max(1, c.quantity + delta) } : c));
   };
 
+  // Direct quantity setter — used by the typeable input. Coerces to a sensible
+  // minimum (1) and ignores non-numeric input gracefully.
+  const setCartQty = (fabricId, value) => {
+    const next = Math.max(1, parseInt(value, 10) || 1);
+    setCart(cart.map((c) => c.fabric_id === fabricId ? { ...c, quantity: next } : c));
+  };
+
   const removeFromCart = (fabricId) => {
     setCart(cart.filter((c) => c.fabric_id !== fabricId));
   };
 
-  const handleUploadProof = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith('image/')) { toast.error("Only image files allowed"); return; }
-    setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const { data } = await axios.post(
-        `${API}/api/agent/upload-payment-proof`,
-        formData,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      setPaymentProofUrl(data.url);
-      toast.success("Payment proof uploaded");
-    } catch (err) {
-      const msg = err?.response?.data?.detail || err?.message || 'Upload failed';
-      toast.error(msg);
+  // ── Inline credit-limit lookup (India only) ──────────────────────────
+  // Hits the public /credit/balance endpoint by GSTIN. We don't need an
+  // agent JWT here because the endpoint is public read-only for B2B sales
+  // ops. Errors are surfaced inline (no toast spam).
+  const handleCheckCredit = async () => {
+    const gstin = (creditCheck.gst || "").trim().toUpperCase();
+    if (gstin.length !== 15) {
+      setCreditCheck({ ...creditCheck, error: "GSTIN must be 15 characters", balance: null });
+      return;
     }
-    setUploading(false);
+    setCreditCheck({ ...creditCheck, loading: true, error: "", balance: null });
+    try {
+      const res = await fetch(`${API}/api/credit/balance?gst_number=${encodeURIComponent(gstin)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setCreditCheck({ gst: gstin, loading: false, balance: null, company: "", error: data.detail || "Lookup failed" });
+        return;
+      }
+      setCreditCheck({
+        gst: gstin,
+        loading: false,
+        balance: data.balance || 0,
+        company: data.company || "",
+        error: "",
+      });
+    } catch {
+      setCreditCheck({ gst: gstin, loading: false, balance: null, company: "", error: "Network error — try again" });
+    }
   };
 
   const handleShareCart = async (shareType = "quote") => {
@@ -227,19 +258,18 @@ const AgentDashboardPage = () => {
       // by browser extensions/interceptors, causing "body stream already read"
       const { data } = await axios.post(
         `${API}/api/agent/shared-cart`,
-        { items: cart, customer_email: customerEmail, notes: "", payment_proof_url: paymentProofUrl, dispatch_country: dispatchCountry },
+        { items: cart, customer_email: "", notes: "", payment_proof_url: "", dispatch_country: dispatchCountry },
         { headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` } }
       );
       const link = `${window.location.origin}/shared-cart/${data.token}`;
       try { await navigator.clipboard.writeText(link); } catch { /* clipboard may fail */ }
       toast.success(`Quote link copied: ${link}`);
       setCart([]);
-      setCustomerEmail("");
-      setPaymentProofUrl("");
       setDispatchCountry("india");
       setActiveTab("shared");
       fetchSharedCarts();
     } catch (err) {
+      if (err?.response?.status === 401) { logout(); navigate("/agent/login"); return; }
       const msg = err?.response?.data?.detail || err?.message || "Failed to generate link";
       toast.error(msg);
     }
@@ -299,6 +329,90 @@ const AgentDashboardPage = () => {
   const copyLink = (token) => {
     navigator.clipboard.writeText(`${window.location.origin}/shared-cart/${token}`);
     toast.success("Link copied!");
+  };
+
+  // Build the pitch message shared with the customer over WhatsApp / Email.
+  // Kept concise (most carts go over WhatsApp where long blocks look spammy)
+  // but still informative — agent name, item summary, indicative total and
+  // a clear CTA so the buyer doesn't need to ask "what is this?"
+  const buildShareMessage = (sc) => {
+    const url = `${window.location.origin}/shared-cart/${sc.token}`;
+    const agentName = sc.agent_name || agent?.name || "your Locofast agent";
+    const itemCount = sc.items?.length || 0;
+    const subtotal = (sc.items || []).reduce(
+      (s, it) => s + (Number(it.quantity) || 0) * (Number(it.price_per_meter) || 0),
+      0
+    );
+    const itemsLine = (sc.items || []).slice(0, 3).map((it) => {
+      const tag = it.order_type === "sample" ? "Sample" : "Bulk";
+      return `• ${it.fabric_name} — ${it.quantity}m (${tag})`;
+    }).join("\n");
+    const overflow = itemCount > 3 ? `\n• +${itemCount - 3} more item${itemCount - 3 !== 1 ? "s" : ""}` : "";
+    const subtotalLine = subtotal > 0
+      ? `\n\nIndicative subtotal: ₹${subtotal.toLocaleString("en-IN")} (excl. GST, logistics & packaging)`
+      : "";
+    return {
+      url,
+      subject: `Your curated fabric cart from Locofast`,
+      body:
+`Hi,
+
+I've curated a fabric cart for you on Locofast — ${itemCount} item${itemCount !== 1 ? "s" : ""} ready to review.
+
+${itemsLine}${overflow}${subtotalLine}
+
+Open the cart to review specs, edit quantities and place the order:
+${url}
+
+The link is private to you. Reply here or call me with any questions.
+
+— ${agentName}
+Locofast Online Services`,
+    };
+  };
+
+  const shareViaWhatsApp = (sc) => {
+    const { url, body } = buildShareMessage(sc);
+    // Use the universal wa.me deeplink — works on mobile (opens WhatsApp app)
+    // and desktop (opens WhatsApp Web). Customer phone is intentionally NOT
+    // prefilled — agent might want to send to a different contact than the
+    // one captured in the shared cart, so we leave it as a free-form open.
+    const text = encodeURIComponent(body);
+    const wa = `https://wa.me/?text=${text}`;
+    window.open(wa, "_blank", "noopener,noreferrer");
+    toast.success("WhatsApp opened — pick a contact to send");
+    // Keep clipboard handy too as a fallback if WhatsApp didn't open
+    try { navigator.clipboard.writeText(url); } catch {}
+  };
+
+  const shareViaEmail = (sc) => {
+    const { subject, body } = buildShareMessage(sc);
+    const prefill = sc.customer_email && !sc.customer_email.endsWith("@phone.locofast.local")
+      ? sc.customer_email : "";
+    const mailto = `mailto:${encodeURIComponent(prefill)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    window.location.href = mailto;
+    toast.success("Opening your email client…");
+  };
+
+  const handleDeleteSharedCart = async (cart) => {
+    const label = `${cart.items?.length || 0} item${(cart.items?.length || 0) !== 1 ? "s" : ""}`;
+    if (!window.confirm(`Delete this shared cart (${label})?\n\nThe customer's link will stop working. This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API}/api/agent/shared-cart/${cart.id || cart.token}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to delete cart");
+      }
+      toast.success("Shared cart deleted");
+      // Optimistic update — drop the row immediately, then re-sync
+      setSharedCarts((prev) => prev.filter((c) => (c.id || c.token) !== (cart.id || cart.token)));
+      fetchSharedCarts();
+    } catch (e) {
+      toast.error(e.message || "Failed to delete cart");
+    }
   };
 
   const cartTotal = cart.reduce((s, c) => s + c.quantity * c.price_per_meter, 0);
@@ -414,6 +528,10 @@ const AgentDashboardPage = () => {
                     const c = categories.find(x => x.id === selectedCategory);
                     return c ? <FilterChip label={c.name} onClear={() => setSelectedCategory("")} /> : null;
                   })()}
+                  {selectedSupplier && (() => {
+                    const s = sellers.find(x => x.id === selectedSupplier);
+                    return s ? <FilterChip label={`Supplier: ${s.company_name || s.name}`} onClear={() => setSelectedSupplier("")} /> : null;
+                  })()}
                   {selectedType && <FilterChip label={selectedType === "knitted" ? "Knits" : selectedType === "woven" ? "Woven" : selectedType} onClear={() => setSelectedType("")} />}
                   {availabilityFilter && <FilterChip label={availabilityFilter === "bulk" ? "Bookable Now" : "Enquiry Only"} onClear={() => setAvailabilityFilter("")} />}
                   {selectedColor && <FilterChip label={`Color: ${selectedColor}`} onClear={() => setSelectedColor("")} />}
@@ -445,6 +563,59 @@ const AgentDashboardPage = () => {
                         <option value="">All categories</option>
                         {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
+                    </div>
+
+                    {/* Supplier — typeahead + scrollable list. Sellers
+                        are pre-sorted alphabetically; typing in the
+                        search box narrows the list. */}
+                    <div className="mb-4">
+                      <label className="block text-xs font-medium text-gray-700 mb-1.5">Supplier</label>
+                      <input
+                        type="text"
+                        value={supplierSearch}
+                        onChange={(e) => setSupplierSearch(e.target.value)}
+                        placeholder="Search supplier…"
+                        className="w-full px-2.5 py-2 border border-gray-200 rounded-md text-sm mb-1.5 focus:border-blue-500 focus:outline-none"
+                        data-testid="agent-filter-supplier-search"
+                      />
+                      <div className="max-h-44 overflow-y-auto border border-gray-200 rounded-md bg-white" data-testid="agent-filter-supplier-list">
+                        <label className={`flex items-center gap-2 px-2.5 py-1.5 text-sm cursor-pointer hover:bg-gray-50 ${selectedSupplier === "" ? "bg-blue-50 font-medium" : ""}`}>
+                          <input
+                            type="radio"
+                            name="agent-supplier"
+                            checked={selectedSupplier === ""}
+                            onChange={() => setSelectedSupplier("")}
+                            data-testid="agent-filter-supplier-all"
+                          />
+                          <span>All suppliers</span>
+                        </label>
+                        {sellers
+                          .filter(s => {
+                            const q = supplierSearch.trim().toLowerCase();
+                            if (!q) return true;
+                            const name = (s.company_name || s.name || "").toLowerCase();
+                            return name.includes(q);
+                          })
+                          .slice(0, 100)
+                          .map(s => (
+                            <label
+                              key={s.id}
+                              className={`flex items-center gap-2 px-2.5 py-1.5 text-sm cursor-pointer hover:bg-gray-50 ${selectedSupplier === s.id ? "bg-blue-50 font-medium" : ""}`}
+                              data-testid={`agent-filter-supplier-${s.id}`}
+                            >
+                              <input
+                                type="radio"
+                                name="agent-supplier"
+                                checked={selectedSupplier === s.id}
+                                onChange={() => setSelectedSupplier(s.id)}
+                              />
+                              <span className="truncate" title={s.company_name || s.name}>{s.company_name || s.name}</span>
+                            </label>
+                          ))}
+                        {sellers.length === 0 && (
+                          <div className="px-2.5 py-2 text-xs text-gray-500">No suppliers available</div>
+                        )}
+                      </div>
                     </div>
 
                     {/* Type */}
@@ -557,12 +728,17 @@ const AgentDashboardPage = () => {
                     <div className={`grid sm:grid-cols-2 ${showFilters ? "lg:grid-cols-3" : "lg:grid-cols-4"} gap-4`}>
                       {fabrics.map((f) => (
                         <div key={f.id} className="group bg-white rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition-shadow" data-testid={`agent-fabric-${f.id}`}>
-                          <div className="relative">
+                          <Link to={`/fabrics/${f.slug || f.id}`} target="_blank" rel="noreferrer" className="block relative" title="Open product details in new tab">
                             <img src={thumbImage(f.images?.[0]) || "https://images.unsplash.com/photo-1558171813-4c088753af8f?w=300"} alt={f.name} className="w-full h-40 object-cover" loading="lazy" />
                             <Watermark size="sm" />
-                          </div>
+                            <span className="absolute top-2 right-2 inline-flex items-center gap-1 text-[10px] font-medium bg-white/90 text-gray-700 px-1.5 py-0.5 rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity">
+                              <ExternalLink size={10} /> View specs
+                            </span>
+                          </Link>
                           <div className="p-4">
-                            <h3 className="font-medium text-sm text-gray-900 truncate">{f.name}</h3>
+                            <Link to={`/fabrics/${f.slug || f.id}`} target="_blank" rel="noreferrer" className="font-medium text-sm text-gray-900 truncate block hover:text-[#2563EB]" data-testid={`agent-fabric-name-${f.id}`}>
+                              {f.name}
+                            </Link>
                             <p className="text-xs text-gray-500 mt-0.5">{f.category_name}</p>
                             {/* Vendor pill — prominent on Agent platform (hidden on B2C) */}
                             {f.seller_company ? (
@@ -642,9 +818,22 @@ const AgentDashboardPage = () => {
                   <div className="lg:col-span-2 space-y-3">
                     {cart.map((item) => (
                       <div key={`${item.fabric_id}-${item.order_type}`} className="bg-white rounded-xl p-4 border border-gray-200 flex gap-4" data-testid={`cart-item-${item.fabric_id}`}>
-                        {item.image_url && <img src={item.image_url} alt={item.fabric_name} className="w-20 h-20 object-cover rounded-lg" />}
+                        {item.image_url && (
+                          <Link to={`/fabrics/${item.fabric_slug || item.fabric_id}`} target="_blank" rel="noreferrer">
+                            <img src={item.image_url} alt={item.fabric_name} className="w-20 h-20 object-cover rounded-lg hover:opacity-80 transition" />
+                          </Link>
+                        )}
                         <div className="flex-1">
-                          <h3 className="font-medium text-gray-900">{item.fabric_name}</h3>
+                          <Link
+                            to={`/fabrics/${item.fabric_slug || item.fabric_id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-medium text-gray-900 hover:text-[#2563EB] inline-flex items-center gap-1.5 group"
+                            data-testid={`cart-item-pdp-${item.fabric_id}`}
+                          >
+                            {item.fabric_name}
+                            <ExternalLink size={11} className="text-gray-400 group-hover:text-[#2563EB]" />
+                          </Link>
                           <p className="text-xs text-gray-500">{item.category_name}</p>
                           {/* Vendor pill — agent must know which vendor to coordinate with */}
                           {item.seller_company ? (
@@ -674,13 +863,43 @@ const AgentDashboardPage = () => {
                         </div>
                         <div className="flex flex-col items-end gap-2">
                           <button onClick={() => removeFromCart(item.fabric_id)} className="p-1 text-gray-400 hover:text-red-500"><Trash2 size={16} /></button>
-                          <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-2 py-1">
-                            {/* Step size: bulk moves in 10m increments, samples move in 1m
-                                 increments. Samples are still measured in meters — typical
-                                 swatch lengths are 1-5m. */}
-                            <button onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? -1 : -10)} className="p-1 text-gray-500 hover:text-gray-700"><Minus size={14} /></button>
-                            <span className="text-sm font-medium w-12 text-center">{item.quantity}m</span>
-                            <button onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? 1 : 10)} className="p-1 text-gray-500 hover:text-gray-700"><Plus size={14} /></button>
+                          {/* Quantity controls — typeable input + quick steppers.
+                               Big steppers do ±10m for bulk and ±1m for samples,
+                               so common adjustments are one click; for unusual
+                               quantities (e.g. 273m) the agent types directly. */}
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? -1 : -100)}
+                              className="px-1.5 py-1 bg-gray-100 text-gray-600 text-[10px] font-medium rounded hover:bg-gray-200"
+                              title={item.order_type === "sample" ? "-1m" : "-100m"}
+                              data-testid={`cart-qty-decr-big-${item.fabric_id}`}
+                            >
+                              {item.order_type === "sample" ? "−1" : "−100"}
+                            </button>
+                            <div className="flex items-center bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
+                              <button onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? -1 : -10)} className="px-2 py-1.5 text-gray-500 hover:bg-gray-100"><Minus size={12} /></button>
+                              <input
+                                type="number"
+                                min="1"
+                                value={item.quantity}
+                                onChange={(e) => setCartQty(item.fabric_id, e.target.value)}
+                                onBlur={(e) => setCartQty(item.fabric_id, e.target.value)}
+                                onFocus={(e) => e.target.select()}
+                                className="w-16 text-center text-sm font-semibold bg-transparent border-x border-gray-200 py-1 focus:outline-none focus:bg-white"
+                                data-testid={`cart-qty-input-${item.fabric_id}`}
+                                aria-label="Quantity in meters"
+                              />
+                              <button onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? 1 : 10)} className="px-2 py-1.5 text-gray-500 hover:bg-gray-100"><Plus size={12} /></button>
+                            </div>
+                            <button
+                              onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? 1 : 100)}
+                              className="px-1.5 py-1 bg-gray-100 text-gray-600 text-[10px] font-medium rounded hover:bg-gray-200"
+                              title={item.order_type === "sample" ? "+1m" : "+100m"}
+                              data-testid={`cart-qty-incr-big-${item.fabric_id}`}
+                            >
+                              {item.order_type === "sample" ? "+1" : "+100"}
+                            </button>
+                            <span className="text-[11px] text-gray-500 ml-0.5">m</span>
                           </div>
                           <span className="text-sm font-semibold">₹{(item.quantity * item.price_per_meter).toLocaleString()}</span>
                         </div>
@@ -756,36 +975,62 @@ const AgentDashboardPage = () => {
                         </div>
                       )}
                     </div>
-                    <div className="mb-4">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Customer Email (optional)</label>
-                      <input
-                        type="email"
-                        value={customerEmail}
-                        onChange={(e) => setCustomerEmail(e.target.value)}
-                        placeholder="customer@example.com"
-                        className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:outline-none"
-                        data-testid="agent-customer-email"
-                      />
-                    </div>
-                    <div className="mb-4">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">RTGS/NEFT Payment Proof</label>
-                      <div className="border-2 border-dashed border-gray-200 rounded-lg p-3 text-center">
-                        {paymentProofUrl ? (
-                          <div className="flex items-center gap-3">
-                            <img src={`${API}${paymentProofUrl}`} alt="Payment proof" className="w-16 h-16 object-cover rounded" />
-                            <div className="flex-1 text-left">
-                              <p className="text-xs text-emerald-600 font-medium">Uploaded</p>
-                              <button onClick={() => setPaymentProofUrl("")} className="text-xs text-red-500 hover:text-red-700">Remove</button>
-                            </div>
+                    {/* ── Check Credit Limit (India only) ──────────────
+                        Lets the agent verify, before generating a share
+                        link, whether the buyer's GSTIN has an approved
+                        credit line. Hidden for Bangladesh (no INR credit). */}
+                    {dispatchCountry === "india" && (
+                      <div className="mb-4 border border-gray-100 rounded-lg p-3 bg-gray-50/40">
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="text-xs font-medium text-gray-700">Check Credit Limit</label>
+                          {creditCheck.balance != null && (
+                            <button
+                              type="button"
+                              onClick={() => { setCreditCheck({ gst: "", loading: false, balance: null, company: "", error: "" }); }}
+                              className="text-[11px] text-gray-400 hover:text-gray-600"
+                            >Clear</button>
+                          )}
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            maxLength={15}
+                            value={creditCheck.gst}
+                            onChange={(e) => setCreditCheck({ ...creditCheck, gst: e.target.value.toUpperCase(), error: "", balance: null })}
+                            placeholder="Enter Buyer GSTIN (15 chars)"
+                            className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono uppercase tracking-wide focus:border-blue-500 focus:outline-none"
+                            data-testid="agent-credit-gst-input"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleCheckCredit}
+                            disabled={creditCheck.loading || creditCheck.gst.length !== 15}
+                            className="px-3 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 inline-flex items-center gap-1.5"
+                            data-testid="agent-credit-check-btn"
+                          >
+                            {creditCheck.loading ? <Loader2 size={14} className="animate-spin" /> : "Check"}
+                          </button>
+                        </div>
+                        {creditCheck.error && (
+                          <p className="mt-2 text-xs text-red-600" data-testid="agent-credit-error">{creditCheck.error}</p>
+                        )}
+                        {creditCheck.balance != null && creditCheck.balance > 0 && (
+                          <div className="mt-2 bg-emerald-50 border border-emerald-200 rounded-lg p-2.5" data-testid="agent-credit-result-ok">
+                            <p className="text-[11px] text-emerald-700 uppercase font-medium tracking-wide">Available Credit</p>
+                            <p className="text-base font-bold text-emerald-900">₹{Number(creditCheck.balance).toLocaleString()}</p>
+                            {creditCheck.company && <p className="text-[11px] text-emerald-700">{creditCheck.company}</p>}
+                            {Number(creditCheck.balance) < cartTotal && (
+                              <p className="text-[11px] text-red-600 mt-1">⚠ Less than cart total ₹{cartTotal.toLocaleString()}</p>
+                            )}
                           </div>
-                        ) : (
-                          <label className="cursor-pointer">
-                            <input type="file" accept="image/*" onChange={handleUploadProof} className="hidden" data-testid="agent-payment-proof-input" />
-                            <p className="text-xs text-gray-500">{uploading ? "Uploading..." : "Click to upload screenshot"}</p>
-                          </label>
+                        )}
+                        {creditCheck.balance != null && creditCheck.balance === 0 && !creditCheck.error && (
+                          <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2" data-testid="agent-credit-result-none">
+                            No credit line found for this GSTIN. Buyer can apply at checkout.
+                          </p>
                         )}
                       </div>
-                    </div>
+                    )}
                     {dispatchCountry === "bangladesh" ? (
                       <div className="space-y-2">
                         <button
@@ -850,9 +1095,35 @@ const AgentDashboardPage = () => {
                             <span className="text-xs text-gray-400 ml-3">{formatDate(sc.created_at)}</span>
                           </div>
                         </div>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 flex-wrap">
+                          <button
+                            onClick={() => shareViaWhatsApp(sc)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50"
+                            data-testid={`agent-share-whatsapp-${sc.token}`}
+                            title="Share via WhatsApp"
+                          >
+                            <MessageCircle size={14} />WhatsApp
+                          </button>
+                          <button
+                            onClick={() => shareViaEmail(sc)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50"
+                            data-testid={`agent-share-email-${sc.token}`}
+                            title="Share via Email"
+                          >
+                            <Mail size={14} />Email
+                          </button>
                           <button onClick={() => copyLink(sc.token)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#2563EB] border border-blue-200 rounded-lg hover:bg-blue-50"><Copy size={14} />Copy Link</button>
                           <a href={`/shared-cart/${sc.token}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"><ExternalLink size={14} />Open</a>
+                          {sc.status !== "completed" && (
+                            <button
+                              onClick={() => handleDeleteSharedCart(sc)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+                              data-testid={`agent-shared-cart-delete-${sc.id || sc.token}`}
+                              title="Delete this shared cart"
+                            >
+                              <Trash2 size={14} />Delete
+                            </button>
+                          )}
                         </div>
                       </div>
                       <div className="text-sm text-gray-600">
@@ -861,10 +1132,24 @@ const AgentDashboardPage = () => {
                       </div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {sc.items?.slice(0, 3).map((item, i) => (
-                          <span key={i} className="text-xs bg-gray-50 border border-gray-100 px-2 py-1 rounded">
-                            <span className={`inline-block mr-1 px-1 py-0 rounded text-[10px] font-bold ${item.order_type === 'sample' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>{item.order_type === 'sample' ? 'S' : 'B'}</span>
-                            {item.fabric_name} ({item.quantity}m)
-                          </span>
+                          item.fabric_id ? (
+                            <Link
+                              key={i}
+                              to={`/fabrics/${item.fabric_slug || item.fabric_id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs bg-gray-50 border border-gray-100 px-2 py-1 rounded hover:border-blue-300 hover:text-[#2563EB] inline-flex items-center"
+                              title="View full specs"
+                            >
+                              <span className={`inline-block mr-1 px-1 py-0 rounded text-[10px] font-bold ${item.order_type === 'sample' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>{item.order_type === 'sample' ? 'S' : 'B'}</span>
+                              {item.fabric_name} ({item.quantity}m)
+                            </Link>
+                          ) : (
+                            <span key={i} className="text-xs bg-gray-50 border border-gray-100 px-2 py-1 rounded">
+                              <span className={`inline-block mr-1 px-1 py-0 rounded text-[10px] font-bold ${item.order_type === 'sample' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>{item.order_type === 'sample' ? 'S' : 'B'}</span>
+                              {item.fabric_name} ({item.quantity}m)
+                            </span>
+                          )
                         ))}
                         {sc.items?.length > 3 && <span className="text-xs text-gray-400">+{sc.items.length - 3} more</span>}
                       </div>

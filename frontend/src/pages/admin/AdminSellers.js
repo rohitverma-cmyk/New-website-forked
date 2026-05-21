@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Pencil, Trash2, X, Upload, Building2, MapPin, Check, ToggleLeft, ToggleRight, Eye, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, X, Upload, Building2, MapPin, Check, ToggleLeft, ToggleRight, Eye, Search, ShieldCheck, Loader2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
 import { getSellers, getCategories, createSeller, updateSeller, deleteSeller, uploadImage } from "../../lib/api";
 import { useConfirm } from "../../components/useConfirm";
+
+const API_URL = process.env.REACT_APP_BACKEND_URL;
 
 const AdminSellers = () => {
   const confirm = useConfirm();
@@ -52,8 +54,15 @@ const AdminSellers = () => {
     certifications: "",
     export_markets: "",
     gst_number: "",
+    gst_verified: false,
+    gst_legal_name: "",
+    gst_trade_name: "",
   };
   const [form, setForm] = useState(emptyForm);
+  // GST-verification UX: holds in-flight state + the last verification
+  // result so we can show the green confirmation card.
+  const [gstVerifying, setGstVerifying] = useState(false);
+  const [gstError, setGstError] = useState("");
 
   const fetchData = async () => {
     setLoading(true);
@@ -106,11 +115,13 @@ const AdminSellers = () => {
   const openCreateModal = () => {
     setEditingSeller(null);
     setForm(emptyForm);
+    setGstError("");
     setShowModal(true);
   };
 
   const openEditModal = (seller) => {
     setEditingSeller(seller);
+    setGstError("");
     setForm({
       name: seller.name,
       company_name: seller.company_name,
@@ -130,8 +141,52 @@ const AdminSellers = () => {
       certifications: (seller.certifications || []).join(", "),
       export_markets: (seller.export_markets || []).join(", "),
       gst_number: seller.gst_number || "",
+      gst_verified: !!seller.gst_verified,
+      gst_legal_name: seller.gst_legal_name || "",
+      gst_trade_name: seller.gst_trade_name || "",
     });
     setShowModal(true);
+  };
+
+  // ── GST verification ─────────────────────────────────────────────────
+  // Hits Sandbox.co.in via the backend to verify the GSTIN, then auto-
+  // fills company name, city, state and the legal/trade name fields.
+  // Required for new seller creation; existing sellers can re-verify.
+  const handleVerifyGst = async () => {
+    const gstin = (form.gst_number || "").trim().toUpperCase();
+    setGstError("");
+    if (!gstin) { setGstError("Enter GSTIN first"); return; }
+    if (gstin.length !== 15) { setGstError("GSTIN must be 15 characters"); return; }
+    setGstVerifying(true);
+    try {
+      const res = await fetch(`${API_URL}/api/gst/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gstin }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.valid) {
+        setGstError(data.message || data.detail || "GST verification failed");
+        setForm((p) => ({ ...p, gst_verified: false }));
+        return;
+      }
+      // Auto-fill from verified GST data — admin can still edit afterwards
+      setForm((p) => ({
+        ...p,
+        gst_number: gstin,
+        gst_verified: true,
+        gst_legal_name: data.legal_name || "",
+        gst_trade_name: data.trade_name || "",
+        company_name: p.company_name || data.trade_name || data.legal_name || "",
+        city: p.city || data.city || "",
+        state: p.state || data.state || "",
+      }));
+      toast.success(`GST verified · ${data.legal_name || data.trade_name || gstin}`);
+    } catch (err) {
+      setGstError("Could not reach GST service. Try again.");
+    } finally {
+      setGstVerifying(false);
+    }
   };
 
   const toggleSellerActive = async (seller) => {
@@ -146,6 +201,11 @@ const AdminSellers = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!editingSeller) {
+      // GST verification gate — only enforced for new seller onboarding
+      if (!form.gst_number) { toast.error("GST number is required"); return; }
+      if (!form.gst_verified) { toast.error("Verify the GSTIN before saving"); return; }
+    }
     if (!form.name || !form.company_name) {
       toast.error("Please enter name and company name");
       return;
@@ -276,11 +336,20 @@ const AdminSellers = () => {
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold text-lg truncate">{seller.company_name}</h3>
                       {seller.is_active === false && (
                         <span className="px-2 py-0.5 bg-gray-100 text-gray-500 text-xs rounded">Inactive</span>
                       )}
+                      {seller.gst_verified ? (
+                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 text-xs rounded inline-flex items-center gap-1 border border-emerald-200" data-testid={`seller-gst-verified-${seller.id}`}>
+                          <ShieldCheck size={11} /> GST Verified
+                        </span>
+                      ) : seller.gst_number ? (
+                        <span className="px-2 py-0.5 bg-amber-50 text-amber-700 text-xs rounded inline-flex items-center gap-1 border border-amber-200" data-testid={`seller-gst-unverified-${seller.id}`}>
+                          <AlertTriangle size={11} /> GST not verified
+                        </span>
+                      ) : null}
                     </div>
                     <p className="text-gray-500 text-sm">{seller.name}</p>
                     {seller.seller_code && (
@@ -360,6 +429,70 @@ const AdminSellers = () => {
               </div>
 
               <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                {/* ── GST Verification Gate ──────────────────────────────
+                   Sellers MUST be onboarded with a verified GSTIN. Auto-
+                   pulls the legal/trade name + city/state from Sandbox.
+                   ──────────────────────────────────────────────────── */}
+                <div
+                  className={`border rounded-lg p-4 ${form.gst_verified ? "border-emerald-200 bg-emerald-50/40" : "border-amber-200 bg-amber-50/40"}`}
+                  data-testid="seller-gst-card"
+                >
+                  <div className="flex items-start gap-2 mb-3">
+                    <ShieldCheck size={18} className={form.gst_verified ? "text-emerald-600" : "text-amber-600"} />
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold text-gray-800">
+                        Step 1 · Verify GST <span className="text-red-500">*</span>
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        Required to onboard a seller. Pulls legal name, trade name and registered address from the GST registry.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={form.gst_number}
+                      onChange={(e) => setForm({
+                        ...form,
+                        gst_number: e.target.value.toUpperCase(),
+                        // Any edit invalidates the previous verification
+                        gst_verified: false,
+                        gst_legal_name: e.target.value === form.gst_number ? form.gst_legal_name : "",
+                        gst_trade_name: e.target.value === form.gst_number ? form.gst_trade_name : "",
+                      })}
+                      className="flex-1 px-4 py-2 border border-gray-300 rounded font-mono uppercase tracking-wide text-sm focus:border-[#2563EB] focus:outline-none"
+                      placeholder="e.g. 24AABCB1234C1Z5"
+                      maxLength={15}
+                      disabled={gstVerifying}
+                      data-testid="seller-gst-number"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleVerifyGst}
+                      disabled={gstVerifying || form.gst_verified || !form.gst_number}
+                      className={`px-4 py-2 rounded text-sm font-medium inline-flex items-center gap-1.5 whitespace-nowrap ${form.gst_verified ? "bg-emerald-600 text-white cursor-default" : "bg-[#2563EB] text-white hover:bg-blue-600 disabled:opacity-50"}`}
+                      data-testid="seller-gst-verify-btn"
+                    >
+                      {gstVerifying ? <><Loader2 size={14} className="animate-spin" /> Verifying…</>
+                        : form.gst_verified ? <><Check size={14} /> Verified</>
+                        : <>Verify GST</>}
+                    </button>
+                  </div>
+                  {gstError && (
+                    <div className="mt-2 flex items-center gap-1.5 text-xs text-red-600" data-testid="seller-gst-error">
+                      <AlertTriangle size={12} /> {gstError}
+                    </div>
+                  )}
+                  {form.gst_verified && (form.gst_legal_name || form.gst_trade_name) && (
+                    <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs bg-white border border-emerald-200 rounded p-3" data-testid="seller-gst-result">
+                      {form.gst_legal_name && <div><span className="text-gray-500">Legal name: </span><span className="font-medium text-gray-900">{form.gst_legal_name}</span></div>}
+                      {form.gst_trade_name && <div><span className="text-gray-500">Trade name: </span><span className="font-medium text-gray-900">{form.gst_trade_name}</span></div>}
+                      {form.city && <div><span className="text-gray-500">City: </span><span className="font-medium text-gray-900">{form.city}</span></div>}
+                      {form.state && <div><span className="text-gray-500">State: </span><span className="font-medium text-gray-900">{form.state}</span></div>}
+                    </div>
+                  )}
+                </div>
+
                 {/* Logo Upload */}
                 <div>
                   <label className="block text-sm font-medium mb-2">Company Logo</label>
@@ -545,10 +678,6 @@ const AdminSellers = () => {
                       <input type="number" value={form.established_year} onChange={e => setForm({ ...form, established_year: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="2005" data-testid="seller-established-input" />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">GST Number</label>
-                      <input type="text" value={form.gst_number} onChange={e => setForm({ ...form, gst_number: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="24AABCS1429B1Z5" data-testid="seller-gst-input" />
-                    </div>
-                    <div>
                       <label className="block text-xs font-medium text-gray-500 mb-1">Monthly Capacity</label>
                       <input type="text" value={form.monthly_capacity} onChange={e => setForm({ ...form, monthly_capacity: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="1,20,000m/month" data-testid="seller-capacity-input" />
                     </div>
@@ -579,8 +708,14 @@ const AdminSellers = () => {
                   <button type="button" onClick={() => setShowModal(false)} className="btn-secondary flex-1">
                     Cancel
                   </button>
-                  <button type="submit" className="btn-primary flex-1" data-testid="save-seller-btn">
-                    {editingSeller ? "Update" : "Create"}
+                  <button
+                    type="submit"
+                    className="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={!editingSeller && !form.gst_verified}
+                    title={!editingSeller && !form.gst_verified ? "Verify GST before saving" : ""}
+                    data-testid="save-seller-btn"
+                  >
+                    {editingSeller ? "Update" : "Create Seller"}
                   </button>
                 </div>
               </form>

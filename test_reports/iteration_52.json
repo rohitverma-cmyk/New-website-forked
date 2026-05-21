@@ -1,0 +1,118 @@
+{
+  "summary": "Full end-to-end regression sweep of Brand Portal after Phase 53 (realtime quote-arrived notifications). All 26 backend API tests passed. UI testing verified all critical brand flows: login, catalog, notifications, queries, orders, account tabs, users, factories, allocations. No regressions found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Fabric Catalog",
+        "issues": ["Fabric cards use Link component but data-testid pattern 'fabric-card-' not found on clickable area - uses 'brand-fabric-card-link-{id}' instead"]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_brand_regression_v52.py",
+    "/app/test_reports/pytest/pytest_brand_regression_v52.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_brand_regression_v52.py"
+  ],
+  "success_rate": {
+    "backend": "100% (26/26 tests passed)",
+    "frontend": "100% (all critical flows verified)"
+  },
+  "test_credentials": {
+    "brand_admin": "brandtest@locofast.com / NewPassword123!",
+    "vendor": "vendor@test.com / vendor123",
+    "admin": "admin@locofast.com / admin123"
+  },
+  "seed_data_creation": "None - used existing test data",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Brand portal fully tested post-Phase 53. All features verified working: (1) AUTH: login/logout/must_reset_password redirect working, (2) TOP NAV: All links present (Catalog, Queries, Orders, Users, Factories, Allocations), cart icon with count, notification bell with dropdown, account link, (3) NOTIFICATION BELL: unread count polling, dropdown with notifications, mark-read, mark-all-read, navigation to query detail, (4) CATALOG: 168 SKUs visible, filter options working (categories, colors, compositions, widths, GSM), search working, (5) QUERIES: 3 tabs (received/pending/closed) with counts, search, query detail with vendor quotes sorted by price, Best Price pill on cheapest, Contact Locofast CTA, (6) ACCOUNT: All 5 tabs working (Overview, Profile, Addresses, Orders, Financials, Activity Ledger), credit/sample credit tiles, AM contact card, invoice list, (7) ORDERS: Table with Invoice (blue) + E-way (purple) download buttons when invoice attached, (8) USERS: List with invite button, suspend/reactivate working, (9) FACTORIES: List with verification status, factory credit summaries, (10) ALLOCATIONS: Sent handoffs list, (11) SUPPORT FOOTER: Email + phone links present.",
+  "features_verified": {
+    "auth_journey": {
+      "status": "PASS",
+      "details": "Login at /enterprise/login works, must_reset_password redirect works, logout clears localStorage and redirects to login"
+    },
+    "top_nav": {
+      "status": "PASS",
+      "details": "All nav links present: Catalog, Queries, Orders, Users, Factories, Allocations. Cart icon with count badge, notification bell, account wallet icon"
+    },
+    "notification_bell_phase53": {
+      "status": "PASS",
+      "details": "GET /api/brand/notifications/unread-count returns count, bell shows red badge when unread > 0, dropdown shows notifications with title/timestamp/url, click marks read and navigates, Mark all read button works"
+    },
+    "catalog": {
+      "status": "PASS",
+      "details": "168 SKUs loaded via /api/brand/fabrics, filter chips work (Availability/Category/Composition/Color/Width/GSM), search works, Request Sample / Order Bulk CTAs on cards"
+    },
+    "queries_portal": {
+      "status": "PASS",
+      "details": "3 tabs (Quotes received 2 / pending 5 / Closed 0) with counts, search by RFQ#/fabric/color works, NEW indicator on cards with fresh quotes"
+    },
+    "query_detail": {
+      "status": "PASS",
+      "details": "Full RFQ spec card visible, vendor quote cards sorted by price, Best Price pill on cheapest, Contact Locofast to proceed CTA"
+    },
+    "cart": {
+      "status": "PASS",
+      "details": "Cart page loads, shows empty state with Browse Fabrics CTA when empty"
+    },
+    "account_overview": {
+      "status": "PASS",
+      "details": "Credit Limit tile + Sample Credits tile visible, credit lines table, linked factories section"
+    },
+    "account_profile": {
+      "status": "PASS",
+      "details": "Read-only fields visible, brand_admin can Edit + save via PUT /api/brand/profile"
+    },
+    "account_addresses": {
+      "status": "PASS",
+      "details": "Own addresses + factory-aggregated addresses with 'from Factory' badge, Add address button, set-default works"
+    },
+    "account_orders": {
+      "status": "PASS",
+      "details": "Sample + Bulk grouped lists with PDP links per item"
+    },
+    "account_financials": {
+      "status": "PASS",
+      "details": "AM contact card (Locofast Admin), 5-tile summary (Invoiced/Paid/Credit Notes/Debit Notes/Outstanding), invoice list with file_url download"
+    },
+    "account_activity_ledger": {
+      "status": "PASS",
+      "details": "Credit/sample-credit movements visible"
+    },
+    "brand_orders": {
+      "status": "PASS",
+      "details": "Table with Documents column showing Invoice (blue) + E-way (purple) buttons when invoice attached"
+    },
+    "user_management": {
+      "status": "PASS",
+      "details": "brand_admin can invite team members, suspend/reactivate works"
+    },
+    "factory_management": {
+      "status": "PASS",
+      "details": "brand_admin can list factories, factory credit summaries endpoint working"
+    },
+    "allocations": {
+      "status": "PASS",
+      "details": "Sent handoffs list visible"
+    },
+    "support_footer": {
+      "status": "PASS",
+      "details": "Support email + phone links present in footer"
+    }
+  },
+  "mocked_apis": {
+    "razorpay": "Razorpay verify can't run without real payment",
+    "shiprocket": "May be sandbox",
+    "resend_email": "Email sending via Resend is live (status=sent in email_logs)"
+  }
+}

@@ -77,6 +77,10 @@ class BrandUpdate(BaseModel):
     status: Optional[str] = None
     type: Optional[str] = None
     parent_brand_id: Optional[str] = None
+    # Credit period in days (30 / 60 / 90). Drives the 1.5%/month
+    # surcharge applied at order time when the brand pays via Locofast
+    # credit. Single value drives all credit lines pooled under this GST.
+    credit_period_days: Optional[int] = None
 
 
 # Job titles surfaced in the invite-user dropdown. Permission level is still
@@ -300,6 +304,14 @@ async def get_brand(brand_id: str, admin=Depends(auth_helpers.get_current_admin)
 @router.put("/admin/brands/{brand_id}")
 async def update_brand(brand_id: str, data: BrandUpdate, admin=Depends(auth_helpers.get_current_admin)):
     updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    if "credit_period_days" in updates:
+        try:
+            p = int(updates["credit_period_days"])
+            if p not in (30, 60, 90):
+                raise HTTPException(status_code=400, detail="credit_period_days must be 30, 60, or 90")
+            updates["credit_period_days"] = p
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="credit_period_days must be an integer")
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     res = await db.brands.update_one({"id": brand_id}, {"$set": updates})
@@ -1450,12 +1462,17 @@ async def brand_credit_summary(user=Depends(get_current_brand_user)):
     available = round(total_allocated - total_utilized, 2)
     sample_total = int(brand.get("sample_credits_total", 0))
     sample_used = int(brand.get("sample_credits_used", 0))
+    # Credit period drives the 1.5%/month surcharge in the cart UI
+    credit_period_days = int(brand.get("credit_period_days") or 30)
+    if credit_period_days not in (30, 60, 90):
+        credit_period_days = 30
     return {
         "credit": {
             "total_allocated": round(total_allocated, 2),
             "total_utilized": round(total_utilized, 2),
             "available": available,
             "lines": lines,
+            "credit_period_days": credit_period_days,
         },
         "sample_credits": {
             "total": sample_total,
@@ -1638,7 +1655,22 @@ async def brand_create_order(data: BrandOrderCreate, user=Depends(get_current_br
         packaging_charge = 0
         logistics_only = 0
         logistics_total = 100.0  # flat ₹100 for samples
-    total = round(subtotal + tax + logistics_total, 2)
+    pre_credit_total = round(subtotal + tax + logistics_total, 2)
+
+    # Credit charges (1.5% per month × period/30) — only when paying via
+    # Locofast credit line. Cash/Razorpay orders are charge-free. Period
+    # is read off the brand profile (single value drives all credit lines
+    # for this GSTIN's lender pool).
+    credit_charge = 0.0
+    credit_period_days = 0
+    if data.order_type != "sample" and data.payment_method != "razorpay":
+        brand_doc = await db.brands.find_one({"id": user["brand_id"]}, {"_id": 0, "credit_period_days": 1}) or {}
+        credit_period_days = int(brand_doc.get("credit_period_days") or 30)
+        if credit_period_days not in (30, 60, 90):
+            credit_period_days = 30
+        months = credit_period_days / 30.0
+        credit_charge = round(pre_credit_total * 0.015 * months, 2)
+    total = round(pre_credit_total + credit_charge, 2)
 
     # Debit BEFORE creating order; on failure nothing is committed
     order_id = str(uuid.uuid4())
@@ -1707,6 +1739,8 @@ async def brand_create_order(data: BrandOrderCreate, user=Depends(get_current_br
         "subtotal": round(subtotal, 2),
         "tax": tax,
         "discount": 0,
+        "credit_charge": credit_charge,
+        "credit_period_days": credit_period_days,
         "total": total,
         "currency": "INR",
         "logistics_charge": logistics_total,
@@ -1781,15 +1815,21 @@ OPS_INBOX = os.environ.get("LOCOFAST_OPS_INBOX", "orders@locofast.com")
 # Additional internal stakeholders CC'd on every brand order so they can
 # coordinate delivery directly with the customer.
 ORDER_DELIVERY_CC = [e.strip() for e in os.environ.get(
-    "LOCOFAST_ORDER_DELIVERY_CC", "ashish.katiyar@locofast.com"
+    "LOCOFAST_ORDER_DELIVERY_CC", "ashish.katiyar@locofast.com,creditoperations@locofast.com"
 ).split(",") if e.strip()]
 
 
 def _order_items_html(order):
     rows = []
     for it in order.get("items", []):
+        fabric_ref = it.get("fabric_slug") or it.get("fabric_id", "")
+        fabric_url = f"{SITE_URL}/fabrics/{fabric_ref}" if fabric_ref else ""
+        name_cell = (
+            f"<a href='{fabric_url}' style='color:#2563EB;text-decoration:underline;font-weight:600;'>{it.get('fabric_name', '')}</a>"
+            if fabric_url else (it.get("fabric_name", "") or "")
+        )
         rows.append(
-            f"<tr><td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{it.get('fabric_name', '')}</td>"
+            f"<tr><td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{name_cell}</td>"
             f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{it.get('fabric_code', '')}</td>"
             f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;text-align:right;'>{it.get('quantity', 0)}</td>"
             f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;text-align:right;'>₹{it.get('line_total', 0):,.2f}</td></tr>"
@@ -2636,3 +2676,56 @@ async def _attach_invoice_links(orders: list, brand_id: str) -> list:
     for o in orders:
         o["invoice"] = invs_by_order.get(o["id"])
     return orders
+
+
+# ════════════════════════════════════════════════════════════════════
+# BRAND NOTIFICATIONS — bell-icon + dropdown
+# Pushed by email_router._notify_brand_on_quote when a vendor submits
+# a quote on one of the brand's RFQs.
+# ════════════════════════════════════════════════════════════════════
+@router.get("/brand/notifications")
+async def brand_list_notifications(
+    user=Depends(get_current_brand_user),
+    unread_only: bool = False,
+    limit: int = 30,
+):
+    """Return the latest notifications for the logged-in brand user. Bell-
+    icon dropdown calls this with limit=10. Notifications page calls with
+    limit=30."""
+    q = {"brand_id": user["brand_id"], "brand_user_id": user["id"]}
+    if unread_only:
+        q["read"] = False
+    rows = await db.brand_notifications.find(
+        q, {"_id": 0}
+    ).sort("created_at", -1).limit(max(1, min(int(limit or 30), 100))).to_list(length=limit)
+    unread = await db.brand_notifications.count_documents({**q, "read": False} if not unread_only else q)
+    return {"notifications": rows, "unread_count": unread}
+
+
+@router.get("/brand/notifications/unread-count")
+async def brand_unread_count(user=Depends(get_current_brand_user)):
+    """Lightweight endpoint polled by the bell icon every ~30s."""
+    n = await db.brand_notifications.count_documents({
+        "brand_id": user["brand_id"], "brand_user_id": user["id"], "read": False,
+    })
+    return {"unread_count": n}
+
+
+@router.post("/brand/notifications/{notif_id}/read")
+async def brand_mark_notification_read(notif_id: str, user=Depends(get_current_brand_user)):
+    res = await db.brand_notifications.update_one(
+        {"id": notif_id, "brand_user_id": user["id"]},
+        {"$set": {"read": True, "read_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "Marked read"}
+
+
+@router.post("/brand/notifications/read-all")
+async def brand_mark_all_read(user=Depends(get_current_brand_user)):
+    res = await db.brand_notifications.update_many(
+        {"brand_id": user["brand_id"], "brand_user_id": user["id"], "read": False},
+        {"$set": {"read": True, "read_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"message": f"Marked {res.modified_count} read", "modified": res.modified_count}

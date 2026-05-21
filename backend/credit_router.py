@@ -177,16 +177,69 @@ async def apply_for_credit(data: dict):
 
 
 @router.get("/credit/balance")
-async def get_credit_balance(email: str = Query(...)):
-    """Check credit wallet balance for a customer by email."""
-    wallet = await db.credit_wallets.find_one({'email': email}, {'_id': 0})
+async def get_credit_balance(gst_number: str = Query(...)):
+    """Check credit wallet balance by business GSTIN.
+
+    Credit lines are mapped to a legal entity (GST), not a personal email.
+    Returns `has_credit=True` only when the wallet has a positive balance.
+    """
+    gstin = (gst_number or "").strip().upper()
+    if len(gstin) != 15:
+        raise HTTPException(status_code=400, detail="Valid 15-character GSTIN is required")
+
+    wallet = await db.credit_wallets.find_one({"gst_number": gstin}, {"_id": 0})
     if not wallet:
-        return {'email': email, 'credit_limit': 0, 'balance': 0, 'has_credit': False}
+        return {
+            "gst_number": gstin,
+            "credit_limit": 0,
+            "balance": 0,
+            "has_credit": False,
+            "credit_period_days": 30,
+        }
+    # Mask the authorized email so we can show it in the UI without
+    # leaking the full address (e.g. "d***@locofast.com").
+    raw_email = wallet.get("email", "") or ""
+    masked = ""
+    if raw_email and "@" in raw_email:
+        local, domain = raw_email.split("@", 1)
+        masked = (local[:1] + "***" + local[-1:] + "@" + domain) if len(local) >= 2 else (local + "***@" + domain)
     return {
-        'email': email,
-        'credit_limit': wallet.get('credit_limit', 0),
-        'balance': wallet.get('balance', 0),
-        'has_credit': wallet.get('balance', 0) > 0
+        "gst_number": gstin,
+        "company": wallet.get("company", ""),
+        "credit_limit": wallet.get("credit_limit", 0),
+        "balance": wallet.get("balance", 0),
+        "has_credit": wallet.get("balance", 0) > 0,
+        "authorized_email_masked": masked,
+        "credit_period_days": int(wallet.get("credit_period_days", 30) or 30),
+        # Full email is intentionally NOT returned to keep checkout PII-clean.
+    }
+
+
+@router.get("/credit/lookup-by-email")
+async def lookup_wallet_by_email(email: str = Query(...)):
+    """Resolve a credit wallet by buyer email to bootstrap auto-fill.
+
+    Used by the checkout flow when a logged-in customer doesn't have a
+    GSTIN stored on their profile but their email IS the authorized buyer
+    on a credit wallet. We return the GSTIN + company so the form can
+    auto-fill, then the regular `/credit/balance?gst_number=` flow takes
+    over for actual balance display + ordering.
+
+    Stays one-way (email → GST). The main balance endpoint remains
+    GST-only — this one is purely a UX bootstrap helper.
+    """
+    e = (email or "").strip().lower()
+    if not e or "@" not in e:
+        raise HTTPException(status_code=400, detail="Valid email is required")
+    wallet = await db.credit_wallets.find_one({"email": e}, {"_id": 0})
+    if not wallet:
+        return {"email": e, "found": False, "gst_number": "", "company": "", "credit_period_days": 30}
+    return {
+        "email": e,
+        "found": True,
+        "gst_number": wallet.get("gst_number", "") or "",
+        "company": wallet.get("company", "") or "",
+        "credit_period_days": int(wallet.get("credit_period_days", 30) or 30),
     }
 
 
@@ -216,6 +269,10 @@ async def approve_credit_application(app_id: str, data: dict, admin=Depends(get_
             'email': app['email'],
             'name': app['name'],
             'company': app['company'],
+            # Mirror the GSTIN onto the wallet so credit can be looked up by
+            # business GST during checkout (B2B credit lines map to a legal
+            # entity, not a personal email).
+            'gst_number': (app.get('gst_number') or '').strip().upper(),
             'credit_limit': credit_limit,
             'balance': credit_limit,
             'updated_at': datetime.now(timezone.utc).isoformat()

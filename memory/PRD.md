@@ -404,7 +404,16 @@ Major financial workflow capability. Tested 30/30 backend + 100% frontend (itera
 4 deliverables building on the AM module. Tested 16/16 backend + 100% frontend (iteration_48.json). Detail in CHANGELOG.md.
 
 ### Phase 52: Cloudinary uploads + Cart address picker + Brand-group AM picker (Complete - Feb 2026)
-3 UX upgrades. Tested 22/22 backend + 100% frontend (iteration_49.json).
+3 UX upgrades. Tested 22/22 backend + 100% frontend (iteration_49.json). Detail in CHANGELOG.md.
+
+### Phase 53: Realtime quote-arrived notifications — email + bell icon (Complete - Feb 2026)
+Vendor quotes now ping the brand portal in real time. Tested 9/9 backend + 100% frontend (iteration_51.json).
+
+- **Email fanout**: `send_quote_received_email` now branches on `rfq.brand_id`. For brand-RFQs, fans out to ALL active `brand_admin` users on the brand (not just the RFQ author). Subject line: `[New quote] ₹185/kg on RFQ-2026-0042 · Locofast`. HTML body has a green pricing card + "View & compare quotes" emerald CTA linking to `/enterprise/queries/{id}`. Audit row written with `kind=quote_received_brand`.
+- **In-app bell**: New `brand_notifications` collection — one row per brand_admin per quote. New endpoints: `GET /api/brand/notifications?limit=10`, `GET /api/brand/notifications/unread-count`, `POST /api/brand/notifications/{id}/read`, `POST /api/brand/notifications/read-all`.
+- **Frontend `<NotificationBell>` component**: mounted in `BrandLayout` top-nav. Polls unread-count every 30s. Red badge with pulse animation showing count. Click opens 380px dropdown with the latest 10 notifications, "Mark all read" header, "See all queries →" footer. Click on a notification marks-read and navigates to `/enterprise/queries/:id`.
+
+
 
 - **Cloudinary file uploads**: New reusable `<FileUploadInput>` (admin) + `<BrandFileUpload>` (brand) components. Drag-drop or click; shows file chip with Replace/Remove after upload. Backend changes: signature endpoint enum extended to `raw|auto|image|video` (PDF support), `verify_admin` accepts brand JWT type. Wired into 5 admin forms (Invoice PDF, E-way Bill PDF, Credit Note PDF, Debit Note PDF, Payment Receipt) + ApplyCreditModal supporting-document field.
 - **Cart saved-address picker**: BrandCart now loads `/api/brand/addresses` on mount and renders saved-address cards (with `REGISTERED OFFICE`, `Default`, `GST-seeded`, `Factory · {name}` badges). Auto-picks the default. "Add new address" toggle reveals the inline form (still saves to backend if "Save as default" is checked). Selection radios with brand colors.
@@ -458,10 +467,70 @@ Major financial workflow capability. Tested 30/30 backend + 100% frontend (itera
   - "Queries" added to `BrandLayout` nav between Catalog and Orders.
   - `RFQPage.js` now sends `lf_brand_token` first (falls back to `lf_customer_token`); on success while brand-logged-in it redirects to `/enterprise/queries`.
 
+- **RFQ Multi-Step Drafts + PDP Spec Prefill (#8 — Feb 2026)** — Buyers no longer lose work mid-wizard, and PDP-launched RFQs auto-inherit the SKU's specs.
+  - **Backend** (`rfq_router.py`): `POST /api/rfq/submit` accepts new `is_draft: true` flag → creates an RFQ with `status="draft"`. New `PATCH /api/rfq/{rfq_id}` with `RFQPatch` model lets the wizard progressively enrich the same RFQ (composition, GSM, color, target_price…); aliases mirrored (`color → color_or_shade`, `weave_type → weave_pattern`, `target_price_per_unit → target_price_per_meter`, `required_by → dispatch_required_by`). PATCH is owner-only (403 otherwise) and frozen once a `vendor_quotes.status="won"` row exists. `finalize: true` flips draft→`new` and stamps `finalized_at`.
+  - **Frontend RFQPage.js**: Step 1 Continue POSTs `is_draft=true` → stores `rfq_id` and shows a green "Draft RFQ-XXXXXX saved" pill. Steps 2 & 3 PATCH only the fields they own. Final Submit PATCHes delivery + `finalize=true` (no duplicate RFQ). Anonymous users (no JWT) silently fall back to a single legacy POST on Submit.
+  - **PDP Prefill**: `/rfq?fabric_id=<id>` fetches the fabric and pre-fills category, fabric_type, unit, sub_category, composition rows, GSM/oz, width, color, pantone, weave/knit, finish, end_use & certifications. Toast confirms "Specs pre-filled from \<name\>".
+  - **RFQModal**: When launched from a PDP (with `fabric` prop) it now also surfaces an "Open full RFQ form (specs pre-filled)" link that deep-links into the wizard with prefill. `BrandFabricDetail.js` now passes `fabric={fabric}` to the modal so brand-side PDPs get the same flow.
+  - **Brand-logged-in contact card**: RFQPage Step 4 now hydrates from `lf_brand_token` (via `/api/brand/me`) in addition to customer tokens, so brand users see the read-only "Submitting as …" card instead of an empty contact form.
+
+- **Credit Period + 1.5%/mo Surcharge (Feb 2026)** — Brand orders paid via Locofast Credit Line now apply a per-month surcharge based on the credit period (30/60/90 days).
+  - **Backend (`brand_router.py`)**: `brands.credit_period_days` (default 30, validated 30/60/90) drives the formula `credit_charge = pre_credit_total * 0.015 * (period/30)` in `brand_create_order`. Razorpay path (`/brand/orders/razorpay/create` + payment_method=razorpay) is surcharge-free. `GET /api/brand/credit-summary` now returns `credit.credit_period_days` so the cart can mirror the math.
+  - **Frontend (`BrandCart.js`)**: Reads `credit_period_days` from credit-summary, computes `bulkCreditCharge` whenever bulk payment method = "credit", renders a "Credit charges (1.5% × N mo)" line in the Bulk summary, and rolls the charge into the bulk-total + grand-total. Locofast Credit Line option label now shows "<period>-day terms" with "1.5%/mo surcharge applies" subtitle. Toggling to Razorpay drops the charge instantly.
+  - **Admin tooling**: `PUT /api/admin/brands/{id}` accepts `credit_period_days` (validates 30/60/90). Bulk Credit Upload modal also seeds the field on first allocation.
+  - **B2C parity**: `CheckoutPage.js` + `orders_router.create_order` apply the same formula keyed on `credit_wallets.credit_period_days` (GST-keyed wallet).
+
+### Phase 54: Vendor Payouts Module (Complete - Feb 2026)
+New `accounts` role with restricted admin access. Calculates per-vendor dues from paid orders, applies commission % + advances, generates "Mark Paid" with UTR tracking. Module covers: dashboard at `/admin/payouts`, advances tied to specific orders, vendor finance edit (bank/PAN/payment_terms), email + WhatsApp settlement notifications.
+
+### Phase 55: Vendor Invoice Upload as Prerequisite for Payout (Complete - Feb 2026)
+Compliance gate — vendor must upload their tax invoice before Accounts can release payment. Tested 11/11 backend + 5/5 frontend (iteration_58.json).
+- **Backend (`payouts_router.py`)**: New endpoints `GET /api/vendor/payouts` (vendor JWT), `POST /api/vendor/payouts/{id}/upload-invoice` (vendor JWT), `POST /api/payouts/{id}/reject-invoice` (accounts/admin). Mark-paid endpoint now returns HTTP 400 if `vendor_invoice_status != "uploaded"`. Upload locks once submitted; only rejection unlocks re-upload. Audit history persisted in `vendor_invoice_history` array.
+- **Email triggers (Resend)**: On upload → email to `creditoperations@locofast.com` (env `ACCOUNTS_NOTIFY_EMAIL`) with invoice metadata + view link. On rejection → email to vendor with reason and call-to-action to re-upload.
+- **Frontend — Vendor Portal**: New `/vendor/payouts` page with 4 stat tiles (pending/uploaded/rejected/paid), filter chips, table of payouts, upload modal with invoice_number + date + amount fields + Cloudinary upload widget (any file type, max 25 MB). Same upload widget reused inside the VendorOrders detail modal so vendors can submit from either flow.
+- **Frontend — Admin/Accounts**: New "Invoice" column in payouts table (badge: Awaiting upload / Uploaded ↗ / Rejected). Detail modal gains "Vendor's Tax Invoice" section showing invoice number/date/claimed amount/uploaded-at + Open link. "Mark Paid" button is disabled (with tooltip) until invoice is uploaded. Inline "Reject invoice" button opens reason modal → fires rejection email to vendor.
+- **New schema fields on `vendor_payouts`**: `vendor_invoice_url`, `vendor_invoice_filename`, `vendor_invoice_number`, `vendor_invoice_date`, `vendor_invoice_amount`, `vendor_invoice_status` ("not_uploaded"/"uploaded"/"rejected"), `vendor_invoice_uploaded_at`, `vendor_invoice_rejection_reason`, `vendor_invoice_rejected_at`, `vendor_invoice_rejected_by`, `vendor_invoice_history[]`.
+- **New components**: `/app/frontend/src/components/vendor/VendorFileUpload.js` (Cloudinary direct-upload via vendor JWT, any file type), `/app/frontend/src/pages/vendor/VendorPayouts.js`.
+
+### Phase 56: Set Credit Limit by GST + Credit-Ops email rename (Complete - Feb 2026)
+Single-entry "Set Credit Limit by GST" admin tool — alternative to the bulk CSV upload. Tested 14/14 backend + all frontend (iteration_59.json).
+- **Backend (`orders_router.py`)**: New `POST /api/orders/credit/wallets/upsert` (password '0905' gated) — creates a new wallet when GST is unknown, or updates an existing one in Replace/Top-up mode. New `GET /api/orders/credit/wallets/lookup?gst_number=...` returns `{found, wallet?}`. Validates GSTIN length=15, credit_limit≥0, credit_period_days ∈ {30,60,90}.
+- **Frontend**: New "Set Limit by GST" button on Credit Management tab opens `SetCreditByGstModal`. As soon as the GSTIN reaches 15 chars, a debounced lookup runs (client-cache first, then server). If found → blue "Updating existing wallet" card with current limit/balance/used + Replace/Top-up toggle. If not found → amber "New customer" card with Company/Email/Lender/Period fields. Replace mode resets balance to new limit; Top-up preserves used credit. Credit-panel search now also matches against `gst_number`.
+- **Email rename**: `accounts@locofast.com` (a no-inbox distribution list) replaced with `creditoperations@locofast.com` across payouts emails, ORDER_NOTIFICATION_EMAILS, brand_router LOCOFAST_ORDER_DELIVERY_CC default, and the GST invoice PDF email field. The seeded admin login was renamed too (idempotent migration in `seed_accounts_user.py` carries over the existing user record). Old email no longer logs in.
+
+### Phase 57: Place of Supply = Shipping State + Consignee GST capture (Complete - Feb 2026)
+Fixed a compliance bug — CGST/IGST was previously decided by the buyer's BILLING GST, which is wrong for shipped goods. Per CGST §10, Place of Supply for goods = location of delivery. Now the invoice routes tax type based on the shipping state. Tested 11/11 backend + all frontend (iteration_60.json).
+- **New `ShipTo` Pydantic model** on `OrderCreate` with name, company, gst_number, address, city, state, pincode, phone. Persisted on the order doc.
+- **New `_resolve_pos_state(order, customer)`** function — POS resolution priority: `ship_to.gst_number` (first 2 digits) → `ship_to.state` → `customer.gst_number` → `customer.state`. Drives the `is_interstate` flag for IGST vs CGST+SGST on the invoice. `_resolve_buyer_state` retained for the Bill-To block (decoupled so billing state still shows correctly even when shipping elsewhere).
+- **Invoice PDF**: When `ship_to` is present, a 3-column layout (Seller | Bill-To | Ship-To) renders. Ship-To block includes consignee GSTIN + "State Code: NN (StateName)". Place of Supply line at the bottom now reflects the shipping state. Tax breakdown (CGST/SGST or IGST) follows the new POS resolution.
+- **Checkout UX (`CheckoutPage.js`)**: Selecting "Ship to a Different Address" now opens a GST-first form. An amber warning explains the GST is required for correct tax routing. Typing a 15-char GSTIN auto-verifies via `/api/gst/verify` (reused — no new endpoint), pulling firm name + address + state + pincode from GSTN. The State field becomes **readOnly** with a "🔒 locked from GSTN" indicator post-verification so the buyer cannot drift the state off the GSTN-registered value. Submit blocked until consignee GST is verified.
+
+### Phase 58: Edit Order + Vendor-driven Ship-From (Complete - Feb 2026)
+Full admin order-edit capability + Shiprocket pickup now sourced from the assigned vendor's address instead of Locofast's hardcoded warehouse. Tested 16/16 backend + all frontend (iteration_61.json).
+- **Backend (`orders_router.py`)**: New `PATCH /api/orders/{id}/edit` (admin auth) accepting partial OrderEditPayload (items/customer/ship_to/seller_id/notes/repush_shiprocket). Edits rejected when status is `delivered` or `cancelled`. Recomputes subtotal/tax/total on every save. New `GET /api/orders/{id}/edits` returns the audit history. New `order_edits` collection persists every edit with `{order_id, edited_by, edited_at, changed_fields, diff{before,after}}`.
+- **Vendor change behaviour**: Stamps new seller_id/seller_company onto every item (PRICE STAYS THE SAME — business rule). Cancels any pending payout for the old vendor with reason="Vendor reassigned via order edit". Already-paid payouts are never touched but get flagged with `needs_review=true` for accounts review. If order was already pushed to Shiprocket, the old SR shipment is cancelled via the SR cancel API and a new one is created with the new vendor's pickup address.
+- **Vendor-driven Ship-From**: New `_ensure_vendor_pickup_nickname(seller)` helper. Each seller now has 7 pickup fields (pickup_address/city/state/pincode/contact_name/contact_phone + shiprocket_pickup_nickname). When pushing to Shiprocket, the helper looks up the nickname; if blank, auto-registers a new pickup location in Shiprocket using the vendor's address fields (idempotent, stable nickname `VND-{seller_code}`) and persists it back to the seller. Falls back to "Primary" only when address fields are missing, with a log warning.
+- **Checkout / Shiprocket payload**: `create_shiprocket_shipment` now passes `shipping_*` fields separately when `ship_to` is present (so SR sends to the consignee, not the billing address) and `pickup_location` is the vendor-specific nickname.
+- **Frontend — `EditOrderModal.js`**: Full 5-tab modal (Items / Customer / Shipping / Vendor / History) opened via "Edit Order" button on the admin order detail. Live total recomputation preview, vendor search with pickup-warning badge, audit history viewer with collapsible diff JSON, optional "cancel & re-push SR" checkbox.
+- **Frontend — Admin Seller Detail Finance tab**: Adds a "Pickup address (Ship-From)" card with 7 fields + Save button so admin can register each vendor's warehouse for Shiprocket pickup.
+
+### Phase 59: 5% GST on Packaging + Logistics (Complete - Feb 2026)
+Compliance fix — per Schedule II of the CGST Act, packaging and logistics charged by the supplier are part of the value of supply and are taxable at the same rate as the principal goods. Earlier orders didn't tax these charges; new orders do. Tested 9/9 backend + frontend (iteration_62.json).
+- **Backend (`orders_router.py`)**: `calculate_totals` rewritten — `taxable_value = goods_subtotal + packaging + logistics`, `tax = 5% × taxable_value`, `total = taxable_value + tax`. Result also exposes a `tax_on_charges_v2: True` flag so the PDF renderer can branch correctly.
+- **Order doc**: New persisted fields `taxable_value` and `tax_on_charges_v2: True` on both Razorpay and credit-paid order creation paths. Bangladesh export PI flow unchanged (exports stay zero-rated).
+- **Invoice PDF — dual presentation**:
+  - **v2 (Feb 2026+)**: Goods Subtotal → Packaging Charge → Logistics Charge → **Taxable Value** → IGST 5% (or CGST 2.5% + SGST 2.5%) → TOTAL
+  - **v1 (legacy)**: Subtotal → IGST/CGST/SGST (on goods only) → Packaging → Logistics → TOTAL — preserved exactly so historical invoices match what customers were actually charged.
+- **Checkout UI (`CheckoutPage.js`)**: Both `calculatePricing` and `calculateMultiItemPricing` now compute tax base = `goods + packaging + logistics`. Order summary panel reorders to: Goods Subtotal → Packaging → Logistics → "Taxable value (Goods + Packaging + Logistics)" dashed row → GST 5% → Coupon/Credit → Total.
 
 ## Backlog
 
+### P0 (Top Priority — Next)
+- [ ] Auto due-date reminder emails (T-7 / T-3 / T+0): cron scanning `brand_invoices` for unpaid status, sending progressive reminders to brand admins & assigned AMs to reduce DSO.
+
 ### P1 (High Priority)
+- [ ] Outbound webhooks for CRM — POST RFQ status changes (`new → quoted → won`) to an external endpoint
+- [ ] Vendor SLA Timer (Time-to-Quote) — 48h countdown when a vendor opens an RFQ; auto-close on miss
 - [ ] Run `backfill_denim_names.py` on production to standardize legacy denim names/weaves/ounce formatting
 - [ ] Run `POST /api/migrate/compositions?apply=true` on production
 - [ ] Admin workflow: populate `article_id` on existing fabric SKUs so Buy Box dedupe becomes visible on listing
@@ -470,6 +539,13 @@ Major financial workflow capability. Tested 30/30 backend + 100% frontend (itera
 - [ ] Audit the 103 soft-404 pages from Google Search Console
 - [ ] Homepage redesign modules: Block CMS, Deal Wall Manager, Live Auctions, Trending Rankings
 - [ ] Further `server.py` slimming (GST, Stats, Seed, RFQ-lead still inline; target <400 lines)
+
+## Mobile PWA (Feb 13, 2026)
+- Dual-surface app: Desktop `/` and Mobile `/m/*` share React tree but isolate theme/SW.
+- Mobile pages: MHome, MCatalog, MFabricDetail, MRFQ, MOrders, MOrderDetail, MAccount, MCheckout, MNotifications, MLogin, **MRfqDetail**, **MOrderConfirmation**, **MInventory**, **MCollections**, **MCollectionDetail**, **MQueries** (new Feb 13: parity gap fix).
+- MAccount now has parity with desktop `/account`: Orders + Queries + RFQ stat cards, Company auto-fill, phone-only nudge, inline edit-sheet validation, Email field.
+- Architectural rules in `/app/frontend/src/mobile/README.md` — never touch `src/pages/` for mobile work.
+
 
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers

@@ -49,11 +49,30 @@ async def get_optional_admin(credentials: HTTPAuthorizationCredentials = Depends
     """Return the admin record if a valid Bearer token is present, else None.
     Used by public endpoints (e.g. /api/fabrics) that need to expose extra
     fields (like raw vendor names) when an admin is browsing, but stay
-    obfuscated for unauthenticated visitors."""
+    obfuscated for unauthenticated visitors.
+
+    NOTE: agents are also "internal staff" — they have their own JWT
+    (`type: "agent"`) and SHOULD see vendor identity to coordinate with
+    sellers. We treat any valid agent token as admin-equivalent for the
+    purposes of seller_company / seller_name visibility on listings.
+    """
     if not credentials or not credentials.credentials:
         return None
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        # Agent tokens carry `type: "agent"` + `agent_id` — surface them as
+        # a synthetic admin-equivalent record so downstream gates open.
+        if payload.get('type') == 'agent' and payload.get('agent_id'):
+            agent = await db.agents.find_one(
+                {'id': payload['agent_id']},
+                {'_id': 0, 'id': 1, 'name': 1, 'email': 1},
+            )
+            if agent:
+                # Tag the record so callers can distinguish "agent acting as
+                # admin for read-only purposes" from a true platform admin.
+                agent['_role'] = 'agent'
+                return agent
+            return None
         admin_id = payload.get('sub')
         if not admin_id:
             return None

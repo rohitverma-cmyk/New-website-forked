@@ -87,6 +87,25 @@ const RfqCard = ({ rfq, onSubmitQuote, onClose, onOpen, busy }) => {
           <p className="text-[12px] text-gray-500 truncate">
             {rfq.full_name} · {rfq.email}
           </p>
+          {/* SKU link — vendors need to know which catalog product the
+              RFQ was raised against. Falls back to the shortfall path. */}
+          {rfq.linked_fabric_id && (
+            <div className="mt-1 flex items-center gap-1.5 text-[11px] text-violet-700">
+              <Package size={11} />
+              <span className="font-medium">SKU:</span>
+              <a
+                href={`/fabrics/${rfq.linked_fabric_slug || rfq.linked_fabric_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="underline underline-offset-2 hover:text-violet-900 truncate"
+                data-testid={`vendor-rfq-sku-link-${rfq.rfq_number}`}
+                title="View live product page"
+              >
+                {rfq.linked_fabric_code || rfq.linked_fabric_id}{rfq.linked_fabric_name ? ` — ${rfq.linked_fabric_name}` : ''}
+              </a>
+            </div>
+          )}
           {isShortfall && rfq.linked_fabric_code ? (
             <p className="text-[11px] text-amber-700 mt-1">
               Linked to inventory order — {rfq.linked_inventory_qty || 0} m taken from stock

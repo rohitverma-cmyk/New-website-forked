@@ -119,6 +119,16 @@ const FabricDetailPage = () => {
 
   const bulkPrice = useMemo(() => calculateBulkPrice(bulkQty), [bulkQty, fabric]);
 
+  // MOQ is stored as a free-text string like "1500MTR" / "1,500 m" / "1500".
+  // Parse out the leading integer so we can compare it against tier ranges.
+  const moqNumeric = useMemo(() => {
+    if (!fabric?.moq) return 0;
+    const m = String(fabric.moq).match(/[\d,]+/);
+    if (!m) return 0;
+    const n = parseInt(m[0].replace(/,/g, ""), 10);
+    return Number.isFinite(n) ? n : 0;
+  }, [fabric]);
+
   // ── Buyer-side color variant helpers ──────────────────────────────────────
   const hasColorVariants = !!(fabric?.has_multiple_colors && fabric?.color_variants?.length > 0);
 
@@ -836,15 +846,33 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                   <div className="mb-4 pb-4 border-b border-gray-200">
                     <p className="text-sm text-gray-500 mb-2">Bulk Pricing Available</p>
                     <div className="flex flex-wrap gap-2">
-                      {fabric.pricing_tiers?.slice(0, 3).map((tier, idx) => (
-                        <span key={idx} className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded">
-                          {tier.min_qty}-{tier.max_qty}{unit.short}: ₹{tier.price_per_meter}{unit.priceLabel}
-                        </span>
-                      ))}
+                      {fabric.pricing_tiers?.slice(0, 3).map((tier, idx) => {
+                        const belowMoq = moqNumeric > 0 && tier.max_qty < moqNumeric;
+                        return (
+                          <span
+                            key={idx}
+                            className={`text-xs px-2 py-1 rounded inline-flex items-center gap-1 ${
+                              belowMoq
+                                ? "bg-amber-50 text-amber-700 border border-amber-200"
+                                : "bg-blue-50 text-blue-700"
+                            }`}
+                            title={belowMoq ? "Below MOQ — book via RFQ" : ""}
+                            data-testid={`pricing-tier-chip-${idx}`}
+                          >
+                            {tier.min_qty}-{tier.max_qty}{unit.short}: ₹{tier.price_per_meter}{unit.priceLabel}
+                            {belowMoq && <span className="text-[10px] font-medium">· via RFQ</span>}
+                          </span>
+                        );
+                      })}
                       {fabric.pricing_tiers?.length > 3 && (
                         <span className="text-xs text-gray-500">+{fabric.pricing_tiers.length - 3} more tiers</span>
                       )}
                     </div>
+                    {moqNumeric > 0 && fabric.pricing_tiers?.some((t) => t.max_qty < moqNumeric) && (
+                      <p className="text-[11px] text-amber-700 mt-2" data-testid="below-moq-tier-note">
+                        Tiers below the {moqNumeric.toLocaleString()}{unit.short} MOQ aren't bookable directly — submit an RFQ for a custom quote.
+                      </p>
+                    )}
                   </div>
                 )}
 

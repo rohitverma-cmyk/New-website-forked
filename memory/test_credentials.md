@@ -5,14 +5,37 @@
 - Password: admin123
 - Login URL: /admin/login
 
+## Credit Operations (Vendor Payouts panel)
+- Email: creditoperations@locofast.com
+- Password: Accounts@123
+- Login URL: /admin/login
+- Role: `accounts` — focused nav (Payouts · Orders read · Vendors)
+- Permissions: read all orders/sellers/payouts, mark payouts paid, edit ONLY bank/PAN/payment_terms on vendors
+- Note: previously seeded as `accounts@locofast.com`, renamed Feb 2026 because that DL has no inbox.
+
 ## Vendor
 - Email: vendor@test.com
 - Password: vendor123
 - Login URL: /vendor/login
 
+## Denim-Specialist Vendor (Bluerock Denim Mills)
+- Email: denimseller@locofast.com
+- Password: denim@123
+- Login URL: /vendor/login
+- Seller code: LS-EIOY3
+- Categories: Denim
+- GST: 24AABCB1234C1Z5 (verified seed)
+- Use this account to test denim-specific RFQ fan-out, weave taxonomy and quote flows.
+
 ## Alternate Vendor
 - Email: info@palimills.com
 - Password: admin@123
+
+## Vendor — Cotton Manufacturer (for Payout Invoice test)
+- Email: bhuvnesh.sharma@nsltextiles.com
+- Password: vendor123
+- Login URL: /vendor/login
+- Used to test the "Vendor uploads invoice → Accounts mark paid" flow.
 
 ## Agent
 - Email: agent@locofast.com

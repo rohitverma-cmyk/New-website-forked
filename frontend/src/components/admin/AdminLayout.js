@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase } from "lucide-react";
+import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 
 const AdminLayout = ({ children }) => {
@@ -7,9 +7,21 @@ const AdminLayout = ({ children }) => {
   const navigate = useNavigate();
   const { admin, logout } = useAuth();
 
-  const navItems = [
+  const isAccountsRole = admin?.role === "accounts";
+
+  // Accounts users get a focused nav surface — only Payouts + read-only
+  // Sellers + Orders, nothing else. Everything is gated server-side too;
+  // hiding the items here just keeps the UI clean.
+  const accountsNav = [
+    { path: "/admin/payouts", label: "Payouts", icon: IndianRupee },
+    { path: "/admin/orders", label: "Orders (read)", icon: ShoppingCart },
+    { path: "/admin/sellers", label: "Vendors", icon: Building2 },
+  ];
+
+  const fullNav = [
     { path: "/admin", label: "Dashboard", icon: LayoutDashboard },
     { path: "/admin/orders", label: "Orders", icon: ShoppingCart },
+    { path: "/admin/payouts", label: "Payouts", icon: IndianRupee },
     { path: "/admin/customers", label: "Customers", icon: Users },
     { path: "/admin/rfq", label: "RFQ", icon: ClipboardList },
     { path: "/admin/fabrics", label: "Fabrics", icon: Layers },
@@ -28,6 +40,8 @@ const AdminLayout = ({ children }) => {
     { path: "/admin/blog", label: "Blog", icon: FileText },
     { path: "/admin/seo", label: "SEO Content", icon: Search },
   ];
+
+  const navItems = isAccountsRole ? accountsNav : fullNav;
 
   const handleLogout = () => {
     logout();

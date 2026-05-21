@@ -4,7 +4,7 @@ import { useBrandAuth } from "../../context/BrandAuthContext";
 import BrandLayout from "./BrandLayout";
 import {
   Loader2, MessageSquareQuote, Plus, Search, ArrowRight, BadgeCheck,
-  Calendar, Layers, FileText,
+  Calendar, Layers, FileText, ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 import { fmtINR } from "../../lib/inr";
@@ -44,6 +44,21 @@ const QueryCard = ({ q }) => {
             {[q.fabric_requirement_type, q.gsm ? `${q.gsm} GSM` : null, q.weight_oz ? `${q.weight_oz} oz` : null]
               .filter(Boolean).join(" · ") || (q.knit_type || q.weave_type || "Custom RFQ")}
           </p>
+          {q.linked_fabric_id && (
+            <p className="text-[11px] mt-0.5" data-testid={`brand-query-ref-${q.id}`}>
+              <a
+                href={`/enterprise/fabrics/${q.linked_fabric_id}`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-emerald-700 hover:underline inline-flex items-center gap-1"
+                title={q.linked_fabric_name || ""}
+              >
+                <ExternalLink size={10} />
+                Ref: {q.linked_fabric_code || q.linked_fabric_name || "Source fabric"}
+              </a>
+            </p>
+          )}
           <div className="text-xs text-gray-600 mt-1 flex items-center gap-3 flex-wrap">
             <span className="inline-flex items-center gap-1"><Layers size={11} /> {q.quantity_label || "—"}</span>
             {q.required_by && <span className="inline-flex items-center gap-1"><Calendar size={11} /> by {q.required_by}</span>}

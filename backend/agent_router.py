@@ -297,6 +297,30 @@ async def list_shared_carts(request: Request):
     return carts
 
 
+@router.delete("/shared-cart/{cart_id}")
+async def delete_shared_cart(cart_id: str, request: Request):
+    """Soft-delete a shared cart that's no longer required. Refuses to
+    delete carts that have already been converted into an order — those
+    must stay around for audit/attribution. The cart owner (agent) must
+    match the requester.
+    """
+    payload = get_current_agent(request)
+    # Match on `id` first, fall back to `token` so the FE can pass either
+    cart = await db.shared_carts.find_one(
+        {'$or': [{'id': cart_id}, {'token': cart_id}], 'agent_email': payload['email']},
+        {'_id': 0}
+    )
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+    if cart.get('status') == 'completed':
+        raise HTTPException(
+            status_code=400,
+            detail="This cart has already been converted into an order and cannot be deleted."
+        )
+    await db.shared_carts.delete_one({'id': cart['id']})
+    return {"success": True, "deleted_id": cart['id'], "message": "Shared cart deleted"}
+
+
 @router.post("/upload-payment-proof")
 async def upload_payment_proof(file: UploadFile = File(...), request: Request = None):
     """Upload RTGS/NEFT payment proof screenshot."""

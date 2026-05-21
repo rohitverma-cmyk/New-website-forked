@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Layers, Package, ShoppingCart, MessageSquare, LogOut, ArrowLeft } from "lucide-react";
+import { LayoutDashboard, Layers, Package, ShoppingCart, MessageSquare, LogOut, ArrowLeft, IndianRupee } from "lucide-react";
 import { useVendorAuth } from "../../context/VendorAuthContext";
 
 const VendorLayout = ({ children }) => {
@@ -12,6 +12,7 @@ const VendorLayout = ({ children }) => {
     { path: "/vendor/rfqs", label: "RFQ / Requests", icon: MessageSquare },
     { path: "/vendor/inventory", label: "My Inventory", icon: Layers },
     { path: "/vendor/orders", label: "Orders", icon: ShoppingCart },
+    { path: "/vendor/payouts", label: "My Payouts", icon: IndianRupee },
   ];
 
   const handleLogout = () => {

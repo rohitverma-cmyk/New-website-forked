@@ -1,0 +1,79 @@
+{
+  "summary": "Tested Edit Order feature (v61): PATCH /api/orders/{id}/edit, GET /api/orders/{id}/edits, seller pickup fields, vendor change handling. All 16 backend tests passed. Frontend UI verified: EditOrderModal with 5 tabs (Items, Customer, Shipping, Vendor, History), all data-testid attributes present, Seller Finance tab with Pickup Address section.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_edit_order_v61.py",
+    "/app/test_reports/pytest/pytest_edit_order_v61.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Fixed: AdminOrders.js had duplicate code at end of file (lines 546-559) - removed duplicate and properly added EditOrderModal component",
+    "Fixed: Seller response model was missing pickup fields (pickup_address, pickup_city, pickup_state, pickup_pincode, pickup_contact_name, pickup_contact_phone, shiprocket_pickup_nickname) - added to Seller Pydantic model in seller_router.py"
+  ],
+  "updated_files": [
+    "/app/frontend/src/pages/admin/AdminOrders.js",
+    "/app/backend/seller_router.py",
+    "/app/backend/tests/test_edit_order_v61.py"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16 passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123"
+  },
+  "seed_data_creation": "Backend tests created/modified test data: order edits (audit rows), seller pickup fields. Test data prefixed with TEST_ for identification.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Edit Order feature fully tested. Key flows verified: (1) PATCH /api/orders/{id}/edit accepts partial OrderEditPayload with items, customer, ship_to, seller_id, notes, repush_shiprocket fields. (2) Edit endpoint validates target seller exists (404 if not found). (3) Rejects edits on 'delivered' or 'cancelled' orders with HTTP 400. (4) Persists audit row to order_edits collection with id, order_id, edited_by, edited_at, changed_fields, diff. (5) When items change, totals (subtotal/tax/total) are recomputed using 5% GST. (6) When seller_id changes, every item gets seller_id/seller_company stamped to new vendor, prices stay same. (7) GET /api/orders/{id}/edits returns audit history sorted newest-first, requires admin auth. (8) PUT /api/sellers/{id} accepts pickup_address, pickup_city, pickup_state, pickup_pincode, pickup_contact_name, pickup_contact_phone, shiprocket_pickup_nickname fields. (9) Frontend EditOrderModal has 5 tabs with proper data-testid attributes. (10) Seller Finance tab has Pickup Address section with all required fields.",
+  "features_verified": {
+    "edit_order_endpoint": {
+      "status": "PASS",
+      "details": "PATCH /api/orders/{id}/edit works with partial payload, returns success/order/audit/shiprocket/vendor_changed"
+    },
+    "edit_order_validation": {
+      "status": "PASS",
+      "details": "Validates seller exists (404), rejects delivered/cancelled orders (400)"
+    },
+    "audit_trail": {
+      "status": "PASS",
+      "details": "Audit rows created in order_edits collection with full diff tracking"
+    },
+    "totals_recomputation": {
+      "status": "PASS",
+      "details": "Subtotal/tax/total recomputed when items change"
+    },
+    "vendor_change": {
+      "status": "PASS",
+      "details": "Seller_id stamped on all items, prices preserved"
+    },
+    "list_order_edits": {
+      "status": "PASS",
+      "details": "GET /api/orders/{id}/edits returns sorted audit history, requires admin auth"
+    },
+    "seller_pickup_fields": {
+      "status": "PASS",
+      "details": "PUT /api/sellers/{id} accepts and persists all 7 pickup fields"
+    },
+    "frontend_edit_modal": {
+      "status": "PASS",
+      "details": "EditOrderModal with 5 tabs, all data-testid attributes present"
+    },
+    "frontend_seller_pickup": {
+      "status": "PASS",
+      "details": "Finance tab has Pickup Address section with all fields and save button"
+    }
+  },
+  "mocked_apis": {
+    "has_mocked_apis": false,
+    "mocked_apis_list": []
+  }
+}

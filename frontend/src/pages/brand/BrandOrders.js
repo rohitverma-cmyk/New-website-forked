@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useBrandAuth } from "../../context/BrandAuthContext";
 import BrandLayout from "./BrandLayout";
-import { ShoppingBag, Loader2, FileText, Receipt } from "lucide-react";
+import { ShoppingBag, Loader2, FileText, Receipt, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 
 const API = process.env.REACT_APP_BACKEND_URL;
@@ -60,7 +60,35 @@ const BrandOrders = () => {
                   <td className="px-4 py-3 font-mono text-xs">{o.order_number}</td>
                   <td className="px-4 py-3 text-xs text-gray-500">{new Date(o.created_at).toLocaleString()}</td>
                   <td className="px-4 py-3"><span className="text-xs bg-gray-100 px-2 py-0.5 rounded-full">{o.order_type}</span></td>
-                  <td className="px-4 py-3 text-gray-700">{(o.items || []).length}</td>
+                  <td className="px-4 py-3 text-gray-700" data-testid={`brand-order-items-${o.id}`}>
+                    <div className="flex flex-col gap-0.5 max-w-[260px]">
+                      {(o.items || []).slice(0, 3).map((it, i) => (
+                        it.fabric_id ? (
+                          <Link
+                            key={i}
+                            to={`/enterprise/fabrics/${it.fabric_id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs text-emerald-700 hover:underline inline-flex items-center gap-1 truncate"
+                            title={it.fabric_name}
+                            data-testid={`brand-order-item-link-${o.id}-${i}`}
+                          >
+                            <ExternalLink size={10} className="flex-shrink-0" />
+                            <span className="truncate">
+                              {it.fabric_name || "Fabric"}{it.color_name ? ` · ${it.color_name}` : ""} — {it.quantity}{it.unit || "m"}
+                            </span>
+                          </Link>
+                        ) : (
+                          <span key={i} className="text-xs text-gray-600 truncate" title={it.fabric_name}>
+                            {it.fabric_name || "Fabric"}{it.color_name ? ` · ${it.color_name}` : ""} — {it.quantity}{it.unit || "m"}
+                          </span>
+                        )
+                      ))}
+                      {(o.items || []).length > 3 && (
+                        <span className="text-[10px] text-gray-400">+{o.items.length - 3} more</span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-right font-semibold">{fmtINR(o.total)}</td>
                   <td className="px-4 py-3 text-xs text-gray-600">{o.payment_method === "sample_credit" ? "Sample Credits" : "Credit Line"}</td>
                   <td className="px-4 py-3">

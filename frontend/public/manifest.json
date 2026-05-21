@@ -1,0 +1,46 @@
+{
+  "name": "Locofast — Fabric Sourcing",
+  "short_name": "Locofast",
+  "description": "Hundreds of ready-to-sew fabrics. Sample in 48–72h, refill the winners.",
+  "start_url": "/m",
+  "scope": "/m",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#FF7A3D",
+  "background_color": "#FFF6EE",
+  "icons": [
+    {
+      "src": "/pwa-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["shopping", "business"],
+  "shortcuts": [
+    {
+      "name": "Browse Fabrics",
+      "short_name": "Catalog",
+      "url": "/m/catalog",
+      "description": "See trending fabrics ready to dispatch"
+    },
+    {
+      "name": "My Orders",
+      "short_name": "Orders",
+      "url": "/m/orders",
+      "description": "Track your fabric orders"
+    },
+    {
+      "name": "Request a Quote",
+      "short_name": "RFQ",
+      "url": "/m/rfq",
+      "description": "Tell us what you need"
+    }
+  ]
+}

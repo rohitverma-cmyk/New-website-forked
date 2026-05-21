@@ -79,6 +79,7 @@ class AdminResponse(BaseModel):
     id: str
     email: str
     name: str
+    role: str = ""
 
 class TokenResponse(BaseModel):
     token: str
@@ -233,12 +234,12 @@ async def login_admin(data: AdminLogin):
     token = create_token(admin['id'])
     return TokenResponse(
         token=token,
-        admin=AdminResponse(id=admin['id'], email=admin['email'], name=admin['name'])
+        admin=AdminResponse(id=admin['id'], email=admin['email'], name=admin['name'], role=admin.get('role', ''))
     )
 
 @api_router.get("/auth/me", response_model=AdminResponse)
 async def get_me(admin=Depends(get_current_admin)):
-    return AdminResponse(id=admin['id'], email=admin['email'], name=admin['name'])
+    return AdminResponse(id=admin['id'], email=admin['email'], name=admin['name'], role=admin.get('role', ''))
 
 # ==================== CATEGORY ROUTES (extracted to category_router.py) ====================
 
@@ -615,6 +616,9 @@ app.include_router(account_manager_router.router, prefix="/api")
 import commission_router
 commission_router.set_db(db)
 app.include_router(commission_router.router)
+
+import payouts_router  # noqa: E402
+app.include_router(payouts_router.router, prefix="/api")
 
 import category_router
 category_router.set_db(db)

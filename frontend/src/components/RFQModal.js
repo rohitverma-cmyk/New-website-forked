@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { ArrowRight, X } from "lucide-react";
-import { Link } from "react-router-dom";
+import { ArrowRight, X, FileText } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { trackGenerateLead } from "../lib/analytics";
 
@@ -23,6 +23,7 @@ const LOCATIONS = [
 ];
 
 export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric }) {
+  const navigate = useNavigate();
   const [form, setForm] = useState({
     name: "", phone: "", country_code: "+91", gst_number: "", bin_number: "", company_name: "", email: "", fabric_type: "", location: "",
     quantity: "", quantity_unit: "m", notes: ""
@@ -136,6 +137,16 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
     const isKnits = cat.includes("knit") || fabType.includes("knit");
     setForm((p) => ({ ...p, quantity_unit: isKnits ? "kg" : "m" }));
   }, [fabric]);
+
+  // Hand-off into the full multi-step RFQ wizard with the fabric's specs
+  // pre-filled — used by PDP-launched modals when the buyer wants to share
+  // more spec detail than this short modal collects.
+  const openDetailedRfq = () => {
+    const id = fabric && fabric.id ? fabric.id : "";
+    onClose();
+    if (id) navigate(`/rfq?fabric_id=${id}`);
+    else navigate(`/rfq`);
+  };
 
   if (!open) return null;
 
@@ -284,6 +295,17 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
             {submitting ? "Submitting..." : "Submit RFQ"}
             {!submitting && <ArrowRight size={16} />}
           </button>
+
+          {fabric && fabric.id && (
+            <button
+              type="button"
+              onClick={openDetailedRfq}
+              className="w-full -mt-1 py-2 text-xs text-[#2563EB] hover:text-[#1d4ed8] hover:underline inline-flex items-center justify-center gap-1.5"
+              data-testid="rfq-open-detailed-form"
+            >
+              <FileText size={12} /> Need to share more spec detail? Open full RFQ form (specs pre-filled)
+            </button>
+          )}
           <p className="text-center text-xs text-gray-400">Free quote &middot; No commitment &middot; Expert sourcing support</p>
         </form>
       </div>

@@ -168,6 +168,16 @@ const CustomerAccountPage = () => {
                           <div>
                             <p className="font-semibold text-gray-900">{order.order_number}</p>
                             <p className="text-sm text-gray-500">{formatDate(order.created_at)}</p>
+                            {order.is_parent_order && order.vendor_count > 1 && (
+                              <p className="text-[11px] text-blue-600 mt-1" data-testid={`order-parent-badge-${order.order_number}`}>
+                                Master order · ships from {order.vendor_count} mills
+                              </p>
+                            )}
+                            {order.parent_order_number && (
+                              <p className="text-[11px] text-gray-500 mt-1" data-testid={`order-child-badge-${order.order_number}`}>
+                                Shipment from {order.seller_company || "vendor"} · part of {order.parent_order_number}
+                              </p>
+                            )}
                           </div>
                           <div className="flex items-center gap-2">
                             {order.payment_method === 'credit' && <span className="px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-700">Credit</span>}

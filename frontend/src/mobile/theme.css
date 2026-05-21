@@ -1,0 +1,228 @@
+/* Locofast Mobile — design tokens & global styles (scoped to .m-app) */
+/* PRIMARY brand color flipped from orange → Locofast blue (#2563EB) on
+ * 2026-05-13. The `--m-orange*` variable names are preserved to avoid
+ * touching every consumer file; only their values changed. New consumers
+ * should prefer `--m-primary*` aliases declared below. */
+.m-app {
+  --m-orange: #2563EB;
+  --m-orange-700: #1D4ED8;
+  --m-orange-50: #EFF6FF;
+  /* Forward-looking aliases — same values, semantically correct names. */
+  --m-primary: #2563EB;
+  --m-primary-700: #1D4ED8;
+  --m-primary-50: #EFF6FF;
+  --m-ink: #0F1B2D;
+  --m-ink-2: #4A5468;
+  --m-ink-3: #8A93A6;
+  --m-cream: #F5F8FF;
+  --m-surface: #FFFFFF;
+  --m-bg: #F4F7FB;
+  --m-border: #E4ECF7;
+  --m-border-2: #D6E0EE;
+  --m-blue: #2563EB;
+  --m-blue-50: #EFF6FF;
+  --m-green: #15803D;
+  --m-green-50: #ECFDF5;
+  --m-red: #DC2626;
+  --m-amber: #D97706;
+
+  --m-radius: 16px;
+  --m-radius-lg: 20px;
+  --m-radius-sm: 10px;
+  --m-shadow-sm: 0 1px 2px rgba(15,27,45,0.06);
+  --m-shadow: 0 4px 14px rgba(15,27,45,0.08);
+  --m-shadow-lg: 0 12px 32px rgba(15,27,45,0.12);
+
+  --m-tab-h: 64px;
+  --m-appbar-h: 56px;
+
+  font-family: Inter, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  color: var(--m-ink);
+  background: var(--m-bg);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.m-app * { box-sizing: border-box; }
+.m-app button { font-family: inherit; cursor: pointer; }
+.m-app input, .m-app textarea, .m-app select { font-family: inherit; font-size: 16px; }
+/* Suppress browser/Tailwind default focus outlines/rings inside the
+ * mobile tree. We use border-color + box-shadow on the WRAPPER (.m-card)
+ * to indicate focus state instead, which gives full design control. */
+.m-app input:focus,
+.m-app input:focus-visible,
+.m-app textarea:focus,
+.m-app textarea:focus-visible,
+.m-app select:focus,
+.m-app select:focus-visible,
+.m-app .m-card:focus-within {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.m-app .m-screen {
+  min-height: 100vh;
+  padding-top: calc(var(--m-appbar-h) + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(var(--m-tab-h) + 16px + env(safe-area-inset-bottom, 0px));
+}
+
+.m-app .m-container { padding: 0 16px; max-width: 640px; margin: 0 auto; }
+
+.m-app .m-card {
+  background: var(--m-surface);
+  border-radius: var(--m-radius);
+  box-shadow: var(--m-shadow-sm);
+  border: 1px solid var(--m-border);
+}
+
+.m-app .m-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 14px 18px; border-radius: 12px; font-weight: 600; font-size: 15px;
+  border: 1px solid transparent; transition: transform .08s ease, opacity .15s ease;
+  min-height: 48px;
+}
+.m-app .m-btn:active { transform: scale(0.98); }
+.m-app .m-btn-primary { background: var(--m-orange); color: #fff; }
+.m-app .m-btn-primary:hover { background: var(--m-orange-700); }
+.m-app .m-btn-secondary { background: var(--m-ink); color: #fff; }
+.m-app .m-btn-ghost { background: transparent; color: var(--m-ink); border-color: var(--m-border-2); }
+.m-app .m-btn-outline { background: var(--m-surface); color: var(--m-ink); border-color: var(--m-border-2); }
+.m-app .m-btn:disabled { opacity: 0.5; pointer-events: none; }
+
+.m-app .m-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 999px;
+  background: var(--m-surface); border: 1px solid var(--m-border-2);
+  font-size: 13px; font-weight: 500; color: var(--m-ink-2);
+  white-space: nowrap;
+}
+.m-app .m-chip-on { background: var(--m-ink); color: #fff; border-color: var(--m-ink); }
+.m-app .m-chip-orange { background: var(--m-orange-50); color: var(--m-orange-700); border-color: var(--m-orange-50); }
+.m-app .m-chip-green { background: var(--m-green-50); color: var(--m-green); border-color: #d1fae5; }
+.m-app .m-chip-blue { background: var(--m-blue-50); color: var(--m-blue); border-color: #dbeafe; }
+
+.m-app .m-kicker {
+  display: inline-flex; align-items: center; gap: 6px;
+  text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700;
+  font-size: 11px; color: var(--m-orange-700);
+}
+.m-app .m-title-xl { font-size: 28px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; color: var(--m-ink); }
+.m-app .m-title-lg { font-size: 22px; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; color: var(--m-ink); }
+.m-app .m-title { font-size: 18px; font-weight: 700; line-height: 1.25; color: var(--m-ink); }
+.m-app .m-body { font-size: 14px; line-height: 1.5; color: var(--m-ink-2); }
+.m-app .m-caption { font-size: 12px; color: var(--m-ink-3); }
+
+.m-app .m-rail {
+  display: flex; gap: 12px; overflow-x: auto; padding: 4px 16px 12px;
+  scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+}
+.m-app .m-rail::-webkit-scrollbar { display: none; }
+.m-app .m-rail > * { scroll-snap-align: start; flex: 0 0 auto; }
+
+.m-app .m-skeleton {
+  background: linear-gradient(90deg, #ECE6DD 0%, #F7F2EA 50%, #ECE6DD 100%);
+  background-size: 200% 100%;
+  animation: m-shimmer 1.4s linear infinite;
+  border-radius: 8px;
+}
+@keyframes m-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+.m-app .m-spinner {
+  width: 24px; height: 24px; border-radius: 50%;
+  border: 3px solid var(--m-border-2); border-top-color: var(--m-orange);
+  animation: m-spin 0.7s linear infinite;
+}
+@keyframes m-spin { to { transform: rotate(360deg); } }
+
+/* Bottom sheet */
+.m-sheet-backdrop {
+  position: fixed; inset: 0; background: rgba(15,27,45,0.45);
+  z-index: 200; opacity: 0; transition: opacity .2s ease;
+}
+.m-sheet-backdrop.open { opacity: 1; }
+.m-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  background: var(--m-surface); border-radius: 24px 24px 0 0;
+  max-height: 90vh; overflow: hidden; display: flex; flex-direction: column;
+  z-index: 201; transform: translateY(100%); transition: transform .25s cubic-bezier(0.32, 0.72, 0, 1);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.m-sheet.open { transform: translateY(0); }
+.m-sheet-handle {
+  width: 40px; height: 4px; background: var(--m-border-2);
+  border-radius: 2px; margin: 10px auto 8px;
+}
+.m-sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 18px 14px; border-bottom: 1px solid var(--m-border);
+}
+.m-sheet-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+.m-sheet-foot { padding: 12px 18px; border-top: 1px solid var(--m-border); }
+
+/* Top app bar */
+.m-appbar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: calc(var(--m-appbar-h) + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+  background: var(--m-surface); border-bottom: 1px solid var(--m-border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding-left: 16px; padding-right: 16px; z-index: 100;
+}
+.m-appbar .m-appbar-logo { display: flex; align-items: center; gap: 8px; font-weight: 800; color: var(--m-ink); font-size: 18px; letter-spacing: -0.01em; }
+.m-appbar .m-appbar-logo-mark {
+  width: 28px; height: 28px; border-radius: 8px;
+  background: var(--m-blue-50);
+  display: flex; align-items: center; justify-content: center; color: var(--m-blue); font-weight: 800; font-size: 14px;
+}
+.m-appbar .m-appbar-actions { display: flex; align-items: center; gap: 4px; }
+.m-appbar .m-icon-btn {
+  width: 40px; height: 40px; border-radius: 12px; background: transparent;
+  display: inline-flex; align-items: center; justify-content: center; color: var(--m-ink);
+  border: none; position: relative;
+}
+.m-appbar .m-icon-btn:active { background: var(--m-bg); }
+.m-appbar .m-icon-btn .m-dot {
+  position: absolute; top: 8px; right: 8px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--m-orange); border: 2px solid var(--m-surface);
+}
+
+/* Bottom tab bar */
+.m-tabs {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  height: calc(var(--m-tab-h) + env(safe-area-inset-bottom, 0px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: var(--m-surface); border-top: 1px solid var(--m-border);
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  z-index: 100;
+}
+.m-tab {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; padding: 6px 4px; background: transparent; border: none;
+  color: var(--m-ink-3); font-size: 11px; font-weight: 600;
+  text-decoration: none; min-width: 0;
+}
+.m-tab svg { transition: transform .15s ease; }
+.m-tab.active { color: var(--m-orange); }
+.m-tab.active svg { transform: translateY(-2px); }
+.m-tab.active .m-tab-label { color: var(--m-orange-700); }
+.m-tab .m-tab-badge {
+  position: absolute; top: 4px; margin-left: 12px;
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--m-orange); color: #fff; font-size: 10px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* Install prompt */
+.m-install-banner {
+  position: fixed; left: 16px; right: 16px;
+  bottom: calc(var(--m-tab-h) + 16px + env(safe-area-inset-bottom, 0px));
+  background: var(--m-ink); color: #fff;
+  padding: 12px 14px; border-radius: 14px;
+  display: flex; align-items: center; gap: 12px;
+  box-shadow: var(--m-shadow-lg); z-index: 90;
+  font-size: 13px;
+}
+.m-install-banner button { background: var(--m-orange); color: #fff; border: none; padding: 8px 14px; border-radius: 10px; font-weight: 700; font-size: 13px; }
+.m-install-banner .m-install-close { background: transparent; color: rgba(255,255,255,0.7); padding: 4px; }

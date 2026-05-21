@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { useParams, useNavigate } from "react-router-dom";
-import { ShoppingCart, Loader2, AlertCircle, ArrowRight, User, FileText, Download } from "lucide-react";
+import { useParams, useNavigate, Link } from "react-router-dom";
+import { ShoppingCart, Loader2, AlertCircle, ArrowRight, User, FileText, Download, ExternalLink } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
@@ -174,10 +174,39 @@ const SharedCartPage = () => {
           <div className="space-y-3 mb-6">
             {cart?.items?.map((item, idx) => (
               <div key={idx} className="bg-white rounded-xl p-5 border border-gray-200 flex gap-4" data-testid={`shared-cart-item-${idx}`}>
-                {item.image_url && <img src={item.image_url} alt={item.fabric_name} className="w-20 h-20 object-cover rounded-lg" />}
+                {item.image_url && (
+                  item.fabric_id ? (
+                    <Link to={`/fabrics/${item.fabric_slug || item.fabric_id}`} target="_blank" rel="noreferrer" data-testid={`shared-cart-thumb-link-${idx}`}>
+                      <img src={item.image_url} alt={item.fabric_name} className="w-20 h-20 object-cover rounded-lg hover:opacity-80 transition" />
+                    </Link>
+                  ) : <img src={item.image_url} alt={item.fabric_name} className="w-20 h-20 object-cover rounded-lg" />
+                )}
                 <div className="flex-1">
-                  <h3 className="font-medium text-gray-900">{item.fabric_name}</h3>
+                  {item.fabric_id ? (
+                    <Link
+                      to={`/fabrics/${item.fabric_slug || item.fabric_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-medium text-gray-900 hover:text-[#2563EB] inline-flex items-center gap-1.5 group"
+                      data-testid={`shared-cart-pdp-link-${idx}`}
+                    >
+                      {item.fabric_name}
+                      <ExternalLink size={12} className="text-gray-400 group-hover:text-[#2563EB]" />
+                    </Link>
+                  ) : (
+                    <h3 className="font-medium text-gray-900">{item.fabric_name}</h3>
+                  )}
                   <p className="text-xs text-gray-500">{item.category_name}</p>
+                  {item.fabric_id && (
+                    <Link
+                      to={`/fabrics/${item.fabric_slug || item.fabric_id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[11px] text-[#2563EB] hover:underline mt-0.5 inline-block"
+                    >
+                      View full specifications →
+                    </Link>
+                  )}
                   <div className="mt-2 flex items-center gap-4 text-sm">
                     <span className="text-gray-600">{item.quantity} meters</span>
                     <span className="text-gray-600">@ ₹{item.price_per_meter}/m</span>

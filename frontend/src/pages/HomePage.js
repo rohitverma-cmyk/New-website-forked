@@ -4,6 +4,7 @@ import { ArrowRight, CheckCircle, MessageCircle, Shield, Clock, Users, ChevronDo
 import Navbar from "../components/Navbar";
 import RFQModal from "../components/RFQModal";
 import HeroSearchCard from "../components/HeroSearchCard";
+import BrandTicker from "../components/BrandTicker";
 import { getCollections } from "../lib/api";
 import { trackRFQIntent } from "../lib/analytics";
 import CreditApplicationSection from "../components/CreditApplicationSection";
@@ -178,8 +179,13 @@ const HomePage = () => {
 
               <HeroSearchCard />
 
+              {/* Brand ticker inside the hero — on the top fold */}
+              <div className="mt-10">
+                <BrandTicker compact />
+              </div>
+
               {/* Trust indicators */}
-              <div className="flex flex-wrap justify-center gap-8 mt-16 pt-8 border-t border-white/10">
+              <div className="flex flex-wrap justify-center gap-8 mt-8 pt-6 border-t border-white/10">
                 {trustBadges.map((badge, index) => (
                   <div key={index} className="flex items-center gap-2 text-white/80">
                     <badge.icon size={18} className="text-blue-200" />

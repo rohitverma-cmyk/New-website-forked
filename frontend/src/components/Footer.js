@@ -315,9 +315,6 @@ const Footer = () => {
           <p className="text-neutral-500 text-sm">
             © {new Date().getFullYear()} Locofast Online Services Pvt. Ltd.
           </p>
-          <Link to="/admin/login" className="text-neutral-600 hover:text-neutral-400 text-sm transition-colors" data-testid="admin-link">
-            Admin
-          </Link>
         </div>
       </div>
     </footer>

@@ -37,6 +37,40 @@ if (typeof window !== "undefined" && "caches" in window) {
   }
 }
 
+// --- Stale chunk auto-recovery --------------------------------------------
+// After a fresh deploy, tabs that were opened against the old build still
+// reference JS chunk filenames (e.g. `4754.90c8b616.chunk.js`) that no
+// longer exist on the server. The lazy import rejects with a ChunkLoadError
+// and React Suspense silently leaves the user on a blank screen.
+// We catch those errors here and force ONE full reload — the browser then
+// re-fetches the new `index.html` with current chunk hashes. A sessionStorage
+// flag prevents an infinite reload loop if the error is unrelated to chunks.
+if (typeof window !== "undefined") {
+  const RELOAD_KEY = "lf_chunk_reload_attempted";
+  const isChunkError = (err) => {
+    const msg = (err && (err.message || String(err))) || "";
+    return (
+      /ChunkLoadError/i.test(msg) ||
+      /Loading chunk [\d]+ failed/i.test(msg) ||
+      /Loading CSS chunk/i.test(msg) ||
+      /Failed to fetch dynamically imported module/i.test(msg)
+    );
+  };
+  const tryRecover = (err) => {
+    if (!isChunkError(err)) return;
+    if (sessionStorage.getItem(RELOAD_KEY) === "1") return;
+    sessionStorage.setItem(RELOAD_KEY, "1");
+    window.location.reload();
+  };
+  window.addEventListener("error", (e) => tryRecover(e.error || e));
+  window.addEventListener("unhandledrejection", (e) => tryRecover(e.reason));
+  // Clear the flag after a successful render so a future stale-chunk event
+  // (next deploy) can recover again.
+  window.addEventListener("load", () => {
+    setTimeout(() => sessionStorage.removeItem(RELOAD_KEY), 4000);
+  });
+}
+
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>

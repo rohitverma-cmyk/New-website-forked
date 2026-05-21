@@ -218,7 +218,7 @@ const BrandCart = () => {
   const bulkTax = +(bulkSubtotal * 0.05).toFixed(2);
   const bulkPackaging = bulkQty * 1;
   const bulkLogistics = Math.max(bulkSubtotal * 0.03, bulkLines.length ? 3000 : 0);
-  const bulkTotal = +(bulkSubtotal + bulkTax + Math.max(bulkLogistics, bulkPackaging)).toFixed(2);
+  const bulkPreCredit = +(bulkSubtotal + bulkTax + Math.max(bulkLogistics, bulkPackaging)).toFixed(2);
 
   const sampleTax = +(sampleSubtotal * 0.05).toFixed(2);
   const sampleCourier = sampleLines.length ? 100 : 0;
@@ -226,6 +226,15 @@ const BrandCart = () => {
 
   const availableCredit = summary?.credit?.available ?? 0;
   const availableSample = summary?.sample_credits?.available ?? 0;
+  // Credit period drives the 1.5%/month surcharge — backend is the source of
+  // truth, but we mirror the math here so the brand sees the final number
+  // before they hit Place Order.
+  const creditPeriodDays = summary?.credit?.credit_period_days || 30;
+  const isCreditPay = bulkPaymentMethod === "credit";
+  const bulkCreditCharge = bulkLines.length > 0 && isCreditPay
+    ? +(bulkPreCredit * 0.015 * (creditPeriodDays / 30)).toFixed(2)
+    : 0;
+  const bulkTotal = +(bulkPreCredit + bulkCreditCharge).toFixed(2);
 
   const bulkEnough = bulkLines.length === 0 || bulkTotal <= availableCredit + 0.01;
   const sampleEnough = sampleLines.length === 0 || Math.round(sampleTotal) <= availableSample;
@@ -706,6 +715,12 @@ const BrandCart = () => {
                 <div className="flex justify-between"><span className="text-gray-500">Subtotal</span><span>{fmtINR(bulkSubtotal)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-500">Tax (5%)</span><span>{fmtINR(bulkTax)}</span></div>
                 <div className="flex justify-between"><span className="text-gray-500">Logistics + packaging</span><span>{fmtINR(Math.max(bulkLogistics, bulkPackaging))}</span></div>
+                {bulkCreditCharge > 0 && (
+                  <div className="flex justify-between text-amber-700" data-testid="brand-cart-credit-charge-row">
+                    <span>Credit charges (1.5% × {creditPeriodDays / 30} mo)</span>
+                    <span data-testid="brand-cart-credit-charge">+{fmtINR(bulkCreditCharge)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between font-semibold pt-1"><span>Total</span><span data-testid="brand-cart-bulk-total">{fmtINR(bulkTotal)}</span></div>
               </div>
 
@@ -723,10 +738,10 @@ const BrandCart = () => {
                     data-testid="brand-pay-credit"
                   />
                   <div className="flex-1">
-                    <p className="font-medium text-gray-800">Locofast Credit Line</p>
+                    <p className="font-medium text-gray-800">Locofast Credit Line · {creditPeriodDays}-day terms</p>
                     <p className="text-[10px] text-gray-500">
                       {bulkEnough
-                        ? <>Debited FIFO · <strong data-testid="brand-cart-credit-balance">{fmtLacs(availableCredit)}</strong> available</>
+                        ? <>Debited FIFO · <strong data-testid="brand-cart-credit-balance">{fmtLacs(availableCredit)}</strong> available · 1.5%/mo surcharge applies</>
                         : <>Insufficient balance ({fmtINR(availableCredit)})</>}
                     </p>
                   </div>

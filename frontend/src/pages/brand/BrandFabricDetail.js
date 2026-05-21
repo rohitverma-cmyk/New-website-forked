@@ -510,6 +510,7 @@ const BrandFabricDetail = () => {
         onClose={() => setShowRfq(false)}
         fabricUrl={typeof window !== "undefined" ? window.location.href : ""}
         fabricName={fabric?.name || ""}
+        fabric={fabric}
       />
       <InventoryShortfallModal
         open={showShortfallModal}

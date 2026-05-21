@@ -69,8 +69,8 @@ def set_db(database):
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'onboarding@resend.dev')
 ADMIN_NOTIFICATION_EMAIL = "deepakw0403@gmail.com"
-ORDER_NOTIFICATION_EMAILS = ["mail@locofast.com", "mohit@locofast.com", "ashish.katiyar@locofast.com"]
-SITE_URL = os.environ.get('SITE_URL', 'https://shop.locofast.com')
+ORDER_NOTIFICATION_EMAILS = ["mail@locofast.com", "mohit@locofast.com", "ashish.katiyar@locofast.com", "creditoperations@locofast.com"]
+SITE_URL = os.environ.get('SITE_URL', 'https://locofast.com')
 
 if RESEND_API_KEY:
     resend.api_key = RESEND_API_KEY
@@ -236,7 +236,10 @@ def get_order_received_admin_email(order: dict) -> str:
         amount = qty * rate
         order_type = item.get('order_type', 'bulk')
         type_label = 'Sample' if order_type == 'sample' else 'Bulk'
-        fabric_url = f"{SITE_URL}/fabrics/{item.get('fabric_id', '')}"
+        # Prefer slug over UUID for cleaner, SEO-friendly URLs. Public PDP
+        # route accepts either (id_or_slug), so we always have a valid link.
+        fabric_ref = item.get('fabric_slug') or item.get('fabric_id', '')
+        fabric_url = f"{SITE_URL}/fabrics/{fabric_ref}"
         _color = item.get('color_name') or ''
         _color_hex = item.get('color_hex') or '#ccc'
         _color_chip = (
@@ -248,7 +251,7 @@ def get_order_received_admin_email(order: dict) -> str:
         items_html += f"""
         <tr>
             <td style="padding: 10px; border-bottom: 1px solid #eee;">
-                <a href="{fabric_url}" style="color: #2563EB; font-weight: 600; text-decoration: none;">{item.get('fabric_name', 'Fabric')}</a>{_color_chip}<br>
+                <a href="{fabric_url}" style="color: #2563EB; font-weight: 600; text-decoration: underline;">{item.get('fabric_name', 'Fabric')}</a>{_color_chip}<br>
                 <span style="color: #666; font-size: 12px;">Code: {item.get('fabric_code', 'N/A')} | Seller: {item.get('seller_company', 'N/A')}</span>
             </td>
             <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">
@@ -347,7 +350,8 @@ def get_seller_order_notification_email(order: dict, items: list, seller: dict) 
         type_bg = '#dbeafe' if order_type == 'sample' else '#d1fae5'
         type_color = '#1e40af' if order_type == 'sample' else '#065f46'
         
-        fabric_url = f"{SITE_URL}/fabrics/{item.get('fabric_id', '')}"
+        fabric_ref = item.get('fabric_slug') or item.get('fabric_id', '')
+        fabric_url = f"{SITE_URL}/fabrics/{fabric_ref}"
         image_url = item.get('image_url', '')
         
         items_html += f"""
@@ -356,7 +360,7 @@ def get_seller_order_notification_email(order: dict, items: list, seller: dict) 
                 <div style="display: flex; gap: 12px;">
                     {f'<img src="{image_url}" style="width: 60px; height: 60px; object-fit: cover; border-radius: 6px;" />' if image_url else ''}
                     <div>
-                        <a href="{fabric_url}" style="color: #2563EB; text-decoration: none; font-weight: 600;">{item.get('fabric_name', 'Fabric')}</a><br>
+                        <a href="{fabric_url}" style="color: #2563EB; text-decoration: underline; font-weight: 600;">{item.get('fabric_name', 'Fabric')}</a><br>
                         <span style="color: #666; font-size: 12px;">Code: {item.get('fabric_code', 'N/A')} | {item.get('category_name', '')}</span>
                     </div>
                 </div>
@@ -1126,14 +1130,32 @@ def _render_vendor_rfq_email(rfq: dict, vendor: dict) -> str:
     """
 
 
-# ==================== CUSTOMER QUOTE RECEIVED ====================
+# ==================== CUSTOMER / BRAND QUOTE RECEIVED ====================
 async def send_quote_received_email(rfq: dict, quote: dict, is_first: bool = True):
-    """Let the buyer know a new/updated quote landed on their RFQ."""
-    if not RESEND_API_KEY:
-        return False
+    """Let the buyer know a new/updated quote landed on their RFQ.
+
+    Routing:
+    - If the RFQ has a `brand_id`, fan out the email to **every brand_admin
+      user** on that brand (so procurement heads + their managers all see
+      the price), and ALSO drop a `brand_notifications` row per recipient
+      so the bell icon in the brand portal shows an unread badge.
+    - Otherwise (B2C customer RFQ) — fall back to the customer's email
+      using `customer_id` → email lookup.
+    """
     if db is None:
         return False
     try:
+        rfq_id = rfq.get("id")
+        rfq_number = rfq.get("rfq_number", "")
+        brand_id = (rfq.get("brand_id") or "").strip()
+
+        # Brand-RFQ branch — multi-recipient + in-app notification
+        if brand_id:
+            return await _notify_brand_on_quote(rfq, quote, is_first)
+
+        # B2C customer fallback (existing behaviour)
+        if not RESEND_API_KEY:
+            return False
         customer_id = rfq.get("customer_id")
         recipient = (rfq.get("email") or "").strip()
         if customer_id:
@@ -1144,18 +1166,119 @@ async def send_quote_received_email(rfq: dict, quote: dict, is_first: bool = Tru
             return False
 
         subject_prefix = "New quote" if is_first else "Quote updated"
-        params = {
-            "from": SENDER_EMAIL,
-            "to": [recipient],
-            "subject": f"[{subject_prefix}] ₹{quote.get('price_per_meter', '')}/m on {rfq.get('rfq_number')} · Locofast",
-            "html": _render_customer_quote_email(rfq, quote, is_first),
-        }
+        subject = f"[{subject_prefix}] ₹{quote.get('price_per_meter', '')}/m on {rfq_number} · Locofast"
+        html = _render_customer_quote_email(rfq, quote, is_first)
+        params = {"from": SENDER_EMAIL, "to": [recipient], "subject": subject, "html": html}
         await asyncio.to_thread(resend.Emails.send, params)
-        logger.info(f"Quote-received email sent to {recipient} for RFQ {rfq.get('rfq_number')}")
+        logger.info(f"Quote-received email sent to {recipient} for RFQ {rfq_number}")
+        await log_email(kind="quote_received_customer", recipients=[recipient], subject=subject, html=html, status="sent",
+                        rfq_id=rfq_id, customer_id=customer_id)
         return True
     except Exception as e:
         logger.error(f"Failed to send quote-received email: {str(e)}")
         return False
+
+
+async def _notify_brand_on_quote(rfq: dict, quote: dict, is_first: bool) -> bool:
+    """Brand-side fanout: email every brand_admin + push in-app notification."""
+    rfq_id = rfq.get("id")
+    rfq_number = rfq.get("rfq_number", "")
+    brand_id = rfq.get("brand_id")
+
+    # Resolve recipients (active brand_admin users on this brand)
+    admins = await db.brand_users.find(
+        {"brand_id": brand_id, "role": "brand_admin", "status": "active"},
+        {"_id": 0, "id": 1, "email": 1, "name": 1},
+    ).to_list(length=50)
+    recipients = [a.get("email") for a in admins if a.get("email")]
+
+    # Build the headline so it works for both knits/wovens
+    cat = (rfq.get("category") or "").lower()
+    unit = "kg" if cat == "knits" else "m"
+    headline_qty = ""
+    if rfq.get("quantity_value"):
+        try:
+            qv = float(rfq.get("quantity_value"))
+            qv_str = str(int(qv)) if qv.is_integer() else str(qv)
+            headline_qty = f"{qv_str} {(rfq.get('quantity_unit') or unit).lower()}"
+        except (TypeError, ValueError):
+            pass
+    if not headline_qty:
+        raw = rfq.get("quantity_kg") or rfq.get("quantity_meters") or ""
+        headline_qty = f"{raw.replace('_', '–')} {unit}" if raw else ""
+
+    spec_bits = [rfq.get("fabric_requirement_type"), rfq.get("knit_type"), rfq.get("weave_type")]
+    spec_bits = [s for s in spec_bits if s]
+    if rfq.get("gsm"):
+        spec_bits.append(f"{rfq.get('gsm')} GSM")
+    spec = " · ".join(spec_bits) or "Custom RFQ"
+    vendor_name = quote.get("vendor_company") or "Locofast verified mill"
+    price = quote.get("price_per_meter", "")
+    headline = f"{vendor_name} quoted ₹{price}/{unit} on {rfq_number} ({spec}{', ' + headline_qty if headline_qty else ''})"
+
+    # Push 1 notification per admin so each user has an independent unread state
+    now = datetime.now(timezone.utc).isoformat()
+    notif_docs = []
+    for a in admins:
+        notif_docs.append({
+            "id": str(uuid.uuid4()),
+            "brand_id": brand_id,
+            "brand_user_id": a.get("id"),
+            "kind": "quote_received",
+            "title": headline,
+            "rfq_id": rfq_id,
+            "rfq_number": rfq_number,
+            "vendor_company": vendor_name,
+            "price_per_unit": float(price) if isinstance(price, (int, float)) else (float(price) if isinstance(price, str) and price.replace(".", "").isdigit() else None),
+            "unit": unit,
+            "is_first": is_first,
+            "url": f"/enterprise/queries/{rfq_id}",
+            "read": False,
+            "created_at": now,
+        })
+    if notif_docs:
+        await db.brand_notifications.insert_many(notif_docs)
+
+    if not recipients or not RESEND_API_KEY:
+        # Still record an audit row so we know the in-app notification fired
+        await log_email(kind="quote_received_brand", recipients=recipients, subject=headline, html="", status="skipped" if not RESEND_API_KEY else "skipped",
+                        error="No recipients" if not recipients else "RESEND_API_KEY missing",
+                        rfq_id=rfq_id, brand_id=brand_id)
+        return bool(notif_docs)
+
+    subject = f"[{'New quote' if is_first else 'Quote updated'}] ₹{price}/{unit} on {rfq_number} · Locofast"
+    html = _render_brand_quote_email(rfq, quote, headline, unit)
+    try:
+        await asyncio.to_thread(resend.Emails.send, {
+            "from": SENDER_EMAIL, "to": recipients, "subject": subject, "html": html,
+        })
+        await log_email(kind="quote_received_brand", recipients=recipients, subject=subject, html=html, status="sent",
+                        rfq_id=rfq_id, brand_id=brand_id)
+        logger.info(f"Quote-received email sent to {recipients} for brand RFQ {rfq_number}")
+        return True
+    except Exception as e:
+        logger.error(f"Brand quote-received email failed: {e}")
+        await log_email(kind="quote_received_brand", recipients=recipients, subject=subject, html=html, status="failed",
+                        error=str(e), rfq_id=rfq_id, brand_id=brand_id)
+        return False
+
+
+def _render_brand_quote_email(rfq: dict, quote: dict, headline: str, unit: str) -> str:
+    preview_url = os.environ.get("PUBLIC_APP_URL", "").rstrip("/") + f"/enterprise/queries/{rfq.get('id', '')}"
+    return f"""
+    <div style="font-family:Inter,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#111827;">
+      <h2 style="margin:0 0 8px;font-size:22px;">You've got a new quote</h2>
+      <p style="color:#374151;margin:0 0 20px;font-size:14px;line-height:1.55">{headline}</p>
+      <div style="background:#ECFDF5;border:1px solid #BBF7D0;border-radius:8px;padding:20px;margin-bottom:20px">
+        <p style="margin:0;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#047857;font-weight:600">Vendor Quote</p>
+        <p style="margin:6px 0 2px;font-size:28px;font-weight:700;color:#065F46">₹{quote.get('price_per_meter', '')}<span style="font-size:14px;color:#10B981;font-weight:500">/{unit}</span></p>
+        <p style="margin:0;color:#4B5563;font-size:12px">
+          Lead time: {quote.get('lead_days', '—')} days · MOQ: {quote.get('moq', '—')} {unit}
+        </p>
+      </div>
+      <a href="{preview_url}" style="display:inline-block;background:#10B981;color:white;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:600;font-size:14px;">View &amp; compare quotes</a>
+      <p style="margin-top:24px;color:#9CA3AF;font-size:11px;">You're receiving this because you're a brand admin on Locofast. Manage notifications in Account → Profile.</p>
+    </div>"""
 
 
 def _render_customer_quote_email(rfq: dict, quote: dict, is_first: bool = True) -> str:
@@ -1297,7 +1420,48 @@ async def send_order_notification_emails(order: dict, order_db=None):
     
     use_db = order_db or db
     results = {"customer_sent": False, "admin_sent": False, "sellers_notified": []}
-    
+
+    # ── Enrich items with seller_company + fabric_slug if missing ───────
+    # Older order rows (and some flows) only persist seller_id/fabric_id.
+    # The admin email surfaces "Seller: <company>" and the linked PDP URL,
+    # so we backfill these fields from the live DB just before sending.
+    if use_db:
+        items_in = order.get("items") or []
+        missing_fabric_ids = list({
+            it.get("fabric_id") for it in items_in
+            if it.get("fabric_id") and (not it.get("seller_company") or not it.get("fabric_slug"))
+        })
+        if missing_fabric_ids:
+            fab_cursor = use_db.fabrics.find(
+                {"id": {"$in": missing_fabric_ids}},
+                {"_id": 0, "id": 1, "slug": 1, "seller_id": 1},
+            )
+            fab_map = {}
+            seller_ids_needed = set()
+            async for f in fab_cursor:
+                fab_map[f["id"]] = f
+                if f.get("seller_id"):
+                    seller_ids_needed.add(f["seller_id"])
+            seller_map = {}
+            if seller_ids_needed:
+                async for s in use_db.sellers.find(
+                    {"id": {"$in": list(seller_ids_needed)}},
+                    {"_id": 0, "id": 1, "company_name": 1, "name": 1},
+                ):
+                    seller_map[s["id"]] = s.get("company_name") or s.get("name") or ""
+            for it in items_in:
+                f = fab_map.get(it.get("fabric_id"))
+                if not f:
+                    continue
+                if not it.get("fabric_slug") and f.get("slug"):
+                    it["fabric_slug"] = f["slug"]
+                if not it.get("seller_company"):
+                    sid = f.get("seller_id") or it.get("seller_id") or ""
+                    if sid and seller_map.get(sid):
+                        it["seller_company"] = seller_map[sid]
+                if not it.get("seller_id") and f.get("seller_id"):
+                    it["seller_id"] = f["seller_id"]
+
     customer_email = order.get("customer", {}).get("email")
     brand_id = order.get("brand_id")
     customer_id = order.get("customer_id")

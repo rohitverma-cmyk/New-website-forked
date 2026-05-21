@@ -57,7 +57,7 @@ const AdminLogin = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-4 py-3 border border-neutral-200 rounded-sm focus:border-neutral-900 focus:outline-none"
-                placeholder="admin@locofast.com"
+                placeholder="you@locofast.com"
                 required
                 data-testid="login-email"
               />
@@ -85,10 +85,6 @@ const AdminLogin = () => {
               {loading ? "Signing in..." : "Sign In"}
             </button>
           </form>
-
-          <p className="text-center text-sm text-neutral-500 mt-6">
-            Credentials: admin@locofast.com / admin123
-          </p>
         </div>
       </div>
     </div>

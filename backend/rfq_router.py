@@ -58,6 +58,7 @@ class RFQSubmission(BaseModel):
     width_inches: Optional[float] = 0
     color: Optional[str] = ""
     pantone_code: Optional[str] = ""
+    pattern: Optional[str] = ""
     weave_type: Optional[str] = ""
     thread_count: Optional[str] = ""
     yarn_count: Optional[str] = ""
@@ -86,6 +87,15 @@ class RFQSubmission(BaseModel):
     gst_number: Optional[str] = ""
     website: Optional[str] = ""
     message: Optional[str] = ""
+    # When true, RFQ is born as a 'draft'. Vendors can still see it (with a
+    # 'Spec sheet partial' pill) but the buyer can keep PATCHing more details
+    # via PATCH /api/rfq/{rfq_id} without re-creating a duplicate.
+    is_draft: Optional[bool] = False
+    # When the wizard is launched from a Product Detail Page, capture
+    # the source fabric so vendors see "RFQ raised against SKU LF-XXXX"
+    # and can deep-link straight back to the live PDP. Snapshot stored
+    # so renames/un-publishes don't break the historical link.
+    prefill_fabric_id: Optional[str] = ""
 
 class RFQResponse(BaseModel):
     id: str
@@ -258,6 +268,7 @@ async def submit_rfq(data: RFQSubmission, request: Request):
         'color': data.color or "",
         'color_or_shade': data.color or "",
         'pantone_code': data.pantone_code or "",
+        'pattern': data.pattern or "",
         'weave_type': data.weave_type or "",
         'weave_pattern': data.weave_type or "",
         'thread_count': data.thread_count or "",
@@ -282,9 +293,29 @@ async def submit_rfq(data: RFQSubmission, request: Request):
         'company': profile_company,
         'website': data.website or "",
         'message': data.message or "",
-        'status': 'new',
+        'status': 'draft' if data.is_draft else 'new',
         'created_at': datetime.now(timezone.utc).isoformat()
     }
+
+    # ── PDP source-fabric snapshot ──────────────────────────────────────
+    # Vendors (and admins) need to know which catalog SKU the RFQ was
+    # raised against. We snapshot id/code/name so renames or un-publishes
+    # later don't orphan the link, and we resolve the live PDP slug for
+    # quick navigation back to the live page.
+    if data.prefill_fabric_id:
+        f = await db.fabrics.find_one(
+            {"id": data.prefill_fabric_id},
+            {"_id": 0, "id": 1, "fabric_code": 1, "name": 1, "slug": 1, "category_id": 1, "category_name": 1, "seller_company": 1},
+        )
+        if f:
+            rfq_doc.update({
+                'linked_fabric_id': f.get("id", ""),
+                'linked_fabric_code': f.get("fabric_code", ""),
+                'linked_fabric_name': f.get("name", ""),
+                'linked_fabric_slug': f.get("slug", "") or f.get("id", ""),
+                'linked_fabric_category': f.get("category_name", "") or f.get("category_id", ""),
+                'linked_fabric_seller': f.get("seller_company", ""),
+            })
 
     await db.rfq_submissions.insert_one(rfq_doc)
     rfq_doc.pop("_id", None)
@@ -544,3 +575,148 @@ async def update_rfq_status(rfq_id: str, status: str):
         raise HTTPException(status_code=404, detail="RFQ not found")
     
     return {'message': 'Status updated', 'status': status}
+
+
+# ════════════════════════════════════════════════════════════════════
+# PATCH /api/rfq/{rfq_id} — progressive enrichment of a draft RFQ
+# Used by the multi-step wizard: Step 1 POSTs with is_draft=true to
+# create the RFQ, subsequent steps PATCH only the fields they collect.
+# Permission: only the original submitter (matched via JWT) can edit.
+# Once the RFQ has a `won` quote, edits are frozen.
+# ════════════════════════════════════════════════════════════════════
+class RFQPatch(BaseModel):
+    # Every field is optional — clients send only the ones they touched.
+    fabric_requirement_type: Optional[str] = None
+    quantity_meters: Optional[str] = None
+    quantity_kg: Optional[str] = None
+    quantity_value: Optional[float] = None
+    quantity_unit: Optional[str] = None
+    knit_quality: Optional[str] = None
+    knit_type: Optional[str] = None
+    denim_specification: Optional[str] = None
+    composition: Optional[List[CompositionItem]] = None
+    gsm: Optional[float] = None
+    weight_oz: Optional[float] = None
+    width_inches: Optional[float] = None
+    color: Optional[str] = None
+    pantone_code: Optional[str] = None
+    pattern: Optional[str] = None
+    weave_type: Optional[str] = None
+    thread_count: Optional[str] = None
+    yarn_count: Optional[str] = None
+    stretch: Optional[str] = None
+    finish: Optional[str] = None
+    end_use: Optional[str] = None
+    certifications: Optional[List[str]] = None
+    reference_images: Optional[List[str]] = None
+    target_price_per_unit: Optional[float] = None
+    required_by: Optional[str] = None
+    sample_needed: Optional[bool] = None
+    delivery_city: Optional[str] = None
+    delivery_state: Optional[str] = None
+    delivery_pincode: Optional[str] = None
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    gst_number: Optional[str] = None
+    website: Optional[str] = None
+    message: Optional[str] = None
+    # PDP source-fabric link (lets a draft created without PDP context
+    # later capture the source SKU, e.g. if the user navigates back).
+    prefill_fabric_id: Optional[str] = None
+    # When client sends finalize=true on the LAST step, we promote draft→new
+    finalize: Optional[bool] = False
+
+
+def _decode_caller(auth_header: str) -> dict:
+    """Decode the bearer JWT and return {customer_id, brand_id, brand_user_id}.
+    Empty strings when not logged in. Mirrors the logic in submit_rfq."""
+    out = {"customer_id": "", "brand_id": "", "brand_user_id": ""}
+    if not auth_header.startswith("Bearer "):
+        return out
+    try:
+        import jwt as _jwt
+        JWT_SECRET = os.environ.get("JWT_SECRET", "default-secret")
+        payload = _jwt.decode(auth_header.split(" ", 1)[1], JWT_SECRET, algorithms=["HS256"])
+        ttype = payload.get("type")
+        if ttype == "customer":
+            out["customer_id"] = payload.get("customer_id", "") or ""
+        elif ttype == "brand":
+            out["brand_id"] = payload.get("brand_id", "") or ""
+            out["brand_user_id"] = payload.get("brand_user_id", "") or ""
+    except Exception:
+        pass
+    return out
+
+
+@router.patch("/{rfq_id}")
+async def patch_rfq(rfq_id: str, data: RFQPatch, request: Request):
+    rfq = await db.rfq_submissions.find_one({"id": rfq_id}, {"_id": 0})
+    if not rfq:
+        raise HTTPException(status_code=404, detail="RFQ not found")
+
+    # Permission — owner only (customer or brand user)
+    caller = _decode_caller(request.headers.get("Authorization", ""))
+    is_owner = (
+        (rfq.get("customer_id") and rfq.get("customer_id") == caller["customer_id"]) or
+        (rfq.get("brand_id") and rfq.get("brand_id") == caller["brand_id"])
+    )
+    if not is_owner:
+        raise HTTPException(status_code=403, detail="You can only edit your own RFQ")
+
+    # Frozen once a vendor quote is `won`
+    won = await db.vendor_quotes.find_one({"rfq_id": rfq_id, "status": "won"}, {"_id": 0, "id": 1})
+    if won:
+        raise HTTPException(status_code=400, detail="This RFQ is closed (a quote was accepted) and can no longer be edited")
+
+    payload = data.model_dump(exclude={"finalize"}, exclude_none=True)
+    # Composition rebuild — convert nested Pydantic models to dict
+    if "composition" in payload:
+        cleaned = []
+        for c in (data.composition or []):
+            if c.material and (c.percentage or 0) > 0:
+                cleaned.append({"material": c.material, "percentage": float(c.percentage)})
+        payload["composition"] = cleaned
+
+    # Mirror legacy aliases used elsewhere in the codebase
+    if "color" in payload:
+        payload["color_or_shade"] = payload["color"]
+    if "weave_type" in payload:
+        payload["weave_pattern"] = payload["weave_type"]
+    if "target_price_per_unit" in payload:
+        payload["target_price_per_meter"] = payload["target_price_per_unit"]
+    if "required_by" in payload:
+        payload["dispatch_required_by"] = payload["required_by"]
+
+    # PDP source-fabric snapshot — same logic as POST. If buyer comes
+    # back to a fabric on a later step, persist the link now.
+    if "prefill_fabric_id" in payload:
+        fid = payload.pop("prefill_fabric_id")
+        if fid:
+            f = await db.fabrics.find_one(
+                {"id": fid},
+                {"_id": 0, "id": 1, "fabric_code": 1, "name": 1, "slug": 1, "category_id": 1, "category_name": 1, "seller_company": 1},
+            )
+            if f:
+                payload['linked_fabric_id'] = f.get("id", "")
+                payload['linked_fabric_code'] = f.get("fabric_code", "")
+                payload['linked_fabric_name'] = f.get("name", "")
+                payload['linked_fabric_slug'] = f.get("slug", "") or f.get("id", "")
+                payload['linked_fabric_category'] = f.get("category_name", "") or f.get("category_id", "")
+                payload['linked_fabric_seller'] = f.get("seller_company", "")
+
+    promoted_to_new = False
+    if data.finalize and rfq.get("status") == "draft":
+        payload["status"] = "new"
+        payload["finalized_at"] = datetime.now(timezone.utc).isoformat()
+        promoted_to_new = True
+
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.rfq_submissions.update_one({"id": rfq_id}, {"$set": payload})
+
+    rfq2 = await db.rfq_submissions.find_one({"id": rfq_id}, {"_id": 0})
+    return {
+        "message": "RFQ updated",
+        "rfq": rfq2,
+        "promoted_to_new": promoted_to_new,
+    }

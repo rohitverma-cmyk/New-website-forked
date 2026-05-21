@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Search, RefreshCw, Eye, AlertTriangle, Check, ChevronDown, ChevronUp, Sparkles, X, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
-import { getFabrics, getFabricSEO, generateFabricSEO, regenerateSEOBlock, updateFabricSEO, getSEOPreview, batchGenerateSlugs } from "../../lib/api";
+import { getFabrics, getFabricSEO, generateFabricSEO, regenerateSEOBlock, updateFabricSEO, getSEOPreview, batchGenerateSlugs, batchFillMissingSEOStart, batchFillMissingSEOStatus, batchFillMissingSEOLatest, batchFillMissingSEOResume, seoAudit } from "../../lib/api";
 
 const AdminFabricSEO = () => {
   const [fabrics, setFabrics] = useState([]);
@@ -177,6 +177,122 @@ const AdminFabricSEO = () => {
       loadFabrics();
     } catch (err) {
       toast.error("Failed to generate slugs");
+    }
+  };
+
+  // Scans every fabric, calls generate for any with missing/empty SEO
+  // fields. Idempotent — second run on a clean corpus is a no-op.
+  // Runs as a background job on the server so 400+ fabric corpora don't
+  // hang the browser. We poll status every 2s.
+  const [fillJob, setFillJob] = useState(null);   // { job_id, status, total, processed, ... }
+  const filling = !!(fillJob && (fillJob.status === "running" || fillJob.status === "queued"));
+
+  // Heartbeat watchdog — if the backend hasn't updated the job doc in
+  // > 90 seconds while it claims to be "running", the worker is almost
+  // certainly dead (orphaned asyncio task after a deploy / restart, or
+  // an LLM call hanging past our per-fabric timeout).
+  const isStale = (() => {
+    if (!fillJob || fillJob.status !== "running") return false;
+    const last = fillJob.updated_at || fillJob.started_at;
+    if (!last) return false;
+    const lastDt = new Date(last);
+    if (Number.isNaN(lastDt.getTime())) return false;
+    return (Date.now() - lastDt.getTime()) > 90_000;
+  })();
+
+  // Resume polling on mount if a previous job is still in flight (or just
+  // finished and the admin reloaded the page).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await batchFillMissingSEOLatest();
+        if (cancelled) return;
+        if (res.data && res.data.job_id) {
+          setFillJob(res.data);
+        }
+      } catch (_) {
+        /* no prior job — ignore */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Poll while the active job is running.
+  useEffect(() => {
+    if (!fillJob?.job_id) return;
+    if (fillJob.status !== "running" && fillJob.status !== "queued") return;
+
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await batchFillMissingSEOStatus(fillJob.job_id);
+        if (cancelled) return;
+        setFillJob(res.data);
+        if (res.data.status === "completed" || res.data.status === "failed") {
+          const { filled_count, errors_count, status } = res.data;
+          if (status === "failed") {
+            toast.error("SEO fill failed: " + (res.data.fatal_error || "unknown error"));
+          } else {
+            toast.success(`Filled ${filled_count || 0} fabric${(filled_count || 0) !== 1 ? "s" : ""}${errors_count ? ` · ${errors_count} error(s)` : ""}`);
+          }
+          loadFabrics();
+        }
+      } catch (err) {
+        if (!cancelled) console.error("poll error", err);
+      }
+    };
+    const id = setInterval(tick, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [fillJob?.job_id, fillJob?.status, loadFabrics]);
+
+  const handleFillMissing = async () => {
+    if (filling) return;
+    try {
+      // Quick audit first so the toast tells ops what they're about to do
+      const auditRes = await seoAudit();
+      const need = auditRes.data?.needs_fill_count || 0;
+      if (need === 0) {
+        toast.info("All fabrics already have complete SEO data");
+        return;
+      }
+      const res = await batchFillMissingSEOStart();
+      const { job_id, already_running } = res.data || {};
+      if (already_running) {
+        toast.info("A SEO fill job is already running — attaching to it");
+      } else {
+        toast.info(`Started SEO fill for ${need} fabric${need > 1 ? "s" : ""} in the background`);
+      }
+      // Optimistically set job to "queued" so progress panel renders immediately
+      setFillJob({ job_id, status: "queued", total: need, processed: 0, filled_count: 0, errors_count: 0 });
+    } catch (err) {
+      toast.error("Fill failed: " + (err?.response?.data?.detail || err.message || "unknown"));
+    }
+  };
+
+  const dismissJobPanel = () => {
+    // Only allow dismiss when job has finished — running jobs stay visible
+    if (fillJob?.status === "completed" || fillJob?.status === "failed" || fillJob?.status === "stalled") {
+      setFillJob(null);
+    }
+  };
+
+  const handleResumeStale = async () => {
+    try {
+      toast.info("Recovering stuck job…");
+      const res = await batchFillMissingSEOResume();
+      const { job_id, already_running, healthy, resumed_from } = res.data || {};
+      if (healthy) {
+        toast.success("Job is healthy — no resume needed");
+      } else if (resumed_from) {
+        toast.success(`Resumed — old job (${resumed_from.slice(0, 8)}…) marked stalled. New job picking up remaining fabrics.`);
+      } else {
+        toast.success("Started fresh fill job");
+      }
+      // Reset local state to start tracking the new job
+      setFillJob({ job_id, status: "queued", total: 0, processed: 0, filled_count: 0, errors_count: 0 });
+    } catch (err) {
+      toast.error("Resume failed: " + (err?.response?.data?.detail || err.message || "unknown"));
     }
   };
 
@@ -434,6 +550,122 @@ const AdminFabricSEO = () => {
               <Sparkles size={14} />
               Batch Generate Slugs
             </button>
+            <button
+              onClick={handleFillMissing}
+              disabled={filling}
+              className="w-full mt-2 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg flex items-center justify-center gap-2"
+              data-testid="seo-fill-missing-btn"
+              title="Scan every fabric and auto-fill any missing meta title, intro, applications, FAQ, why-this-fabric or bulk-details blocks. Runs in the background — safe to close this tab."
+            >
+              <Sparkles size={14} className={filling ? "animate-spin" : ""} />
+              {filling ? "Filling…" : "Fill Missing SEO"}
+            </button>
+
+            {/* Live progress panel — visible whenever there is a job in
+                state (running or just-completed). */}
+            {fillJob && fillJob.job_id && (
+              <div
+                className="mt-3 p-3 rounded-lg border border-emerald-200 bg-emerald-50 text-xs"
+                data-testid="seo-fill-progress-panel"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-semibold text-emerald-800">
+                    {fillJob.status === "queued" && "Queued…"}
+                    {fillJob.status === "running" && "Filling SEO"}
+                    {fillJob.status === "completed" && "Done"}
+                    {fillJob.status === "failed" && "Failed"}
+                  </span>
+                  {(fillJob.status === "completed" || fillJob.status === "failed") && (
+                    <button
+                      onClick={dismissJobPanel}
+                      className="text-emerald-700 hover:text-emerald-900"
+                      data-testid="seo-fill-progress-dismiss-btn"
+                      title="Dismiss"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+
+                {/* progress bar — use filled+errors so the bar moves
+                    on each completed fabric rather than waiting for the
+                    next one to start (which was 5s+ per fabric). */}
+                <div className="h-1.5 bg-emerald-100 rounded-full overflow-hidden mb-2">
+                  <div
+                    className="h-full bg-emerald-600 transition-all duration-300"
+                    style={{
+                      width: `${fillJob.total > 0
+                        ? Math.min(100, Math.round((((fillJob.filled_count || 0) + (fillJob.errors_count || 0)) / fillJob.total) * 100))
+                        : (fillJob.status === "completed" ? 100 : 0)}%`,
+                    }}
+                  />
+                </div>
+
+                <div
+                  className="flex items-center justify-between text-emerald-900"
+                  data-testid="seo-fill-progress-counts"
+                >
+                  <span>
+                    {(fillJob.filled_count || 0) + (fillJob.errors_count || 0)} / {fillJob.total || 0}
+                  </span>
+                  <span>
+                    {fillJob.total > 0
+                      ? `${Math.round((((fillJob.filled_count || 0) + (fillJob.errors_count || 0)) / fillJob.total) * 100)}%`
+                      : "0%"}
+                  </span>
+                </div>
+
+                {fillJob.current_fabric && fillJob.status === "running" && (
+                  <p className="mt-1.5 text-[11px] text-emerald-700 truncate" title={fillJob.current_fabric.name}>
+                    <RefreshCw size={10} className="inline mr-1 animate-spin" />
+                    {fillJob.current_fabric.name}
+                  </p>
+                )}
+
+                <div className="mt-2 flex items-center gap-3 text-[11px] text-emerald-700">
+                  <span><Check size={10} className="inline mr-0.5" />{fillJob.filled_count || 0} filled</span>
+                  {(fillJob.errors_count || 0) > 0 && (
+                    <span className="text-red-600">
+                      <AlertTriangle size={10} className="inline mr-0.5" />{fillJob.errors_count} error{fillJob.errors_count !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  {(fillJob.skipped_already_complete || 0) > 0 && (
+                    <span className="text-gray-500">{fillJob.skipped_already_complete} skipped</span>
+                  )}
+                </div>
+
+                {fillJob.status === "failed" && fillJob.fatal_error && (
+                  <p className="mt-1.5 text-[11px] text-red-700 break-words">{fillJob.fatal_error}</p>
+                )}
+
+                {/* Stale-job recovery — surfaces a Resume button if the
+                    backend heartbeat has gone quiet for > 90s while the
+                    job claims to be running (orphaned task after deploy,
+                    or LLM hang past the per-fabric timeout). */}
+                {isStale && (
+                  <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-[11px]" data-testid="seo-fill-stale-notice">
+                    <p className="text-amber-800 mb-1.5 flex items-start gap-1">
+                      <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                      <span>No progress for &gt;90s — worker may have crashed.</span>
+                    </p>
+                    <button
+                      onClick={handleResumeStale}
+                      className="w-full py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[11px] font-medium"
+                      data-testid="seo-fill-resume-btn"
+                    >
+                      Resume Fill Job
+                    </button>
+                  </div>
+                )}
+
+                {/* Stalled — the previous run was marked dead by /resume */}
+                {fillJob.status === "stalled" && (
+                  <p className="mt-1.5 text-[11px] text-amber-700">
+                    Marked stalled — {fillJob.stalled_reason || "no recent heartbeat"}.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
           
           <div className="flex-1 overflow-y-auto">

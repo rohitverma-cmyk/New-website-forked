@@ -36,9 +36,28 @@ async def _build_sitemap_xml() -> str:
     base_url = "https://locofast.com"
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
+    # Include any fabric that's NOT explicitly archived or rejected.
+    # Earlier we filtered `status == 'approved'` which silently excluded
+    # 191 of 196 live fabrics (their status field was never set), so they
+    # weren't in the sitemap → Google saw them as "not indexed".
     fabrics = await db.fabrics.find(
-        {'status': 'approved'}, {'_id': 0, 'id': 1, 'slug': 1, 'created_at': 1}
+        {
+            '$and': [
+                {'$or': [{'is_active': {'$ne': False}}, {'is_active': {'$exists': False}}]},
+                {'status': {'$nin': ['archived', 'rejected', 'draft']}},
+            ]
+        },
+        {'_id': 0, 'id': 1, 'slug': 1, 'created_at': 1}
     ).to_list(length=10000)
+
+    # Respect noindex flag in fabric_seo — admin can opt-out individual
+    # fabric pages from being indexed (e.g. discontinued SKUs we still
+    # want to keep live for direct links).
+    noindex_ids = {
+        s['fabric_id']
+        async for s in db.fabric_seo.find({'is_indexed': False}, {'_id': 0, 'fabric_id': 1})
+    }
+    fabrics = [f for f in fabrics if f['id'] not in noindex_ids]
     collections = await db.collections.find({}, {'id': 1, 'created_at': 1}).to_list(length=100)
     posts = await db.posts.find({'status': 'published'}, {'slug': 1, 'updated_at': 1}).to_list(length=500)
     categories = await db.categories.find({}, {'_id': 0}).to_list(length=100)

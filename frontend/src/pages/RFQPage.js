@@ -30,8 +30,52 @@ const CATEGORIES = [
 const FABRIC_REQ_TYPES = ["Greige", "Dyed", "RFD", "Printed"];
 const FABRIC_TYPES = ["woven", "knitted", "non-woven"];
 const STRETCH_OPTIONS = ["non_stretch", "2_way", "4_way", "comfort_stretch", "power_stretch"];
-const WEAVE_OPTIONS = ["Plain", "Twill", "Satin", "Dobby", "Jacquard", "Oxford", "Poplin", "Basket", "Herringbone", "Other"];
-const KNIT_OPTIONS = ["Single Jersey", "Interlock", "Pique", "Rib 1x1", "Rib 2x2", "French Terry", "Fleece", "Loopknit", "Waffle", "Mesh", "Honeycomb", "Other"];
+
+// ──────────────────────────────────────────────────────────────────────────
+// Weave / Knit / Pattern / Finish dictionaries — kept in lock-step with the
+// vendor inventory form (`/app/frontend/src/pages/vendor/VendorInventory.js`)
+// so RFQs and SKUs use identical taxonomy. If you edit one, edit both.
+// ──────────────────────────────────────────────────────────────────────────
+const COTTON_WEAVES = [
+  "Voile", "Cambric", "Poplin", "2/1 Twill", "3/1 Twill", "2/2 Twill", "4/1 Satin",
+  "Dobby", "Herringbone", "-Slub", "+Slub", "Double Cloth", "Oxford", "Canvas",
+  "Sheeting", "Crimp Sheeting", "4mm Ripstop", "6mm Ripstop", "Casement", "Lurex",
+];
+const DENIM_WEAVES = [
+  "2/1 RHT", "2/1 LHT", "3/1 RHT", "3/1 LHT", "4/1 Satin",
+  "4/1 Satin RHT", "4/1 Satin LHT", "Dobby", "Herringbone",
+];
+const VISCOSE_WEAVES = [
+  "1x1 Plain", "2/1 Twill", "3/1 Twill", "2/2 Twill", "Dobby", "4/1 Satin", "-Slub", "+Slub",
+];
+const POLYESTER_WOVEN_WEAVES = [
+  "1x1 Plain", "2x1 Twill", "3x1 Twill", "2x2 Twill", "4x1 Satin",
+  "Dobby", "Jacquard", "-Slub", "+Slub", "Magic Slub",
+];
+const KNIT_OPTIONS = [
+  "Single Jersey", "Interlock", "Rice Knit", "Dot Knit", "Mesh", "Pique",
+  "Honeycomb Pique", "Waffle", "Fleece", "Terry", "Baby Terry", "1x1 Rib", "2x2 Rib",
+  "3D Jacquard", "Dobby", "4-Way Lycra", "2-Way Lycra", "Tin Tin", "Sap Matty",
+  "Micro PP", "Jacquard Zombie", "Taiwan Lycra", "Football Knit", "Nirmal Knit",
+  "Reebok Knit", "Adidas Knit", "Super Malai", "Micro Crepe", "Bubble Crepe",
+];
+// Returns the right weave list given the buyer's category + fabric_type pick.
+const weavesForRfq = (category, fabricType) => {
+  if ((fabricType || "").toLowerCase() === "knitted") return KNIT_OPTIONS;
+  if (category === "denim")   return DENIM_WEAVES;
+  if (category === "viscose") return VISCOSE_WEAVES;
+  if (category === "knits")   return POLYESTER_WOVEN_WEAVES;
+  return COTTON_WEAVES; // default for cotton + anything else
+};
+
+const PATTERN_OPTIONS = [
+  "Solid", "Print", "Stripes", "Checks", "Floral", "Geometric", "Digital", "Random", "Greige", "Others",
+];
+const FINISH_OPTIONS = [
+  "Bio", "Double Bio", "Silicon", "Double Silicon", "Enzyme Wash", "Sulphur Wash",
+  "Acid Wash", "Normal Wash", "Stone Wash",
+];
+
 const WASH_TYPES = ["Indigo", "Sulphur Black", "Raw", "Stone Wash", "Enzyme Wash", "Bleach Wash", "Acid Wash", "Pigment Dyed", "Other"];
 const COMMON_MATERIALS = ["Cotton", "Polyester", "Viscose", "Lycra", "Spandex", "Nylon", "Linen", "Modal", "Tencel", "Wool", "Silk", "Acrylic", "Bamboo", "Hemp"];
 const CERTIFICATIONS = ["GOTS", "OEKO-TEX", "GRS", "BCI", "USDA Organic", "Cradle to Cradle"];
@@ -58,6 +102,7 @@ const EMPTY_FORM = {
   width_inches: "",
   color: "",
   pantone_code: "",
+  pattern: "",          // Solid / Print / Stripes / …
   weave_type: "",
   knit_type: "",
   thread_count: "",
@@ -114,26 +159,55 @@ const inputCls = "w-full px-3 py-2 rounded-lg border border-neutral-200 focus:bo
 const RFQPage = () => {
   const [step, setStep] = useState(1);
   const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [submittedRfqNumber, setSubmittedRfqNumber] = useState("");
   const [loggedInCustomer, setLoggedInCustomer] = useState(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  // Server-side RFQ id once Step 1 has been saved as a draft.
+  // After this, every Continue click PATCHes the same RFQ instead of
+  // creating a duplicate.
+  const [rfqId, setRfqId] = useState("");
+  const [draftRfqNumber, setDraftRfqNumber] = useState("");
+  const [prefillingFromFabric, setPrefillingFromFabric] = useState(false);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const fromAccount = searchParams.get("from") === "account";
+  const prefillFabricId = searchParams.get("fabric_id") || "";
 
   const [form, setForm] = useState(EMPTY_FORM);
 
   const update = (patch) => setForm((prev) => ({ ...prev, ...patch }));
 
-  // Pull profile if customer is logged in (skip step 4 contact fields)
+  // Pull profile if customer or brand is logged in (skip step 4 contact fields).
+  // Brand tokens take precedence — Enterprise Cart / Queries flows always use them.
   useEffect(() => {
-    const token = localStorage.getItem("lf_customer_token");
-    if (!token) return;
+    const brandToken = localStorage.getItem("lf_brand_token");
+    const customerToken = localStorage.getItem("lf_customer_token");
+    if (!brandToken && !customerToken) return;
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${API_URL}/api/customer/profile`, { headers: { Authorization: `Bearer ${token}` } });
+        if (brandToken) {
+          const res = await fetch(`${API_URL}/api/brand/me`, { headers: { Authorization: `Bearer ${brandToken}` } });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (cancelled) return;
+          const u = data.user || {};
+          const b = data.brand || {};
+          const realEmail = (u.email || "").endsWith("@phone.locofast.local") ? "" : (u.email || "");
+          // Treat brand-user as 'logged-in' for the wizard's contact-card UI.
+          setLoggedInCustomer({ name: u.name || "", email: realEmail, phone: b.phone || "", gstin: b.gst || "", company: b.name || "" });
+          update({
+            full_name: form.full_name || u.name || "",
+            email: form.email || realEmail,
+            phone: form.phone || b.phone || "",
+            gst_number: form.gst_number || b.gst || "",
+          });
+          return;
+        }
+        // Customer fallback
+        const res = await fetch(`${API_URL}/api/customer/profile`, { headers: { Authorization: `Bearer ${customerToken}` } });
         if (!res.ok) return;
         const me = await res.json();
         if (cancelled) return;
@@ -164,6 +238,67 @@ const RFQPage = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.fabric_type]);
+
+  // ---------- PDP prefill: ?fabric_id=… ----------
+  // When the wizard is launched from a fabric detail page, fetch the fabric
+  // and auto-fill all spec fields (composition, GSM, width, weave, color, …)
+  // so the buyer doesn't have to re-type what's already on the SKU.
+  useEffect(() => {
+    if (!prefillFabricId) return;
+    let cancelled = false;
+    setPrefillingFromFabric(true);
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/fabrics/${prefillFabricId}`);
+        if (!res.ok) return;
+        const f = await res.json();
+        if (cancelled || !f) return;
+
+        // category_id like "cat-cotton" → "cotton"; fall back to "cotton"
+        const catSlug = (f.category_id || "").replace(/^cat-/, "");
+        const validCat = ["cotton", "knits", "denim", "viscose"].includes(catSlug)
+          ? catSlug
+          : (CATEGORIES.find((c) => c.id === catSlug)?.id || "cotton");
+
+        const fabType = (f.fabric_type || "").toLowerCase();
+        const isKnit = fabType.includes("knit") || validCat === "knits";
+
+        // Composition: pad to 3 rows so the UI stays consistent
+        const inComp = Array.isArray(f.composition) ? f.composition : [];
+        const compRows = [...inComp.map((c) => ({
+          material: c.material || "",
+          percentage: Number(c.percentage) || 0,
+        }))];
+        while (compRows.length < 3) compRows.push({ material: "", percentage: 0 });
+
+        update({
+          category: validCat,
+          fabric_type: isKnit ? "knitted" : "woven",
+          quantity_unit: isKnit ? "kg" : "m",
+          fabric_requirement_type: f.fabric_requirement_type || "",
+          sub_category: f.sub_category || "",
+          composition: compRows,
+          gsm: f.gsm ? String(f.gsm) : "",
+          weight_oz: f.ounce ? String(f.ounce) : "",
+          width_inches: f.width ? String(f.width) : "",
+          color: f.color_or_shade || "",
+          pantone_code: f.pantone_code || "",
+          pattern: f.pattern || "",
+          weave_type: f.weave_pattern || "",
+          knit_type: f.knit_type || "",
+          stretch: f.stretch || "",
+          finish: f.finish || "",
+          end_use: f.end_use || "",
+          certifications: Array.isArray(f.certifications) ? f.certifications : [],
+        });
+        toast.success(`Specs pre-filled from ${f.name || "selected fabric"}`);
+      } catch { /* manual fallback */ } finally {
+        if (!cancelled) setPrefillingFromFabric(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillFabricId]);
 
   const compositionTotal = useMemo(
     () => form.composition.reduce((s, c) => s + (Number(c.percentage) || 0), 0),
@@ -204,10 +339,14 @@ const RFQPage = () => {
     return true;
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (step === 1 && !validateStep1()) return;
     if (step === 2 && !validateStep2()) return;
     if (step === 3 && !validateStep3()) return;
+
+    const ok = await persistStep(step);
+    if (!ok) return;
+
     setStep(step + 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -215,6 +354,117 @@ const RFQPage = () => {
   const handleBack = () => {
     setStep(Math.max(1, step - 1));
     window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  // ---------- Auth helper ----------
+  const getAuthToken = () => (
+    localStorage.getItem("lf_brand_token") || localStorage.getItem("lf_customer_token") || ""
+  );
+
+  // ---------- Step → server payload mapping ----------
+  // Each step persists ONLY the fields it owns, so we don't accidentally
+  // wipe earlier-step data when we PATCH later.
+  const buildStepPayload = (s) => {
+    if (s === 1) {
+      return {
+        category: form.category,
+        fabric_requirement_type: form.fabric_requirement_type || "",
+        quantity_value: parseFloat(form.quantity_value) || 0,
+        quantity_unit: form.quantity_unit,
+        // Preserve PDP-source link end-to-end so vendors see the SKU
+        prefill_fabric_id: prefillFabricId || "",
+      };
+    }
+    if (s === 2) {
+      const cleanComposition = form.composition
+        .filter((c) => c.material && Number(c.percentage) > 0)
+        .map((c) => ({ material: c.material, percentage: Number(c.percentage) }));
+      return {
+        sub_category: form.sub_category || "",
+        composition: cleanComposition,
+        gsm: parseFloat(form.gsm) || 0,
+        weight_oz: parseFloat(form.weight_oz) || 0,
+        width_inches: parseFloat(form.width_inches) || 0,
+        color: form.color || "",
+        pantone_code: form.pantone_code || "",
+        pattern: form.pattern || "",
+        weave_type: form.weave_type || "",
+        knit_type: form.knit_type || "",
+        thread_count: form.thread_count || "",
+        yarn_count: form.yarn_count || "",
+        stretch: form.stretch || "",
+        finish: form.finish || "",
+        end_use: form.end_use || "",
+        certifications: form.certifications || [],
+        knit_quality: form.knit_quality || "",
+        denim_specification: form.denim_specification || "",
+        wash_type: form.wash_type || "",
+      };
+    }
+    if (s === 3) {
+      return {
+        reference_images: form.reference_images || [],
+        target_price_per_unit: parseFloat(form.target_price_per_unit) || 0,
+        required_by: form.required_by || "",
+        sample_needed: !!form.sample_needed,
+        message: form.message || "",
+      };
+    }
+    return {};
+  };
+
+  // ---------- Persist a single step ----------
+  // Step 1: POST /api/rfq/submit with is_draft=true → store rfq_id.
+  // Steps 2-3: PATCH /api/rfq/{rfq_id} with that step's fields.
+  // Returns true on success, false on failure (so navigation halts).
+  const persistStep = async (s) => {
+    const token = getAuthToken();
+    setSavingDraft(true);
+    try {
+      if (s === 1 && !rfqId) {
+        // Brand new draft. Send Step 1 + the empty rest as a draft.
+        const payload = { ...buildStepPayload(1), is_draft: true };
+        const res = await fetch(`${API_URL}/api/rfq/submit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          // Anonymous users hit a 400 on missing name. We fall back to
+          // local-only progression so they can still finish anonymously
+          // (full payload submitted at the end).
+          if (res.status === 400 && !token) {
+            return true;
+          }
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || "Could not save draft");
+        }
+        const data = await res.json();
+        setRfqId(data.id || "");
+        setDraftRfqNumber(data.rfq_number || "");
+        return true;
+      }
+      if (s >= 2 && rfqId) {
+        const payload = buildStepPayload(s);
+        const res = await fetch(`${API_URL}/api/rfq/${rfqId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.detail || "Could not save progress");
+        }
+        return true;
+      }
+      // Step 1 with no token but missing required fields → progress locally
+      return true;
+    } catch (err) {
+      toast.error(err.message || "Could not save draft");
+      return false;
+    } finally {
+      setSavingDraft(false);
+    }
   };
 
   // ---------- Composition handlers ----------
@@ -261,59 +511,89 @@ const RFQPage = () => {
         .filter((c) => c.material && Number(c.percentage) > 0)
         .map((c) => ({ material: c.material, percentage: Number(c.percentage) }));
 
-      const payload = {
-        category: form.category,
-        fabric_requirement_type: form.fabric_requirement_type || "",
-        quantity_value: parseFloat(form.quantity_value) || 0,
-        quantity_unit: form.quantity_unit,
-        // legacy fields kept blank — backend now also accepts quantity_value
-        knit_quality: form.knit_quality || "",
-        knit_type: form.knit_type || "",
-        denim_specification: form.denim_specification || "",
-        wash_type: form.wash_type || "",
-        weight_oz: parseFloat(form.weight_oz) || 0,
-        sub_category: form.sub_category || "",
-        composition: cleanComposition,
-        gsm: parseFloat(form.gsm) || 0,
-        width_inches: parseFloat(form.width_inches) || 0,
-        color: form.color || "",
-        pantone_code: form.pantone_code || "",
-        weave_type: form.weave_type || "",
-        thread_count: form.thread_count || "",
-        yarn_count: form.yarn_count || "",
-        stretch: form.stretch || "",
-        finish: form.finish || "",
-        end_use: form.end_use || "",
-        certifications: form.certifications || [],
-        reference_images: form.reference_images || [],
-        target_price_per_unit: parseFloat(form.target_price_per_unit) || 0,
-        required_by: form.required_by || "",
-        sample_needed: !!form.sample_needed,
-        delivery_city: form.delivery_city || "",
-        delivery_state: form.delivery_state || "",
-        delivery_pincode: form.delivery_pincode || "",
-        full_name: form.full_name || "",
-        email: form.email || "",
-        phone: form.phone || "",
-        gst_number: form.gst_number || "",
-        website: form.website || "",
-        message: form.message || "",
-      };
+      const token = getAuthToken();
 
-      // Prefer brand token over customer token so enterprise users land
-      // their RFQs inside the brand portal's "My Queries" view.
+      // ─── PATCH path: a draft already exists, just finalize it ───
+      if (rfqId) {
+        const finalPayload = {
+          // step 4 fields
+          delivery_city: form.delivery_city || "",
+          delivery_state: form.delivery_state || "",
+          delivery_pincode: form.delivery_pincode || "",
+          full_name: form.full_name || "",
+          email: form.email || "",
+          phone: form.phone || "",
+          gst_number: form.gst_number || "",
+          website: form.website || "",
+          // resend in-step-3 message in case it was edited last-second
+          message: form.message || "",
+          finalize: true,
+        };
+        const res = await fetch(`${API_URL}/api/rfq/${rfqId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify(finalPayload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to submit");
+        setSubmitted(true);
+        setSubmittedRfqNumber(draftRfqNumber || data.rfq?.rfq_number || "");
+        toast.success(`RFQ ${draftRfqNumber || data.rfq?.rfq_number || ""} submitted!`);
+      } else {
+        // ─── Fallback POST path: anonymous user completed all steps locally
+        //     (Step 1 was skipped server-side because we had no profile) ───
+        const payload = {
+          category: form.category,
+          fabric_requirement_type: form.fabric_requirement_type || "",
+          quantity_value: parseFloat(form.quantity_value) || 0,
+          quantity_unit: form.quantity_unit,
+          knit_quality: form.knit_quality || "",
+          knit_type: form.knit_type || "",
+          denim_specification: form.denim_specification || "",
+          wash_type: form.wash_type || "",
+          weight_oz: parseFloat(form.weight_oz) || 0,
+          sub_category: form.sub_category || "",
+          composition: cleanComposition,
+          gsm: parseFloat(form.gsm) || 0,
+          width_inches: parseFloat(form.width_inches) || 0,
+          color: form.color || "",
+          pantone_code: form.pantone_code || "",
+          pattern: form.pattern || "",
+          weave_type: form.weave_type || "",
+          thread_count: form.thread_count || "",
+          yarn_count: form.yarn_count || "",
+          stretch: form.stretch || "",
+          finish: form.finish || "",
+          end_use: form.end_use || "",
+          certifications: form.certifications || [],
+          reference_images: form.reference_images || [],
+          target_price_per_unit: parseFloat(form.target_price_per_unit) || 0,
+          required_by: form.required_by || "",
+          sample_needed: !!form.sample_needed,
+          delivery_city: form.delivery_city || "",
+          delivery_state: form.delivery_state || "",
+          delivery_pincode: form.delivery_pincode || "",
+          full_name: form.full_name || "",
+          email: form.email || "",
+          phone: form.phone || "",
+          gst_number: form.gst_number || "",
+          website: form.website || "",
+          message: form.message || "",
+          prefill_fabric_id: prefillFabricId || "",
+        };
+        const res = await fetch(`${API_URL}/api/rfq/submit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Failed to submit");
+        setSubmitted(true);
+        setSubmittedRfqNumber(data.rfq_number);
+        toast.success(`RFQ ${data.rfq_number} submitted!`);
+      }
+
       const brandToken = localStorage.getItem("lf_brand_token");
-      const token = brandToken || localStorage.getItem("lf_customer_token");
-      const res = await fetch(`${API_URL}/api/rfq/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Failed to submit");
-      setSubmitted(true);
-      setSubmittedRfqNumber(data.rfq_number);
-      toast.success(`RFQ ${data.rfq_number} submitted!`);
       if (brandToken) setTimeout(() => navigate("/enterprise/queries"), 1500);
       else if (fromAccount) setTimeout(() => navigate("/account?tab=queries"), 1500);
     } catch (err) {
@@ -363,11 +643,18 @@ const RFQPage = () => {
           <div className="mb-8">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs text-neutral-500 uppercase tracking-wide font-medium">Step {step} of {totalSteps}</p>
-              {step > 1 && (
-                <button onClick={handleBack} className="text-xs text-neutral-600 hover:text-neutral-900 inline-flex items-center gap-1">
-                  <ArrowLeft size={14} /> Back
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                {draftRfqNumber && (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full" data-testid="rfq-draft-badge">
+                    <CheckCircle size={11} /> Draft {draftRfqNumber} saved
+                  </span>
+                )}
+                {step > 1 && (
+                  <button onClick={handleBack} className="text-xs text-neutral-600 hover:text-neutral-900 inline-flex items-center gap-1">
+                    <ArrowLeft size={14} /> Back
+                  </button>
+                )}
+              </div>
             </div>
             <div className="h-1 bg-neutral-200 rounded-full overflow-hidden">
               <div className="h-full bg-[#2563EB] transition-all duration-300" style={{ width: `${(step / totalSteps) * 100}%` }} />
@@ -462,8 +749,8 @@ const RFQPage = () => {
                 )}
               </div>
 
-              <button onClick={handleNext} className="mt-5 w-full bg-[#2563EB] text-white py-3 rounded-lg font-medium hover:bg-blue-600 flex items-center justify-center gap-2" data-testid="rfq-next-1">
-                Continue <ArrowRight size={16} />
+              <button onClick={handleNext} disabled={savingDraft || prefillingFromFabric} className="mt-5 w-full bg-[#2563EB] text-white py-3 rounded-lg font-medium hover:bg-blue-600 flex items-center justify-center gap-2 disabled:opacity-60" data-testid="rfq-next-1">
+                {savingDraft ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving draft…</> : <>Continue <ArrowRight size={16} /></>}
               </button>
             </div>
           )}
@@ -539,7 +826,13 @@ const RFQPage = () => {
                   <Field label={form.fabric_type === "knitted" ? "Knit Type" : "Weave Type"} optional>
                     <select value={form.fabric_type === "knitted" ? form.knit_type : form.weave_type} onChange={(e) => update(form.fabric_type === "knitted" ? { knit_type: e.target.value } : { weave_type: e.target.value })} className={`${inputCls} bg-white`} data-testid="rfq-weave-knit">
                       <option value="">Select…</option>
-                      {(form.fabric_type === "knitted" ? KNIT_OPTIONS : WEAVE_OPTIONS).map((w) => <option key={w} value={w}>{w}</option>)}
+                      {weavesForRfq(form.category, form.fabric_type).map((w) => <option key={w} value={w}>{w}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Pattern" optional>
+                    <select value={form.pattern} onChange={(e) => update({ pattern: e.target.value })} className={`${inputCls} bg-white`} data-testid="rfq-pattern">
+                      <option value="">Select…</option>
+                      {PATTERN_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
                     </select>
                   </Field>
                   <Field label="Stretch" optional>
@@ -555,7 +848,10 @@ const RFQPage = () => {
                     <input type="text" value={form.yarn_count} onChange={(e) => update({ yarn_count: e.target.value })} placeholder="30s x 20s" className={inputCls} data-testid="rfq-yarn-count" />
                   </Field>
                   <Field label="Finish" optional>
-                    <input type="text" value={form.finish} onChange={(e) => update({ finish: e.target.value })} placeholder="Bio, Silicon, Enzyme Wash" className={inputCls} data-testid="rfq-finish" />
+                    <select value={form.finish} onChange={(e) => update({ finish: e.target.value })} className={`${inputCls} bg-white`} data-testid="rfq-finish">
+                      <option value="">Select…</option>
+                      {FINISH_OPTIONS.map((f) => <option key={f} value={f}>{f}</option>)}
+                    </select>
                   </Field>
                   <Field label="End Use" optional>
                     <input type="text" value={form.end_use} onChange={(e) => update({ end_use: e.target.value })} placeholder="Shirts, Dresses, Trousers" className={inputCls} data-testid="rfq-end-use" />
@@ -598,8 +894,8 @@ const RFQPage = () => {
                 )}
               </div>
 
-              <button onClick={handleNext} className="mt-5 w-full bg-[#2563EB] text-white py-3 rounded-lg font-medium hover:bg-blue-600 flex items-center justify-center gap-2" data-testid="rfq-next-2">
-                Continue <ArrowRight size={16} />
+              <button onClick={handleNext} disabled={savingDraft} className="mt-5 w-full bg-[#2563EB] text-white py-3 rounded-lg font-medium hover:bg-blue-600 flex items-center justify-center gap-2 disabled:opacity-60" data-testid="rfq-next-2">
+                {savingDraft ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : <>Continue <ArrowRight size={16} /></>}
               </button>
             </div>
           )}
@@ -654,8 +950,8 @@ const RFQPage = () => {
                 </Field>
               </div>
 
-              <button onClick={handleNext} className="mt-5 w-full bg-[#2563EB] text-white py-3 rounded-lg font-medium hover:bg-blue-600 flex items-center justify-center gap-2" data-testid="rfq-next-3">
-                Continue <ArrowRight size={16} />
+              <button onClick={handleNext} disabled={savingDraft} className="mt-5 w-full bg-[#2563EB] text-white py-3 rounded-lg font-medium hover:bg-blue-600 flex items-center justify-center gap-2 disabled:opacity-60" data-testid="rfq-next-3">
+                {savingDraft ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : <>Continue <ArrowRight size={16} /></>}
               </button>
             </div>
           )}

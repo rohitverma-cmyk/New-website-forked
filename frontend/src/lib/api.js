@@ -10,6 +10,7 @@ const api = axios.create({
 api.interceptors.request.use((config) => {
   // Check for vendor token first (for /vendor/* and /cloudinary/* routes when vendor is logged in)
   const vendorToken = localStorage.getItem("vendor_token");
+  const agentToken = localStorage.getItem("lf_agent_token");
   if (config.url?.startsWith('/vendor') && !config.url?.includes('/vendor/login')) {
     if (vendorToken) {
       config.headers.Authorization = `Bearer ${vendorToken}`;
@@ -22,6 +23,11 @@ api.interceptors.request.use((config) => {
     const token = localStorage.getItem("locofast_token");
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    } else if (agentToken) {
+      // Agent token — used so internal staff get full vendor visibility on
+      // public-shaped endpoints like /fabrics. Backend recognizes the agent
+      // type and returns seller_company / seller_name accordingly.
+      config.headers.Authorization = `Bearer ${agentToken}`;
     }
   }
   return config;
@@ -87,6 +93,13 @@ export const createSeller = (data) => api.post("/sellers", data);
 export const updateSeller = (id, data) => api.put(`/sellers/${id}`, data);
 export const deleteSeller = (id) => api.delete(`/sellers/${id}`);
 
+// Pickup addresses (Ship-From) — multi-address support per seller
+export const listSellerPickupAddresses = (sellerId) => api.get(`/sellers/${sellerId}/pickup-addresses`);
+export const addSellerPickupAddress = (sellerId, data) => api.post(`/sellers/${sellerId}/pickup-addresses`, data);
+export const updateSellerPickupAddress = (sellerId, addrId, data) => api.patch(`/sellers/${sellerId}/pickup-addresses/${addrId}`, data);
+export const deleteSellerPickupAddress = (sellerId, addrId) => api.delete(`/sellers/${sellerId}/pickup-addresses/${addrId}`);
+export const setSellerPickupPrimary = (sellerId, addrId) => api.post(`/sellers/${sellerId}/pickup-addresses/${addrId}/primary`);
+
 // Reviews
 export const getReviews = (sellerId) => api.get("/reviews", { params: sellerId ? { seller_id: sellerId } : {} });
 export const createReview = (data) => api.post("/reviews", data);
@@ -105,7 +118,8 @@ export const rejectFabric = (id) => api.put(`/fabrics/${id}`, { status: 'rejecte
 
 // Credit / Wallet
 export const applyForCredit = (data) => api.post("/credit/apply", data);
-export const getCreditBalance = (email) => api.get("/credit/balance", { params: { email } });
+export const getCreditBalance = ({ gst_number }) => api.get("/credit/balance", { params: { gst_number } });
+export const editCreditWallet = (gstNumber, data) => api.put(`/orders/credit/wallets/${gstNumber}/edit`, data);
 
 // Customer Auth (OTP)
 export const sendCustomerOTP = (email) => api.post("/customer/send-otp", { email });
@@ -322,6 +336,12 @@ export const getSEOPreview = (id) => api.get(`/seo/fabric/${id}/preview`);
 export const getRelatedFabrics = (id) => api.get(`/seo/fabric/${id}/related`);
 export const getOtherSellers = (fabricId) => api.get(`/fabrics/${fabricId}/other-sellers`);
 export const batchGenerateSlugs = () => api.post(`/seo/batch-generate-slugs`);
+export const batchFillMissingSEO = () => api.post(`/seo/batch-fill-missing`, null, { timeout: 600000 });
+export const batchFillMissingSEOStart = () => api.post(`/seo/batch-fill-missing/start`);
+export const batchFillMissingSEOStatus = (jobId) => api.get(`/seo/batch-fill-missing/status/${jobId}`);
+export const batchFillMissingSEOLatest = () => api.get(`/seo/batch-fill-missing/latest`);
+export const batchFillMissingSEOResume = () => api.post(`/seo/batch-fill-missing/resume`);
+export const seoAudit = () => api.get(`/seo/audit`);
 
 // Blog - Categories
 export const getBlogCategories = () => api.get("/blog/categories");
@@ -360,10 +380,20 @@ export const getOrderByRazorpayId = (razorpayOrderId) => api.get(`/orders/by-raz
 export const listOrders = (params) => api.get("/orders", { params });
 export const updateOrderStatus = (id, status) => api.put(`/orders/${id}/status?status=${status}`);
 export const cancelOrder = (id, reason) => api.put(`/orders/${id}/cancel`, { reason });
+export const pushOrderToShiprocket = (id, force = false) =>
+  api.post(`/orders/admin/${id}/push-to-shiprocket${force ? "?force=true" : ""}`);
 export const getOrderStats = () => api.get("/orders/stats/summary");
 export const listCreditWallets = () => api.get("/orders/credit/wallets");
-export const editCreditWallet = (email, data) => api.put(`/orders/credit/wallets/${email}/edit`, data);
 export const bulkUploadCreditWallets = (wallets, mode = "replace") => api.post("/orders/credit/wallets/bulk-upload", { wallets, mode });
+export const upsertCreditWallet = (data) => api.post("/orders/credit/wallets/upsert", data);
+export const lookupCreditWalletByGst = (gstNumber) =>
+  api.get(`/orders/credit/wallets/lookup?gst_number=${encodeURIComponent(gstNumber)}`);
+
+// Admin order edit + audit trail
+export const adminEditOrder = (orderId, payload) =>
+  api.patch(`/orders/${orderId}/edit`, payload);
+export const listOrderEdits = (orderId) =>
+  api.get(`/orders/${orderId}/edits`);
 export const getCreditApplications = () => api.get("/credit/applications");
 export const approveCreditApplication = (id, credit_limit) => api.put(`/credit/applications/${id}/approve`, { credit_limit });
 export const rejectCreditApplication = (id, reason) => api.put(`/credit/applications/${id}/reject`, { reason });

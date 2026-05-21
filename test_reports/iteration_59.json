@@ -1,0 +1,96 @@
+{
+  "summary": "Tested Admin Credit Panel GST upsert feature and email rename (accounts@ → creditoperations@). All 14 backend tests passed. Frontend UI verified: Set Limit by GST button visible, modal opens correctly, GST lookup works for both new and existing customers, Replace/Top-up toggle functional, credit search filters by GSTIN.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_credit_gst_upsert_v59.py",
+    "/app/test_reports/pytest/pytest_credit_gst_v59.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_credit_gst_upsert_v59.py"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123",
+    "creditops": "creditoperations@locofast.com / Accounts@123",
+    "upsert_password": "0905"
+  },
+  "seed_data_creation": "Created test wallets during backend tests with GSTINs: 27TEST*, 27REPL*, 27TOPU*, 27PERD*, 27BALC*",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Credit wallet GST upsert feature fully tested. Key flows verified: (1) GET /api/orders/credit/wallets/lookup returns {found: false} for unknown GSTIN, {found: true, wallet: {...}} for existing, 400 for invalid length. (2) POST /api/orders/credit/wallets/upsert requires password='0905', validates GSTIN length=15 and credit_limit≥0, creates new wallet (created=true), replace mode overwrites limit+balance, topup mode adds to existing, credit_period_days defaults to 30 if not in {30,60,90}. (3) Credit-ops admin login works with new email creditoperations@locofast.com, old email accounts@locofast.com correctly rejected. (4) All email references updated from accounts@ to creditoperations@ in payouts_router.py, email_router.py, brand_router.py, orders_router.py. (5) Frontend: Set Limit by GST button visible, modal opens with data-testid='set-credit-by-gst-modal', GST input strips spaces and uppercases, 15-char GSTIN triggers lookup, new customer amber card appears for unknown GSTIN, existing customer blue card shows company/email/limit/balance/used/period with Replace/Top-up toggle, credit search filters by GSTIN.",
+  "features_verified": {
+    "lookup_endpoint": {
+      "status": "PASS",
+      "details": "GET /api/orders/credit/wallets/lookup returns correct response for valid/invalid/existing GSTINs"
+    },
+    "upsert_endpoint": {
+      "status": "PASS",
+      "details": "POST /api/orders/credit/wallets/upsert creates new wallets, updates existing with replace/topup modes"
+    },
+    "password_gate": {
+      "status": "PASS",
+      "details": "Upsert endpoint requires password='0905', rejects wrong password with 403"
+    },
+    "validation": {
+      "status": "PASS",
+      "details": "GSTIN length=15 validated, credit_limit≥0 validated, credit_period_days defaults to 30"
+    },
+    "creditops_login": {
+      "status": "PASS",
+      "details": "creditoperations@locofast.com / Accounts@123 login works, old accounts@ email rejected"
+    },
+    "email_references": {
+      "status": "PASS",
+      "details": "All references to accounts@locofast.com replaced with creditoperations@locofast.com"
+    },
+    "frontend_button": {
+      "status": "PASS",
+      "details": "Set Limit by GST button visible with data-testid='set-credit-by-gst-btn'"
+    },
+    "frontend_modal": {
+      "status": "PASS",
+      "details": "Modal opens with data-testid='set-credit-by-gst-modal', GST input works"
+    },
+    "frontend_lookup_new": {
+      "status": "PASS",
+      "details": "New customer amber card (data-testid='set-credit-new-card') appears for unknown GSTIN"
+    },
+    "frontend_lookup_existing": {
+      "status": "PASS",
+      "details": "Existing customer blue card (data-testid='set-credit-existing-card') shows wallet details"
+    },
+    "frontend_mode_toggle": {
+      "status": "PASS",
+      "details": "Replace/Top-up radio toggle (data-testid='set-credit-mode-replace/topup') works"
+    },
+    "frontend_gst_search": {
+      "status": "PASS",
+      "details": "Credit search input (data-testid='credit-search') filters by GSTIN"
+    },
+    "wallet_persistence": {
+      "status": "PASS",
+      "details": "After upsert, wallet appears in GET /api/orders/credit/wallets and lookup endpoint"
+    },
+    "credit_balance_endpoint": {
+      "status": "PASS",
+      "details": "GET /api/credit/balance?gst_number=... returns wallet info"
+    }
+  },
+  "mocked_apis": {
+    "has_mocked_apis": false,
+    "mocked_apis_list": []
+  }
+}

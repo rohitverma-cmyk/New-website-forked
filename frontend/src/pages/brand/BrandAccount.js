@@ -4,7 +4,7 @@ import { useBrandAuth } from "../../context/BrandAuthContext";
 import BrandLayout from "./BrandLayout";
 import {
   Loader2, Plus, Building2, Wallet, Beaker, Info, User, MapPin,
-  Pencil, Trash2, Check, X, ShoppingBag, FileText, ShieldCheck,
+  Pencil, Trash2, Check, X, FileText, ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import { fmtLacs, fmtINR, fmtCount } from "../../lib/inr";
@@ -15,7 +15,6 @@ const TABS = [
   { id: "overview", label: "Overview", icon: Wallet },
   { id: "profile", label: "Profile", icon: User },
   { id: "addresses", label: "Addresses", icon: MapPin },
-  { id: "orders", label: "Orders", icon: ShoppingBag },
   { id: "financials", label: "Financials", icon: FileText },
   { id: "ledger", label: "Activity Ledger", icon: FileText },
 ];
@@ -514,61 +513,6 @@ const AddressesTab = ({ token, isAdmin }) => {
   );
 };
 
-// ───────────────────────────────────────────────── ORDERS TAB
-const OrdersTab = ({ token }) => {
-  const [orders, setOrders] = useState(null);
-  useEffect(() => {
-    fetch(`${API}/api/brand/orders`, { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.json()).then(setOrders).catch(() => setOrders([]));
-  }, [token]);
-
-  if (!orders) return <div className="flex justify-center py-10"><Loader2 className="animate-spin text-emerald-600" /></div>;
-  if (orders.length === 0) {
-    return <div className="bg-gray-50 border border-gray-200 rounded-xl p-10 text-center text-sm text-gray-500">No orders placed yet.</div>;
-  }
-
-  const samples = orders.filter((o) => o.order_type === "sample");
-  const bulks = orders.filter((o) => o.order_type === "bulk");
-
-  const Section = ({ title, list, accent }) => (
-    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden" data-testid={`brand-orders-${title.toLowerCase()}`}>
-      <div className={`px-4 py-2.5 border-b border-gray-100 flex items-center justify-between ${accent}`}>
-        <h4 className="text-sm font-semibold">{title} ({list.length})</h4>
-      </div>
-      <div className="divide-y divide-gray-100">
-        {list.map((o) => (
-          <div key={o.id} className="p-4 text-sm flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <p className="font-mono text-xs text-gray-700">{o.order_number}</p>
-              <p className="text-xs text-gray-500">{new Date(o.created_at).toLocaleString()}</p>
-              <ul className="mt-1 space-y-0.5 text-xs text-gray-700">
-                {(o.items || []).slice(0, 3).map((it, i) => (
-                  <li key={i} className="truncate">
-                    • <Link to={`/enterprise/fabrics/${it.fabric_id}`} className="text-emerald-700 hover:underline">{it.fabric_name || "Fabric"}</Link>
-                    {it.color_name ? `, ${it.color_name}` : ""} — {it.quantity}{it.unit || "m"}
-                  </li>
-                ))}
-                {(o.items || []).length > 3 && <li className="text-[10px] text-gray-500">+{o.items.length - 3} more</li>}
-              </ul>
-            </div>
-            <div className="text-right">
-              <p className="text-sm font-semibold text-gray-900">{fmtINR(o.total)}</p>
-              <span className="text-[10px] inline-block px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 mt-1 capitalize">{o.status?.replace("_", " ")}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="space-y-5">
-      {samples.length > 0 && <Section title="Sample Orders" list={samples} accent="bg-blue-50 text-blue-800" />}
-      {bulks.length > 0 && <Section title="Bulk Orders" list={bulks} accent="bg-emerald-50 text-emerald-800" />}
-    </div>
-  );
-};
-
 // ───────────────────────────────────────────────── LEDGER TAB
 const LedgerTab = ({ ledger }) => {
   if (!ledger) return <div className="flex justify-center py-10"><Loader2 className="animate-spin text-emerald-600" /></div>;
@@ -846,7 +790,7 @@ const BrandAccount = () => {
     <BrandLayout>
       <div className="mb-5">
         <h1 className="text-2xl font-semibold text-gray-900">My Account</h1>
-        <p className="text-sm text-gray-500 mt-1">Profile, addresses, orders, credit & sample-credit ledger — all in one place.</p>
+        <p className="text-sm text-gray-500 mt-1">Profile, addresses, credit & sample-credit ledger — all in one place.</p>
       </div>
 
       <div className="border-b border-gray-200 mb-6 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0" data-testid="brand-account-tabs">
@@ -879,7 +823,6 @@ const BrandAccount = () => {
       {tab === "addresses" && (
         <AddressesTab token={token} isAdmin={user?.role === "brand_admin"} />
       )}
-      {tab === "orders" && <OrdersTab token={token} />}
       {tab === "financials" && <FinancialsTab token={token} />}
       {tab === "ledger" && <LedgerTab ledger={ledger} />}
 

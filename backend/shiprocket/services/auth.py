@@ -48,6 +48,16 @@ class AuthService:
     )
     async def _generate_new_token(self) -> str:
         """Generate a new authentication token from Shiprocket API"""
+        # Lazy-initialize the HTTP client if `initialize()` was never called
+        # explicitly. This makes the auth service safe to use from any
+        # caller (order webhooks, brand-router fire-and-forget tasks, etc.)
+        # without relying on app-startup wiring.
+        if self.http_client is None:
+            self.http_client = httpx.AsyncClient(
+                timeout=settings.request_timeout,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            )
+
         auth_url = f"{settings.shiprocket_base_url}{settings.shiprocket_auth_endpoint}"
         
         payload = {

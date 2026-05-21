@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { Helmet } from "react-helmet-async";
-import { Search, SlidersHorizontal, X, ChevronLeft, ChevronRight, MessageSquare, Package, ShoppingCart, Clock } from "lucide-react";
+import { Search, SlidersHorizontal, X, ChevronLeft, ChevronRight, MessageSquare, Package, ShoppingCart, Clock, ArrowLeft } from "lucide-react";
 import { toWebVideoUrl, videoPosterUrl } from "../lib/videoUrl";
 import { thumbImage, fabricCoverImage } from "../lib/imageUrl";
 import { displayFabricName } from "../lib/fabricDisplay";
@@ -13,8 +13,6 @@ import { getFabrics, getFabricsCount, getCategories, createEnquiry, getFabricFil
 import { getCheapestBulkPrice, formatQtyThreshold } from "../lib/pricing";
 import Watermark from "../components/Watermark";
 import CertificationBadges from "../components/CertificationBadges";
-import CertificationDisclaimer from "../components/CertificationDisclaimer";
-import { CERTIFICATIONS } from "../lib/certifications";
 import { trackViewItemList } from "../lib/analytics";
 import { toast } from "sonner";
 
@@ -125,12 +123,21 @@ const FabricsPage = () => {
         if (priceRange.min) params.min_price = priceRange.min;
         if (priceRange.max) params.max_price = priceRange.max;
 
-        const [fabricsRes, countRes] = await Promise.all([
+        // Use allSettled so a slow/failing /count endpoint doesn't blank the
+        // listing when fabrics already loaded. Prod has seen intermittent
+        // 520s on /count under load.
+        const [fabricsResult, countResult] = await Promise.allSettled([
           getFabrics(params),
           getFabricsCount(params)
         ]);
+        if (fabricsResult.status === "rejected") throw fabricsResult.reason;
+        const fabricsRes = fabricsResult.value;
         setFabrics(fabricsRes.data);
-        setTotalCount(countRes.data.count);
+        setTotalCount(
+          countResult.status === "fulfilled"
+            ? (countResult.value.data?.count ?? fabricsRes.data.length)
+            : fabricsRes.data.length
+        );
         // GA4: track catalog view
         if (fabricsRes.data.length > 0) {
           const listName = selectedCategory
@@ -352,6 +359,20 @@ const FabricsPage = () => {
           {/* Header */}
           <div className="flex items-center justify-between mb-6 sm:mb-8">
             <div>
+              {/* Back-to-All-Fabrics breadcrumb — only when a specific
+                  category is filtered. Clearing it returns the user to
+                  the unfiltered /fabrics view. */}
+              {selectedCategory && (
+                <button
+                  type="button"
+                  onClick={() => { setSelectedCategory(""); setCurrentPage(1); }}
+                  className="inline-flex items-center gap-1.5 text-sm text-[#2563EB] hover:text-blue-700 mb-2 group"
+                  data-testid="back-to-all-fabrics"
+                >
+                  <ArrowLeft size={14} className="transition-transform group-hover:-translate-x-0.5" />
+                  All Fabrics
+                </button>
+              )}
               <h1 className="text-2xl sm:text-3xl font-semibold mb-1">
                 {(() => {
                   const c = categories.find(x => x.id === selectedCategory);
@@ -527,48 +548,9 @@ const FabricsPage = () => {
                     ))}
                   </select>
                 </div>
-                {/* Certifications facet — multi-select. Shows count per cert
-                    from /api/fabrics/filter-options so buyers know if the
-                    filter will actually narrow results. */}
-                <div className="sm:col-span-2 md:col-span-4">
-                  <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Certifications</label>
-                  <div className="flex flex-wrap gap-2" data-testid="filter-certifications">
-                    {CERTIFICATIONS.map((c) => {
-                      const count = (filterOptions.certifications || {})[c.key] || 0;
-                      const checked = selectedCerts.includes(c.key);
-                      const disabled = count === 0 && !checked;
-                      return (
-                        <button
-                          key={c.key}
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => {
-                            setSelectedCerts(
-                              checked
-                                ? selectedCerts.filter((k) => k !== c.key)
-                                : [...selectedCerts, c.key]
-                            );
-                            setCurrentPage(1);
-                          }}
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium transition-colors ${
-                            checked
-                              ? "bg-[#2563EB] text-white border-[#2563EB]"
-                              : disabled
-                                ? "bg-gray-50 text-gray-400 border-gray-100 cursor-not-allowed"
-                                : "bg-white text-gray-700 border-gray-200 hover:border-gray-400"
-                          }`}
-                          data-testid={`filter-cert-${c.key}`}
-                          title={c.fullName}
-                        >
-                          <span className={`w-1.5 h-1.5 rounded-full ${checked ? "bg-white/90" : c.dotClass}`} />
-                          {c.label}
-                          <span className={`text-[10px] ${checked ? "text-white/80" : "text-gray-400"}`}>({count})</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <CertificationDisclaimer className="mt-3" testId="filter-cert-disclaimer" />
-                </div>
+                {/* Certifications facet removed per product decision —
+                    moved to PDP/listing card display only. Selected certs
+                    state preserved for backwards compat with shared URLs. */}
                 <div>
                   <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">{isDenimCategory ? "Weight (oz)" : "GSM Range"}</label>
                   <div className="flex gap-2">
@@ -953,19 +935,35 @@ const FabricsPage = () => {
                 </div>
 
                 {/* Pricing Tiers for Bulk */}
-                {modalType === "bulk" && selectedFabric.pricing_tiers && selectedFabric.pricing_tiers.length > 0 && (
+                {modalType === "bulk" && selectedFabric.pricing_tiers && selectedFabric.pricing_tiers.length > 0 && (() => {
+                  const moqMatch = String(selectedFabric.moq || "").match(/[\d,]+/);
+                  const moqNum = moqMatch ? parseInt(moqMatch[0].replace(/,/g, ""), 10) || 0 : 0;
+                  const hasBelowMoq = moqNum > 0 && selectedFabric.pricing_tiers.some((t) => t.max_qty < moqNum);
+                  return (
                   <div className="bg-blue-50 rounded-lg p-4">
                     <p className="text-sm font-medium text-blue-800 mb-2">Bulk Pricing Tiers</p>
                     <div className="space-y-1">
-                      {selectedFabric.pricing_tiers.map((tier, idx) => (
-                        <div key={idx} className="flex justify-between text-sm">
-                          <span className="text-blue-700">{tier.min_qty} - {tier.max_qty} {getUnit(selectedFabric).plural}</span>
-                          <span className="font-medium text-blue-900">₹{tier.price_per_meter}{getUnit(selectedFabric).priceLabel}</span>
-                        </div>
-                      ))}
+                      {selectedFabric.pricing_tiers.map((tier, idx) => {
+                        const belowMoq = moqNum > 0 && tier.max_qty < moqNum;
+                        return (
+                          <div key={idx} className={`flex justify-between text-sm ${belowMoq ? "opacity-70" : ""}`}>
+                            <span className="text-blue-700">
+                              {tier.min_qty} - {tier.max_qty} {getUnit(selectedFabric).plural}
+                              {belowMoq && <span className="ml-1 text-[10px] uppercase tracking-wide text-amber-700 font-semibold">via RFQ</span>}
+                            </span>
+                            <span className="font-medium text-blue-900">₹{tier.price_per_meter}{getUnit(selectedFabric).priceLabel}</span>
+                          </div>
+                        );
+                      })}
                     </div>
+                    {hasBelowMoq && (
+                      <p className="text-[11px] text-amber-700 mt-2">
+                        Tiers under the {moqNum.toLocaleString()}{getUnit(selectedFabric).short} MOQ are informational — book via RFQ for custom quotes.
+                      </p>
+                    )}
                   </div>
-                )}
+                  );
+                })()}
 
                 {/* Price Summary */}
                 {cartValue && (

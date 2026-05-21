@@ -370,11 +370,16 @@ async def get_vendor_orders(
     vendor_fabric_ids = await db.fabrics.distinct('id', {'seller_id': vendor['id']})
     seller_id = vendor['id']
 
+    # Exclude parent orders — when a multi-vendor checkout is split, the
+    # parent is the customer-facing financial record and child orders are
+    # the per-vendor working docs. Vendors should only see children + any
+    # single-vendor orders (which are not split, so no parent flag).
     base_q: dict = {
         '$or': [
             {'items.fabric_id': {'$in': vendor_fabric_ids}},
             {'items.seller_id': seller_id},
-        ]
+        ],
+        'is_parent_order': {'$ne': True},
     }
     if source in ("inventory", "rfq"):
         # `inventory` = orders without a `source` field (legacy) OR explicitly tagged inventory

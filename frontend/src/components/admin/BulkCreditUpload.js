@@ -2,11 +2,12 @@
 // header columns, validates rows, and shows a preview table before commit.
 //
 // Header aliases (case-insensitive, trimmed):
-//   email       — required. Must contain "@".
+//   gst_number   — required, unique key. Must be 15 chars (GSTIN format).
 //   credit_limit — required. Must be a non-negative number.
-//   name        — optional, contact name.
-//   company     — optional, brand / company name.
-//   lender      — optional. e.g. "HDFC Bank", "Stride", "Direct".
+//   name         — optional, contact name.
+//   company      — optional, brand / company name.
+//   email        — optional, contact email (kept as metadata only).
+//   lender       — optional. e.g. "HDFC Bank", "Stride", "Direct".
 //
 // Two modes:
 //   replace — rebuild wallet from row (balance = credit_limit). Default.
@@ -21,17 +22,22 @@ import { toast } from "sonner";
 import { bulkUploadCreditWallets } from "../../lib/api";
 
 const HEADER_ALIASES = {
+  gst_number: ["gst_number", "gst", "gstin", "gst_no", "gst no", "gstin number", "gst number"],
   email: ["email", "e-mail", "user_email", "buyer_email"],
   name: ["name", "contact", "contact_name", "person"],
   company: ["company", "brand", "company_name", "brand_name"],
   credit_limit: ["credit_limit", "credit", "limit", "amount", "credit_amount", "credit limit"],
   lender: ["lender", "lender_name", "bank", "financier"],
+  credit_period_days: [
+    "credit_period_days", "credit_period", "credit period", "credit period (days)",
+    "period", "period_days", "tenure", "tenure_days", "credit days",
+  ],
 };
 
 const TEMPLATE_CSV =
-  "email,name,company,credit_limit,lender\n" +
-  "buyer@brand.com,Raj Kumar,Brand Co,500000,HDFC Bank\n" +
-  "sourcing@fashion.in,Priya Shah,Fashion Inc,300000,ICICI Bank\n";
+  "gst_number,company,name,email,credit_limit,lender,credit_period_days\n" +
+  "27AABCB1234C1Z5,Brand Co,Raj Kumar,buyer@brand.com,500000,HDFC Bank,30\n" +
+  "24AAACR5055K1Z6,Fashion Inc,Priya Shah,sourcing@fashion.in,300000,ICICI Bank,60\n";
 
 // Map a raw header row to canonical field names. Returns { idxMap, missing }.
 const mapHeaders = (rawHeaders) => {
@@ -41,28 +47,34 @@ const mapHeaders = (rawHeaders) => {
     const idx = lower.findIndex((h) => aliases.includes(h));
     if (idx !== -1) idxMap[canon] = idx;
   });
-  const missing = ["email", "credit_limit"].filter((k) => !(k in idxMap));
+  const missing = ["gst_number", "credit_limit"].filter((k) => !(k in idxMap));
   return { idxMap, missing };
 };
 
 // Validate a single mapped row. Returns { ok, errors:[..], wallet }.
 const validateRow = (row) => {
   const errors = [];
-  const email = String(row.email || "").trim().toLowerCase();
-  if (!email || !email.includes("@")) errors.push("invalid email");
+  const gstin = String(row.gst_number || "").trim().toUpperCase().replace(/\s+/g, "");
+  if (!gstin) errors.push("missing GSTIN");
+  else if (gstin.length !== 15) errors.push("GSTIN must be 15 characters");
   const rawLimit = row.credit_limit;
   const limit = typeof rawLimit === "number" ? rawLimit : parseFloat(String(rawLimit || "").replace(/[,₹\s]/g, ""));
   if (Number.isNaN(limit)) errors.push("credit_limit not a number");
   else if (limit < 0) errors.push("credit_limit < 0");
+  // Optional credit_period_days — silently default to 30 if missing/invalid
+  let period = parseInt(String(row.credit_period_days || "").trim(), 10);
+  if (!Number.isInteger(period) || ![30, 60, 90].includes(period)) period = 30;
   return {
     ok: errors.length === 0,
     errors,
     wallet: {
-      email,
+      gst_number: gstin,
+      email: String(row.email || "").trim().toLowerCase(),
       name: String(row.name || "").trim(),
       company: String(row.company || "").trim(),
       credit_limit: Number.isNaN(limit) ? 0 : limit,
       lender: String(row.lender || "").trim(),
+      credit_period_days: period,
     },
   };
 };
@@ -205,10 +217,10 @@ const BulkCreditUpload = ({ open, onClose, onSuccess, currentWallets = [] }) => 
       const s = String(v ?? "");
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = "email,name,company,credit_limit,balance,lender\n";
+    const header = "gst_number,company,name,email,credit_limit,balance,lender,credit_period_days\n";
     const body = currentWallets
       .map((w) =>
-        [w.email, w.name, w.company, w.credit_limit ?? 0, w.balance ?? 0, w.lender]
+        [w.gst_number || "", w.company, w.name, w.email, w.credit_limit ?? 0, w.balance ?? 0, w.lender, w.credit_period_days || 30]
           .map(escape)
           .join(",")
       )
@@ -314,7 +326,7 @@ const BulkCreditUpload = ({ open, onClose, onSuccess, currentWallets = [] }) => 
               <Download size={14} /> Export current ({currentWallets.length})
             </button>
             <span className="ml-auto text-xs text-gray-500">
-              Required: <code className="bg-gray-100 px-1 rounded">email</code>{" "}
+              Required: <code className="bg-gray-100 px-1 rounded">gst_number</code>{" "}
               <code className="bg-gray-100 px-1 rounded">credit_limit</code>
             </span>
           </div>
@@ -397,13 +409,16 @@ const BulkCreditUpload = ({ open, onClose, onSuccess, currentWallets = [] }) => 
                             #
                           </th>
                           <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
-                            Email
+                            GSTIN
                           </th>
                           <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
                             Company
                           </th>
                           <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase">
                             Limit
+                          </th>
+                          <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase">
+                            Period
                           </th>
                           <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">
                             Lender
@@ -421,10 +436,15 @@ const BulkCreditUpload = ({ open, onClose, onSuccess, currentWallets = [] }) => 
                             data-testid={`preview-row-${r.rowNum}`}
                           >
                             <td className="px-3 py-2 text-gray-400 text-xs">{r.rowNum}</td>
-                            <td className="px-3 py-2 text-gray-700">{r.wallet.email || "—"}</td>
+                            <td className="px-3 py-2 text-gray-700 font-mono text-xs">{r.wallet.gst_number || "—"}</td>
                             <td className="px-3 py-2 text-gray-600">{r.wallet.company || "—"}</td>
                             <td className="px-3 py-2 text-right text-gray-700">
                               ₹{(r.wallet.credit_limit || 0).toLocaleString()}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-50 text-blue-700">
+                                {r.wallet.credit_period_days || 30}d
+                              </span>
                             </td>
                             <td className="px-3 py-2 text-gray-500">{r.wallet.lender || "—"}</td>
                             <td className="px-3 py-2">
@@ -438,7 +458,7 @@ const BulkCreditUpload = ({ open, onClose, onSuccess, currentWallets = [] }) => 
                         ))}
                         {preview.rows.length > 200 && (
                           <tr>
-                            <td colSpan="6" className="px-3 py-2 text-center text-xs text-gray-500">
+                            <td colSpan="7" className="px-3 py-2 text-center text-xs text-gray-500">
                               … and {preview.rows.length - 200} more rows
                             </td>
                           </tr>

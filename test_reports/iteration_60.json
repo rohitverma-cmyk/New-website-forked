@@ -1,0 +1,105 @@
+{
+  "summary": "Tested Ship-To Address & Place of Supply (POS) feature for CGST/IGST determination. All 11 backend tests passed. Frontend UI verified: shipping address radio options, ship-to form with GST verification, state field locking, and submit validation.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/gst/verify",
+        "issue": "Sandbox.co.in API returns 'Invalid GSTIN pattern' for some valid GSTINs (e.g., 27AAACR5055K1Z6). This is external API behavior, not a code bug. The Locofast GSTIN (07AADCL8794N1ZM) works correctly.",
+        "priority": "LOW"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ship_to_pos_v60.py",
+    "/app/test_reports/pytest/pytest_ship_to_pos_v60.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_ship_to_pos_v60.py"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 passed)",
+    "frontend": "100% (all UI elements verified)"
+  },
+  "test_credentials": {
+    "test_gstin_delhi": "07AADCL8794N1ZM (Locofast - works with Sandbox API)",
+    "test_gstin_maharashtra": "27AAACR5055K1Z6 (ICICI Bank - rejected by Sandbox API)"
+  },
+  "seed_data_creation": "Created test credit wallets during backend tests with GSTINs: 27TEST*, 27NOSP*, 27POSG*, 27INTR*, 27IGST*, 27INVS*, 27INVN*, 27GETS* (all cancelled/cleaned up after tests)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Ship-To Address & POS feature fully tested. Key flows verified: (1) ShipTo Pydantic model accepts name, company, gst_number, address, city, state, pincode, phone fields. (2) Order creation with ship_to via credit path persists ship_to on order document. (3) _resolve_pos_state function correctly prioritizes: ship_to.gst_number > ship_to.state > customer.gst_number > customer.state. (4) Invoice PDF generation includes Ship To block when ship_to is provided, with GSTIN line and State Code line. (5) Tax Type on invoice correctly shows CGST+SGST for intra-state (ship state = seller state 07 Delhi) and IGST for inter-state. (6) Frontend: After billing GST verification, 'GST Registered Address' and 'Ship to a Different Address' radio options appear. (7) Clicking 'Ship to a Different Address' shows ship-to form with amber warning banner about GST requirement. (8) Ship-to form has all required fields: ship-gst-input, ship-name-input, ship-address-input, ship-city-input, ship-state-input, ship-pincode-input, ship-phone-input. (9) Entering valid 15-char GSTIN in ship-gst-input triggers verification, auto-fills firm name + address + city + state + pincode. (10) State field becomes readOnly after successful shipping GST verification with '🔒 locked from GSTN' indicator. (11) Submit without verifying ship GST while 'different address' selected shows toast 'Please verify the consignee GST for the shipping address'. Note: Sandbox.co.in GST API is rate-limited and rejects some valid GSTINs - use 07AADCL8794N1ZM for testing.",
+  "features_verified": {
+    "ship_to_model": {
+      "status": "PASS",
+      "details": "ShipTo Pydantic model with all required fields (name, company, gst_number, address, city, state, pincode, phone)"
+    },
+    "order_create_with_ship_to": {
+      "status": "PASS",
+      "details": "Order creation via credit path persists ship_to on order document"
+    },
+    "order_create_without_ship_to": {
+      "status": "PASS",
+      "details": "Order creation without ship_to sets ship_to to null"
+    },
+    "pos_resolver_priority": {
+      "status": "PASS",
+      "details": "_resolve_pos_state correctly prioritizes ship_to.gst_number > ship_to.state > customer.gst_number > customer.state"
+    },
+    "intra_state_cgst_sgst": {
+      "status": "PASS",
+      "details": "When shipping to same state as seller (Delhi 07), invoice shows CGST+SGST"
+    },
+    "inter_state_igst": {
+      "status": "PASS",
+      "details": "When shipping to different state than seller, invoice shows IGST"
+    },
+    "gst_verify_endpoint": {
+      "status": "PASS",
+      "details": "/api/gst/verify endpoint works correctly (Sandbox API may reject some GSTINs)"
+    },
+    "invoice_with_ship_to": {
+      "status": "PASS",
+      "details": "Invoice PDF includes Ship To block with GSTIN and State Code when ship_to is provided"
+    },
+    "invoice_without_ship_to": {
+      "status": "PASS",
+      "details": "Invoice PDF generated correctly without Ship To block when ship_to is null"
+    },
+    "get_order_includes_ship_to": {
+      "status": "PASS",
+      "details": "GET /api/orders/{id} returns complete ship_to data"
+    },
+    "frontend_radio_options": {
+      "status": "PASS",
+      "details": "'GST Registered Address' (data-testid='ship-addr-same') and 'Ship to a Different Address' (data-testid='ship-addr-different') radio options appear after billing GST verification"
+    },
+    "frontend_ship_to_form": {
+      "status": "PASS",
+      "details": "Ship-to form (data-testid='ship-to-different-form') appears with amber warning banner and all required fields"
+    },
+    "frontend_ship_gst_verify": {
+      "status": "PASS",
+      "details": "Entering valid GSTIN in ship-gst-input triggers verification, shows green checkmark, auto-fills address fields"
+    },
+    "frontend_state_lock": {
+      "status": "PASS",
+      "details": "State field becomes readOnly after shipping GST verification with '🔒 locked from GSTN' indicator"
+    },
+    "frontend_submit_validation": {
+      "status": "PASS",
+      "details": "Submit without verifying ship GST shows toast 'Please verify the consignee GST for the shipping address'"
+    }
+  },
+  "mocked_apis": {
+    "has_mocked_apis": false,
+    "mocked_apis_list": []
+  }
+}

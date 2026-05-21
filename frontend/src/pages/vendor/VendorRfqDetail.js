@@ -21,6 +21,8 @@ import {
   Send,
   CheckCircle2,
   Sparkles,
+  Package,
+  ExternalLink,
 } from "lucide-react";
 import VendorLayout from "../../components/vendor/VendorLayout";
 import {
@@ -891,6 +893,24 @@ const VendorRfqDetail = () => {
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">{rfqTitle(rfq)}</h1>
                 <p className="text-sm text-violet-700 font-medium">{rfq.rfq_number}</p>
+                {/* SKU header — PDP-launched RFQs link back to the live
+                    catalog product so the vendor can see the exact spec
+                    sheet they're being asked to match. */}
+                {rfq.linked_fabric_id && !rfq.is_shortfall && (
+                  <a
+                    href={`/fabrics/${rfq.linked_fabric_slug || rfq.linked_fabric_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 mt-1.5 text-xs text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 rounded-full px-2.5 py-1 transition-colors"
+                    data-testid="vendor-rfq-detail-sku-link"
+                    title="Open live product page"
+                  >
+                    <Package size={12} />
+                    <span className="font-semibold">SKU {rfq.linked_fabric_code || rfq.linked_fabric_id}</span>
+                    {rfq.linked_fabric_name ? <span className="text-violet-500">— {rfq.linked_fabric_name}</span> : null}
+                    <ExternalLink size={11} />
+                  </a>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {myQuote ? (

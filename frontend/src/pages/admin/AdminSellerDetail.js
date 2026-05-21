@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Pencil, X, Upload, Check, Package, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
+import PickupAddressesPanel from "../../components/admin/PickupAddressesPanel";
 import { getSeller, updateSeller, getCategories, getFabrics, uploadImage, approveFabric, rejectFabric, deleteFabric } from "../../lib/api";
 import { useConfirm } from "../../components/useConfirm";
 
@@ -262,6 +263,20 @@ const AdminSellerDetail = () => {
             {statusCounts.pending > 0 && (
               <span className="bg-yellow-100 text-yellow-700 text-xs px-2 py-0.5 rounded-full">{statusCounts.pending} pending</span>
             )}
+          </button>
+          <button
+            onClick={() => setActiveTab("finance")}
+            className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === "finance" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+            data-testid="tab-finance"
+          >
+            Finance & Payouts
+          </button>
+          <button
+            onClick={() => setActiveTab("pickup")}
+            className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === "pickup" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+            data-testid="tab-pickup"
+          >
+            Pickup Addresses
           </button>
         </div>
 
@@ -595,8 +610,190 @@ const AdminSellerDetail = () => {
             )}
           </div>
         )}
+
+        {/* Finance & Payouts Tab */}
+        {activeTab === "finance" && (
+          <FinanceTab seller={seller} onSaved={fetchSeller} />
+        )}
+
+        {/* Pickup Addresses Tab */}
+        {activeTab === "pickup" && (
+          <PickupAddressesPanel sellerId={seller.id} />
+        )}
       </div>
     </AdminLayout>
+  );
+};
+
+// ─── Finance tab (vendor payout-related fields) ─────────────────
+const FinanceTab = ({ seller, onSaved }) => {
+  const [form, setForm] = useState({
+    payment_terms: seller?.payment_terms || "",
+    advance_pct: seller?.advance_pct ?? 0,
+    bank_account_name: seller?.bank_account_name || "",
+    bank_account_no: seller?.bank_account_no || "",
+    ifsc_code: seller?.ifsc_code || "",
+    upi_id: seller?.upi_id || "",
+    pan_number: seller?.pan_number || "",
+  });
+  // Pickup ("Ship-From") form is saved through the standard
+  // PUT /api/sellers/{id} endpoint (admin only), kept separate from
+  // the finance form because it's edited by a different team.
+  const [pickup, setPickup] = useState({
+    pickup_address: seller?.pickup_address || "",
+    pickup_city: seller?.pickup_city || seller?.city || "",
+    pickup_state: seller?.pickup_state || seller?.state || "",
+    pickup_pincode: seller?.pickup_pincode || "",
+    pickup_contact_name: seller?.pickup_contact_name || seller?.name || "",
+    pickup_contact_phone: seller?.pickup_contact_phone || seller?.contact_phone || "",
+    shiprocket_pickup_nickname: seller?.shiprocket_pickup_nickname || "",
+  });
+  const [savingPickup, setSavingPickup] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const token = localStorage.getItem("locofast_token");
+  const API = process.env.REACT_APP_BACKEND_URL;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`${API}/api/payouts/vendors/${seller.id}/finance`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(form),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed");
+      }
+      const { toast } = await import("sonner");
+      toast.success("Finance details updated");
+      onSaved?.();
+    } catch (e) {
+      const { toast } = await import("sonner");
+      toast.error(e.message || "Failed");
+    }
+    setSaving(false);
+  };
+
+  const savePickup = async () => {
+    setSavingPickup(true);
+    try {
+      const res = await fetch(`${API}/api/sellers/${seller.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(pickup),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed");
+      }
+      const { toast } = await import("sonner");
+      toast.success("Pickup address updated — next Shiprocket shipment will use this");
+      onSaved?.();
+    } catch (e) {
+      const { toast } = await import("sonner");
+      toast.error(e.message || "Failed");
+    }
+    setSavingPickup(false);
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-3xl" data-testid="finance-tab-content">
+      <h2 className="font-semibold text-gray-900 mb-1">Payment terms & payout details</h2>
+      <p className="text-xs text-gray-500 mb-5">Used by the accounts team to settle vendor dues. Advances can only be recorded if "Advance" is in the payment terms.</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div>
+          <label className="text-xs font-medium text-gray-700 mb-1 block">Payment Terms</label>
+          <select value={form.payment_terms} onChange={(e) => setForm({ ...form, payment_terms: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-white" data-testid="finance-payment-terms">
+            <option value="">— Not set —</option>
+            <option value="Advance 100%">Advance 100%</option>
+            <option value="Advance 50% + 50% on dispatch">Advance 50% + 50% on dispatch</option>
+            <option value="Advance 30% + 70% on dispatch">Advance 30% + 70% on dispatch</option>
+            <option value="Net 7">Net 7 days</option>
+            <option value="Net 15">Net 15 days</option>
+            <option value="Net 30">Net 30 days</option>
+            <option value="Net 45">Net 45 days</option>
+            <option value="Net 60">Net 60 days</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-medium text-gray-700 mb-1 block">Advance %</label>
+          <input type="number" min="0" max="100" value={form.advance_pct} onChange={(e) => setForm({ ...form, advance_pct: Number(e.target.value) })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" placeholder="e.g. 50" />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-gray-700 mb-1 block">Bank Account Holder</label>
+          <input value={form.bank_account_name} onChange={(e) => setForm({ ...form, bank_account_name: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-gray-700 mb-1 block">Account Number</label>
+          <input value={form.bank_account_no} onChange={(e) => setForm({ ...form, bank_account_no: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-gray-700 mb-1 block">IFSC Code</label>
+          <input value={form.ifsc_code} onChange={(e) => setForm({ ...form, ifsc_code: e.target.value.toUpperCase() })} className="w-full px-3 py-2 border border-gray-200 rounded-lg uppercase" placeholder="e.g. SBIN0001234" />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-gray-700 mb-1 block">UPI ID</label>
+          <input value={form.upi_id} onChange={(e) => setForm({ ...form, upi_id: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" placeholder="e.g. vendor@hdfc" />
+        </div>
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-gray-700 mb-1 block">PAN (mandatory for TDS deduction over ₹50k)</label>
+          <input value={form.pan_number} onChange={(e) => setForm({ ...form, pan_number: e.target.value.toUpperCase() })} className="w-full px-3 py-2 border border-gray-200 rounded-lg uppercase" placeholder="ABCDE1234F" maxLength={10} />
+        </div>
+      </div>
+      <div className="mt-5 flex justify-end">
+        <button onClick={save} disabled={saving} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50" data-testid="finance-save-btn">
+          {saving ? "Saving…" : "Save finance details"}
+        </button>
+      </div>
+
+      {/* ── Pickup / Ship-From — drives Shiprocket pickup_location ── */}
+      <div className="mt-8 border-t pt-6" data-testid="pickup-section">
+        <h2 className="font-semibold text-gray-900 mb-1">Pickup address (Ship-From)</h2>
+        <p className="text-xs text-gray-500 mb-5">
+          Used as the Shiprocket pickup location for orders fulfilled by this vendor. If the Shiprocket nickname is blank, a new pickup location will be auto-registered on the next shipment push using these fields.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div className="md:col-span-2">
+            <label className="text-xs font-medium text-gray-700 mb-1 block">Street Address</label>
+            <input value={pickup.pickup_address} onChange={(e) => setPickup({ ...pickup, pickup_address: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" placeholder="Plot/Building, Street, Area" data-testid="pickup-address-input" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-1 block">City</label>
+            <input value={pickup.pickup_city} onChange={(e) => setPickup({ ...pickup, pickup_city: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" data-testid="pickup-city-input" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-1 block">State</label>
+            <input value={pickup.pickup_state} onChange={(e) => setPickup({ ...pickup, pickup_state: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" data-testid="pickup-state-input" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-1 block">PIN Code</label>
+            <input value={pickup.pickup_pincode} onChange={(e) => setPickup({ ...pickup, pickup_pincode: e.target.value.replace(/\D/g, "") })} maxLength={6} className="w-full px-3 py-2 border border-gray-200 rounded-lg" data-testid="pickup-pincode-input" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-1 block">Pickup Contact Name</label>
+            <input value={pickup.pickup_contact_name} onChange={(e) => setPickup({ ...pickup, pickup_contact_name: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-700 mb-1 block">Pickup Contact Phone</label>
+            <input value={pickup.pickup_contact_phone} onChange={(e) => setPickup({ ...pickup, pickup_contact_phone: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="text-xs font-medium text-gray-700 mb-1 block">
+              Shiprocket Pickup Nickname
+              <span className="ml-2 text-[10px] text-gray-500 font-normal">(leave blank to auto-create)</span>
+            </label>
+            <input value={pickup.shiprocket_pickup_nickname} onChange={(e) => setPickup({ ...pickup, shiprocket_pickup_nickname: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded-lg font-mono text-xs" placeholder="e.g. VND-LS-ZW7NB" data-testid="pickup-nickname-input" />
+            <p className="text-[11px] text-gray-500 mt-1">Must match a registered pickup location in Shiprocket dashboard. Auto-generated as "VND-{`{seller_code}`}" if blank.</p>
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end">
+          <button onClick={savePickup} disabled={savingPickup} className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50" data-testid="pickup-save-btn">
+            {savingPickup ? "Saving…" : "Save pickup address"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 };
 

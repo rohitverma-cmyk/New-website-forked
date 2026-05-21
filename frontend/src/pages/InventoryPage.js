@@ -42,13 +42,19 @@ const InventoryPage = () => {
         if (search) params.search = search;
         if (selectedCategory) params.category_id = selectedCategory;
 
-        const [fabricsRes, countRes] = await Promise.all([
+        // Use allSettled so a slow/failing /count endpoint doesn't blank the
+        // page when the fabrics list itself succeeded. Prod has seen
+        // intermittent 520s on /count under load — show what we have.
+        const [fabricsResult, countResult] = await Promise.allSettled([
           getFabrics(params),
           getFabricsCount(params)
         ]);
-        
-        let sortedFabrics = [...fabricsRes.data];
-        
+
+        if (fabricsResult.status === "rejected") {
+          throw fabricsResult.reason;
+        }
+        let sortedFabrics = [...(fabricsResult.value.data || [])];
+
         // Sort fabrics
         if (sortBy === "price_low") {
           sortedFabrics.sort((a, b) => (a.rate_per_meter || 0) - (b.rate_per_meter || 0));
@@ -59,9 +65,15 @@ const InventoryPage = () => {
         } else if (sortBy === "newest") {
           sortedFabrics.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
         }
-        
+
         setFabrics(sortedFabrics);
-        setTotalCount(countRes.data.count);
+        // Fall back to fabrics.length if count failed — better than showing 0
+        // alongside a populated list.
+        setTotalCount(
+          countResult.status === "fulfilled"
+            ? (countResult.value.data?.count ?? sortedFabrics.length)
+            : sortedFabrics.length
+        );
       } catch (err) {
         console.error("Error fetching inventory:", err);
         toast.error("Failed to load inventory");

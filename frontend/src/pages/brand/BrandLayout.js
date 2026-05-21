@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useBrandAuth } from "../../context/BrandAuthContext";
 import { useBrandCart } from "../../context/BrandCartContext";
-import { Building2, Package, Users, LogOut, ShoppingBag, Wallet, ShoppingCart, Mail, Phone, HelpCircle, Factory, Send, Inbox, MessageSquareQuote } from "lucide-react";
+import { Building2, Package, Users, LogOut, ShoppingBag, User, ShoppingCart, Mail, Phone, HelpCircle, Factory, Send, Inbox, MessageSquareQuote } from "lucide-react";
+import NotificationBell from "../../components/brand/NotificationBell";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -81,10 +82,12 @@ const BrandLayout = ({ children }) => {
                 </span>
               )}
             </Link>
-            {/* Wallet — unobtrusive link to /brand/account */}
-            <Link to="/enterprise/account" title="Credit & Sample balances" data-testid="brand-nav-account"
-              className={`p-2 rounded-md transition-colors ${isActive("/enterprise/account") ? "bg-emerald-50 text-emerald-700" : "text-gray-500 hover:bg-gray-100 hover:text-gray-800"}`}>
-              <Wallet size={16} />
+            <NotificationBell />
+            {/* My Account — profile, credit & sample balances, addresses, ledger */}
+            <Link to="/enterprise/account" title="My Account" data-testid="brand-nav-account"
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${isActive("/enterprise/account") ? "bg-emerald-50 text-emerald-700" : "text-gray-600 hover:bg-gray-100 hover:text-gray-800"}`}>
+              <User size={16} />
+              <span className="hidden md:inline">My Account</span>
             </Link>
             <span className="text-sm text-gray-600 hidden md:block">{user?.name}</span>
             <button onClick={handleLogout} className="flex items-center gap-1 text-sm text-gray-600 hover:text-red-600" data-testid="brand-logout">

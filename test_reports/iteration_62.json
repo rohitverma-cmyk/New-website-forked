@@ -1,0 +1,69 @@
+{
+  "summary": "Tested packaging + logistics tax changes (v62): Backend calculate_totals now computes taxable_value = goods + packaging + logistics with 5% GST. All 9 backend tests passed. Frontend pricing verified for both bulk and sample orders. Fixed a display bug where taxable value was showing incorrect amount.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_packaging_logistics_tax_v62.py",
+    "/app/test_reports/pytest/pytest_packaging_tax_v62.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Fixed: CheckoutPage.js line 1418 - Taxable value display was using logisticsCharge (logistics_only) instead of logistics (totalLogistics). Changed to use 'logistics' variable which contains the full logistics amount."
+  ],
+  "updated_files": [
+    "/app/frontend/src/pages/CheckoutPage.js",
+    "/app/backend/tests/test_packaging_logistics_tax_v62.py"
+  ],
+  "success_rate": {
+    "backend": "100% (9/9 passed)",
+    "frontend": "100% (bulk and sample pricing verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123"
+  },
+  "seed_data_creation": "Backend tests created test orders with TEST_ prefix for verification, then cancelled them for cleanup.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Packaging + logistics tax changes fully tested. Key verifications: (1) calculate_totals() in orders_router.py correctly computes taxable_value = goods_subtotal + packaging + logistics, tax = 5% of taxable_value. (2) Order creation persists taxable_value and tax_on_charges_v2=True flag. (3) Invoice PDF rendering has v1/v2 branch - v2 orders show new layout (Goods Subtotal -> Packaging -> Logistics -> Taxable Value -> GST -> Total), v1 legacy orders show old layout (Subtotal -> GST -> Packaging -> Logistics -> Total). (4) Frontend CheckoutPage.js calculatePricing and calculateMultiItemPricing both compute tax on (goods + packaging + logistics). (5) Sample orders: flat ₹100 logistics, no packaging, tax on (goods + 100). (6) Bulk orders: packaging = qty × ₹1, totalLogistics = max(3% of goods, ₹3000), logistics_only = totalLogistics - packaging.",
+  "features_verified": {
+    "backend_calculate_totals": {
+      "status": "PASS",
+      "details": "Bulk: items=1000×₹100, packaging=1000, logistics=2000 → subtotal=100000, taxable_value=103000, tax=5150, total=108150"
+    },
+    "backend_sample_order": {
+      "status": "PASS",
+      "details": "Sample: qty=1, price=500, logistics=100 → subtotal=500, taxable_value=600, tax=30, total=630"
+    },
+    "order_field_persistence": {
+      "status": "PASS",
+      "details": "taxable_value and tax_on_charges_v2 fields correctly persisted on order creation"
+    },
+    "v2_invoice_pdf": {
+      "status": "PASS",
+      "details": "Paid v2 orders generate PDF with new layout showing Goods Subtotal, Packaging, Logistics, Taxable Value, GST, Total"
+    },
+    "legacy_invoice_pdf": {
+      "status": "PASS",
+      "details": "Legacy orders (without tax_on_charges_v2) generate PDF with old layout preserving historical accuracy"
+    },
+    "frontend_bulk_pricing": {
+      "status": "PASS",
+      "details": "Bulk order (1000m × ₹130): subtotal=130000, packaging=1000, logistics=2900, taxable=134900, tax=6745, total=141645"
+    },
+    "frontend_sample_pricing": {
+      "status": "PASS",
+      "details": "Sample order (1m × ₹200): subtotal=200, logistics=100, taxable=300, tax=15, total=315"
+    }
+  },
+  "mocked_apis": {
+    "has_mocked_apis": false,
+    "mocked_apis_list": []
+  }
+}
