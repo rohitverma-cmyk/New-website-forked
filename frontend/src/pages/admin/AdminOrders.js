@@ -351,8 +351,12 @@ const AdminOrders = () => {
   };
 
   const filteredOrders = orders.filter(order => {
-    // Status filter first (tab-driven)
-    if (statusFilter && order.status !== statusFilter) return false;
+    // Pipeline-stage filter (tab-driven). Falls back to legacy `status`
+    // for any pre-existing tabs that someone might still reference.
+    if (statusFilter) {
+      const stage = order.pipeline_stage || "";
+      if (stage !== statusFilter && order.status !== statusFilter) return false;
+    }
     if (!search) return true;
     const s = search.toLowerCase();
     return order.order_number?.toLowerCase().includes(s) || order.customer?.name?.toLowerCase().includes(s) || order.customer?.email?.toLowerCase().includes(s) || order.customer?.phone?.includes(search);
@@ -415,23 +419,21 @@ const AdminOrders = () => {
               </div>
             )}
 
-            {/* Status Tabs — replaces the dropdown filter for one-tap access */}
+            {/* Status Tabs — 6-stage pipeline (single source of truth from backend) */}
             <div className="bg-white rounded-lg border mb-4" data-testid="admin-order-status-tabs">
               <div className="flex items-center gap-1 px-2 py-2 overflow-x-auto">
                 {[
                   { key: "", label: "All", color: "text-gray-700" },
-                  { key: "payment_pending", label: "Payment Pending", color: "text-yellow-700" },
-                  { key: "provisional", label: "Provisional", color: "text-amber-700" },
-                  { key: "goods_ready", label: "Goods Ready", color: "text-orange-700" },
-                  { key: "confirmed", label: "Confirmed", color: "text-blue-700" },
-                  { key: "processing", label: "Processing", color: "text-indigo-700" },
-                  { key: "shipped", label: "Shipped", color: "text-purple-700" },
+                  { key: "awaiting_confirm", label: "Waiting to be Confirmed", color: "text-amber-700" },
+                  { key: "confirmed_pending_dispatch", label: "Confirmed / Waiting to be Dispatched", color: "text-blue-700" },
+                  { key: "prepare_dispatch", label: "Prepare Dispatch (Invoice)", color: "text-indigo-700" },
+                  { key: "dispatched", label: "Dispatched", color: "text-purple-700" },
                   { key: "delivered", label: "Delivered", color: "text-emerald-700" },
                   { key: "cancelled", label: "Cancelled", color: "text-red-700" },
                 ].map((t) => {
                   const count = t.key === ""
                     ? orders.length
-                    : orders.filter((o) => o.status === t.key).length;
+                    : orders.filter((o) => (o.pipeline_stage || "") === t.key).length;
                   const active = statusFilter === t.key;
                   return (
                     <button
@@ -483,6 +485,9 @@ const AdminOrders = () => {
                       const pi = paymentStatusConfig[order.payment_status] || paymentStatusConfig.pending;
                       const SI = si.icon;
                       const isSample = order.items?.[0]?.order_type === 'sample';
+                      // Pipeline label is the canonical badge for the 6-stage lifecycle.
+                      // Falls back to legacy status if pipeline_stage isn't set.
+                      const pipelineLabel = order.pipeline_label || si.label;
                       return (
                         <tr key={order.id} className="hover:bg-gray-50">
                           <td className="px-4 py-4"><p className="font-medium text-blue-600">{order.order_number}</p></td>
@@ -498,7 +503,7 @@ const AdminOrders = () => {
                           <td className="px-4 py-4"><p className="font-semibold text-emerald-600">₹{order.total?.toLocaleString()}</p></td>
                           <td className="px-4 py-4"><span className={`px-2 py-1 rounded-full text-xs font-medium ${pi.color}`}>{pi.label}</span></td>
                           <td className="px-4 py-4">
-                            <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${si.color}`}><SI size={12} />{si.label}</span>
+                            <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${si.color}`}><SI size={12} />{pipelineLabel}</span>
                             {order.cancellation_reason && <p className="text-xs text-red-500 mt-1">{order.cancellation_reason === 'stock_out' ? 'Stock Out' : order.cancellation_reason === 'credit_limit' ? 'Credit Limit' : order.cancellation_reason}</p>}
                           </td>
                           <td className="px-4 py-4 text-sm text-gray-500">{formatDate(order.created_at)}</td>

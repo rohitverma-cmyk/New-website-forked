@@ -21,6 +21,20 @@ import jwt
 
 from email_router import send_order_notification_emails
 import auth_helpers
+from order_pipeline import compute_pipeline_stage, PIPELINE_LABELS
+
+
+def _attach_pipeline(order: dict) -> dict:
+    """Attach the 6-stage pipeline bucket onto an order dict (read-time map)."""
+    if not order:
+        return order
+    try:
+        stage = compute_pipeline_stage(order)
+        order["pipeline_stage"] = stage
+        order["pipeline_label"] = PIPELINE_LABELS.get(stage, stage)
+    except Exception:  # noqa: BLE001 — never let display logic break an API
+        pass
+    return order
 
 JWT_SECRET = os.environ.get('JWT_SECRET', 'default-secret')
 JWT_ALGORITHM = 'HS256'
@@ -2153,7 +2167,7 @@ async def get_order(order_id: str):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
-    return order
+    return _attach_pipeline(order)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -2205,10 +2219,15 @@ async def get_order_by_razorpay_id(razorpay_order_id: str):
 async def list_orders(
     status: Optional[str] = None,
     payment_status: Optional[str] = None,
+    pipeline_stage: Optional[str] = None,
     limit: int = 50,
     skip: int = 0
 ):
-    """List all orders (admin endpoint)"""
+    """List all orders (admin endpoint).
+
+    `pipeline_stage` is an optional client filter applied AFTER loading
+    (the stage is a read-time computation, not a stored field).
+    """
     query = {}
     if status:
         query["status"] = status
@@ -2232,6 +2251,12 @@ async def list_orders(
             inv_by_order[inv["order_id"]] = inv
         for o in orders:
             o["linked_invoice"] = inv_by_order.get(o["id"])
+
+    for o in orders:
+        _attach_pipeline(o)
+
+    if pipeline_stage:
+        orders = [o for o in orders if o.get("pipeline_stage") == pipeline_stage]
 
     return {
         "orders": orders,
@@ -2525,10 +2550,11 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
             detail=f"Actual quantity outside variance band for: {details}. Admin approval required.",
         )
 
-    # Per-vendor invoice: required when a vendor (or SM impersonating one)
-    # marks goods ready, since the payout will be drawn against this
-    # invoice. Admins overriding on behalf of a vendor can skip it
-    # (uploading later via the legacy Payouts page).
+    # Per-vendor invoice: OPTIONAL at goods-ready time. The new 6-tab
+    # pipeline collects the tax invoice at the dedicated "Prepare Dispatch"
+    # stage (after the customer settles balance) via the
+    # /vendor-upload-invoice endpoint. Legacy callers that still send a
+    # vendor_invoice payload here have it persisted, but nothing is required.
     inv_payload = data.get("vendor_invoice") or {}
     inv_url = (inv_payload.get("url") or "").strip()
     inv_no = (inv_payload.get("invoice_number") or "").strip()
@@ -2538,13 +2564,6 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
         inv_amount = float(inv_payload.get("amount") or 0) or None
     except (TypeError, ValueError):
         inv_amount = None
-
-    if caller_role == "vendor":
-        if not inv_url or not inv_no or not inv_date:
-            raise HTTPException(
-                status_code=400,
-                detail="Tax invoice file, invoice number and invoice date are required when marking goods ready.",
-            )
 
     # Check ALL items now have actual_quantity. If not, the supplier is
     # mid-update (multi-vendor split where Vendor A reported, Vendor B
@@ -2683,7 +2702,173 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
             logger.warning(f"[mark-ready] vendor-payout resync failed: {e}")
 
     fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    return {"success": True, "all_ready": all_ready, "order": fresh}
+    return {"success": True, "all_ready": all_ready, "order": _attach_pipeline(fresh)}
+
+
+# ────────────────────────────────────────────────────────────────────
+#  VENDOR — Upload Tax Invoice (Prepare Dispatch stage)
+# ────────────────────────────────────────────────────────────────────
+@router.post("/{order_id}/vendor-upload-invoice")
+async def vendor_upload_invoice(order_id: str, data: dict, request: Request):
+    """Vendor uploads their tax invoice during the "Prepare Dispatch" stage.
+
+    Body:
+      {
+        "url": "https://res.cloudinary.com/...",
+        "filename": "INV-2026-001.pdf",
+        "invoice_number": "INV-2026-001",
+        "invoice_date": "2026-02-01",
+        "amount": 12500.00            // optional
+      }
+
+    On success the invoice is persisted into `order.vendor_invoices` (keyed
+    by seller_id) and a best-effort Shiprocket push is fired for the
+    vendor's own shipment. The vendor must be assigned to ≥1 item on
+    the order.
+    """
+    # Auth — vendor JWT or admin (admin can act on a vendor's behalf)
+    caller_seller_id: Optional[str] = None
+    caller_role = "unknown"
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            if payload.get("type") == "vendor":
+                seller_id = payload.get("seller_id")
+                seller = await db.sellers.find_one({"id": seller_id, "is_active": True}, {"_id": 0})
+                if seller:
+                    caller_seller_id = seller.get("id")
+                    caller_role = "vendor"
+            else:
+                admin_id = payload.get("sub")
+                if admin_id:
+                    admin = await db.admins.find_one({"id": admin_id}, {"_id": 0})
+                    if admin:
+                        caller_role = "admin"
+                        caller_seller_id = (data.get("seller_id") or "").strip() or None
+        except Exception:
+            pass
+    if caller_role == "unknown":
+        raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Stage gate — invoice belongs in prepare_dispatch (we tolerate the
+    # "dispatched" stage too so a re-upload doesn't 400).
+    stage = compute_pipeline_stage(order)
+    if stage not in ("prepare_dispatch", "dispatched"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Order is not ready for invoice upload (current stage: {PIPELINE_LABELS.get(stage, stage)})",
+        )
+
+    # Validate payload
+    inv_url = (data.get("url") or "").strip()
+    inv_no = (data.get("invoice_number") or "").strip()
+    inv_date = (data.get("invoice_date") or "").strip()
+    inv_filename = (data.get("filename") or "").strip()
+    if not inv_url or not inv_no or not inv_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Tax invoice file, invoice number and invoice date are required.",
+        )
+    try:
+        inv_amount = float(data.get("amount") or 0) or None
+    except (TypeError, ValueError):
+        inv_amount = None
+
+    # Vendor must be on the order
+    items = order.get("items") or []
+    if caller_role == "vendor":
+        vendor_items = [it for it in items if (it.get("seller_id") or "") == caller_seller_id]
+        if not vendor_items:
+            raise HTTPException(status_code=403, detail="This vendor has no items on this order")
+
+    if not caller_seller_id:
+        # Admin without explicit seller_id — pick the first seller on the order
+        for it in items:
+            sid = it.get("seller_id") or ""
+            if sid:
+                caller_seller_id = sid
+                break
+    if not caller_seller_id:
+        raise HTTPException(status_code=400, detail="Could not resolve seller_id for this invoice")
+
+    # Persist (upsert by seller_id)
+    existing = [
+        v for v in (order.get("vendor_invoices") or [])
+        if (v.get("seller_id") or "") != caller_seller_id
+    ]
+    existing.append({
+        "seller_id": caller_seller_id,
+        "url": inv_url,
+        "filename": inv_filename,
+        "invoice_number": inv_no,
+        "invoice_date": inv_date,
+        "amount": inv_amount,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "vendor_invoices": existing,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+    # Fire the Shiprocket push for this vendor's shipment (best-effort).
+    # We only attempt when the order isn't already pushed for this vendor.
+    sr_summary: dict = {"attempted": False}
+    try:
+        fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        already_pushed = any(
+            (s.get("seller_id") or "") == caller_seller_id and s.get("success")
+            for s in (fresh.get("shiprocket_shipments") or [])
+        )
+        if not already_pushed:
+            multi_result = await create_shiprocket_shipments_multi(
+                fresh, only_seller_ids=[caller_seller_id]
+            )
+            sr_summary = {"attempted": True, **multi_result}
+            if multi_result.get("success"):
+                merged_by_sid = {
+                    s.get("seller_id", ""): s
+                    for s in (fresh.get("shiprocket_shipments") or [])
+                }
+                for s in multi_result.get("shipments", []):
+                    merged_by_sid[s.get("seller_id", "")] = s
+                shipments = list(merged_by_sid.values())
+                first_ok = next((s for s in shipments if s.get("success")), None)
+                set_fields = {
+                    "shiprocket_shipments": shipments,
+                    "shiprocket_pushed": True,
+                    "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if first_ok:
+                    set_fields["shiprocket_order_id"] = first_ok.get("order_id") or fresh.get("shiprocket_order_id")
+                    if first_ok.get("shipment_id"):
+                        set_fields["shiprocket_shipment_id"] = first_ok["shipment_id"]
+                    if first_ok.get("awb_code"):
+                        set_fields["awb_code"] = first_ok["awb_code"]
+                    if first_ok.get("courier_name"):
+                        set_fields["courier_name"] = first_ok["courier_name"]
+                await db.orders.update_one({"id": order_id}, {"$set": set_fields})
+        else:
+            sr_summary = {"attempted": False, "already_pushed": True}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vendor-upload-invoice] SR push best-effort failed: {e}")
+        sr_summary = {"attempted": True, "success": False, "error": str(e)}
+
+    fresh2 = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {
+        "success": True,
+        "order": _attach_pipeline(fresh2),
+        "shiprocket": sr_summary,
+    }
 
 
 @router.post("/{order_id}/recompute-actuals")

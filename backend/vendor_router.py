@@ -443,7 +443,9 @@ async def get_vendor_orders(
     # Filter items to only show vendor's fabrics OR vendor's seller_id (rfq path)
     # Also strip customer PII (phone/email) — vendors only need name + address
     # for dispatch. Logistics is handled by Shiprocket end-to-end so no need
-    # for direct contact channels.
+    # for direct contact channels. GSTIN is preserved because it's required
+    # on the supplier's tax invoice (Bill-To party identification).
+    from order_pipeline import compute_pipeline_stage, PIPELINE_LABELS
     for order in orders:
         order['items'] = [
             item for item in order.get('items', [])
@@ -458,11 +460,19 @@ async def get_vendor_orders(
                 'city': cust.get('city', ''),
                 'state': cust.get('state', ''),
                 'pincode': cust.get('pincode', ''),
-                # phone/email/gst intentionally OMITTED
+                'gst_number': cust.get('gst_number', ''),
+                # phone/email intentionally OMITTED
             }
         # Always expose source label so vendor UI can render the chip
         if not order.get('source'):
             order['source'] = 'inventory'
+        # Read-time pipeline bucket — drives the new 6-tab vendor UI
+        try:
+            stage = compute_pipeline_stage(order)
+            order['pipeline_stage'] = stage
+            order['pipeline_label'] = PIPELINE_LABELS.get(stage, stage)
+        except Exception:
+            pass
 
     return orders
 

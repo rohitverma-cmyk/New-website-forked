@@ -9,6 +9,7 @@ import { toast } from "sonner";
 const API = process.env.REACT_APP_BACKEND_URL;
 
 const statusConfig = {
+  // Legacy fallback labels (still used as a fallback when pipeline_stage isn't computed)
   payment_pending: { label: "Payment Pending", color: "bg-yellow-100 text-yellow-700", icon: Clock },
   provisional: { label: "Advance Paid · Pending Goods Ready", color: "bg-amber-100 text-amber-700", icon: Clock },
   goods_ready: { label: "Goods Ready · Balance Pending", color: "bg-orange-100 text-orange-700", icon: Boxes },
@@ -16,6 +17,22 @@ const statusConfig = {
   processing: { label: "Processing", color: "bg-indigo-100 text-indigo-700", icon: Package },
   shipped: { label: "Shipped", color: "bg-purple-100 text-purple-700", icon: Truck },
   delivered: { label: "Delivered", color: "bg-emerald-100 text-emerald-700", icon: CheckCircle },
+};
+
+// 6-stage pipeline display config — shared across admin/vendor/customer views.
+const pipelineConfig = {
+  awaiting_confirm: { label: "Waiting to be Confirmed", color: "bg-amber-100 text-amber-700", icon: Clock },
+  confirmed_pending_dispatch: { label: "Confirmed · Waiting to be Dispatched", color: "bg-blue-100 text-blue-700", icon: CheckCircle },
+  prepare_dispatch: { label: "Prepare Dispatch (Invoice)", color: "bg-indigo-100 text-indigo-700", icon: FileText },
+  dispatched: { label: "Dispatched", color: "bg-purple-100 text-purple-700", icon: Truck },
+  delivered: { label: "Delivered", color: "bg-emerald-100 text-emerald-700", icon: CheckCircle },
+  cancelled: { label: "Cancelled", color: "bg-red-100 text-red-700", icon: AlertTriangle },
+};
+
+const getStageInfo = (order) => {
+  const stage = order?.pipeline_stage;
+  if (stage && pipelineConfig[stage]) return pipelineConfig[stage];
+  return statusConfig[order?.status] || statusConfig.confirmed;
 };
 
 const VendorOrders = () => {
@@ -46,7 +63,7 @@ const VendorOrders = () => {
 
   const visibleOrders = orders.filter((o) => {
     if (sourceFilter !== "all" && (o.source || "inventory") !== sourceFilter) return false;
-    if (statusFilter && o.status !== statusFilter) return false;
+    if (statusFilter && (o.pipeline_stage || "") !== statusFilter) return false;
     return true;
   });
 
@@ -95,22 +112,20 @@ const VendorOrders = () => {
           </div>
         </div>
 
-        {/* Status tabs — one-tap filtering across order lifecycle */}
+        {/* Status tabs — 6-stage pipeline shared across admin / vendor / customer */}
         <div className="bg-white rounded-lg border border-gray-200 mb-4" data-testid="vendor-order-status-tabs">
           <div className="flex items-center gap-1 px-2 py-2 overflow-x-auto">
             {[
               { key: "", label: "All" },
-              { key: "payment_pending", label: "Payment Pending" },
-              { key: "provisional", label: "Advance Paid" },
-              { key: "confirmed", label: "Confirmed" },
-              { key: "goods_ready", label: "Goods Ready" },
-              { key: "processing", label: "Processing" },
-              { key: "shipped", label: "Shipped" },
+              { key: "awaiting_confirm", label: "Waiting to be Confirmed" },
+              { key: "confirmed_pending_dispatch", label: "Confirmed / Waiting to be Dispatched" },
+              { key: "prepare_dispatch", label: "Prepare Dispatch (Invoice)" },
+              { key: "dispatched", label: "Dispatched" },
               { key: "delivered", label: "Delivered" },
               { key: "cancelled", label: "Cancelled" },
             ].map((t) => {
               const scoped = orders.filter((o) => sourceFilter === "all" || (o.source || "inventory") === sourceFilter);
-              const count = t.key === "" ? scoped.length : scoped.filter((o) => o.status === t.key).length;
+              const count = t.key === "" ? scoped.length : scoped.filter((o) => (o.pipeline_stage || "") === t.key).length;
               const active = statusFilter === t.key;
               return (
                 <button
@@ -162,7 +177,7 @@ const VendorOrders = () => {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {visibleOrders.map((order) => {
-                  const statusInfo = statusConfig[order.status] || statusConfig.confirmed;
+                  const statusInfo = getStageInfo(order);
                   const StatusIcon = statusInfo.icon;
                   
                   return (
@@ -241,8 +256,8 @@ const VendorOrders = () => {
                     <h2 className="text-xl font-semibold">{selectedOrder.order_number}</h2>
                     <p className="text-sm text-gray-500">{formatDate(selectedOrder.created_at)}</p>
                   </div>
-                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${statusConfig[selectedOrder.status]?.color || "bg-gray-100"}`}>
-                    {statusConfig[selectedOrder.status]?.label || selectedOrder.status}
+                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStageInfo(selectedOrder).color}`}>
+                    {getStageInfo(selectedOrder).label}
                   </span>
                 </div>
               </div>
@@ -255,12 +270,22 @@ const VendorOrders = () => {
                     onMarkReady={() => setReadyOrder(selectedOrder)}
                   />
                 )}
-                {/* Non-provisional Mark Ready CTA — supplier uploads rolls + invoice.
+                {/* Non-provisional Mark Ready CTA — supplier uploads rolls only.
                     Includes `status='paid'` since some legacy/credit-path orders
                     don't advance to "confirmed" but are functionally ready for
                     dispatch the moment payment is captured. */}
                 {!selectedOrder.is_provisional && ["confirmed", "processing", "paid"].includes(selectedOrder.status) && !selectedOrder.goods_ready_at && (
                   <MarkReadyBanner order={selectedOrder} onMarkReady={() => setReadyOrder(selectedOrder)} />
+                )}
+                {/* Prepare Dispatch (tax invoice upload) — triggers Shiprocket push */}
+                {selectedOrder.pipeline_stage === "prepare_dispatch" && (
+                  <PrepareDispatchBanner
+                    order={selectedOrder}
+                    onUploaded={(updated) => {
+                      setSelectedOrder(updated);
+                      setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+                    }}
+                  />
                 )}
                 {/* Goods already marked ready — show summary + packing slip download */}
                 {((!selectedOrder.is_provisional && selectedOrder.status === "goods_ready")
@@ -374,6 +399,11 @@ const VendorOrders = () => {
                         {selectedOrder.customer?.address}, {selectedOrder.customer?.city}, {selectedOrder.customer?.state} {selectedOrder.customer?.pincode}
                       </span>
                     </div>
+                    {selectedOrder.customer?.gst_number && (
+                      <p className="text-xs text-gray-700 mt-2" data-testid="vendor-customer-gstin">
+                        GSTIN: <span className="font-mono font-medium">{selectedOrder.customer.gst_number}</span>
+                      </p>
+                    )}
                     <p className="text-[11px] text-gray-400 mt-2 italic" data-testid="vendor-pii-hidden-note">
                       Customer contact details are managed by Locofast Ops. Use this address only for dispatch.
                     </p>
@@ -606,7 +636,7 @@ const MarkReadyBanner = ({ order, onMarkReady }) => (
           <Boxes size={14} /> Ready to dispatch? Mark goods ready.
         </p>
         <p className="text-xs text-emerald-800 mt-1">
-          Upload your tax invoice and roll breakdown. Locofast Ops will then push the shipment to Shiprocket.
+          Enter your packed roll breakdown. The tax invoice is collected in the next step (Prepare Dispatch) once the customer settles balance.
         </p>
       </div>
       <button
@@ -620,6 +650,131 @@ const MarkReadyBanner = ({ order, onMarkReady }) => (
     </div>
   </div>
 );
+
+// ─── Prepare Dispatch — Tax-Invoice upload + Shiprocket trigger ──
+const PrepareDispatchBanner = ({ order, onUploaded }) => {
+  const vendorId = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem("vendor_data") || "{}")?.id || ""; }
+    catch { return ""; }
+  }, []);
+  const existing = useMemo(
+    () => (order.vendor_invoices || []).find((v) => (v.seller_id || "") === vendorId) || null,
+    [order, vendorId]
+  );
+
+  const [invFile, setInvFile] = useState(
+    existing?.url ? { url: existing.url, filename: existing.filename || "" } : null
+  );
+  const [invNumber, setInvNumber] = useState(existing?.invoice_number || "");
+  const [invDate, setInvDate] = useState(existing?.invoice_date || new Date().toISOString().slice(0, 10));
+  const [invAmount, setInvAmount] = useState(existing?.amount || "");
+  const [busy, setBusy] = useState(false);
+
+  const inferredAmount = Number(order.actual_total || order.total || 0);
+
+  const submit = async () => {
+    if (!invFile?.url) { toast.error("Please upload your tax invoice file"); return; }
+    if (!invNumber.trim()) { toast.error("Invoice number is required"); return; }
+    if (!invDate) { toast.error("Invoice date is required"); return; }
+    setBusy(true);
+    try {
+      const res = await api.post(`/orders/${order.id}/vendor-upload-invoice`, {
+        url: invFile.url,
+        filename: invFile.filename || "",
+        invoice_number: invNumber.trim(),
+        invoice_date: invDate,
+        amount: invAmount ? Number(invAmount) : null,
+      });
+      const sr = res.data?.shiprocket || {};
+      if (sr.attempted && sr.success === false) {
+        toast.warning("Invoice saved. Shiprocket push needs admin attention.");
+      } else if (sr.attempted && sr.success) {
+        toast.success("Invoice saved. Shipment pushed to Shiprocket.");
+      } else {
+        toast.success("Invoice saved.");
+      }
+      if (res.data?.order) onUploaded(res.data.order);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Failed to upload invoice");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="border border-indigo-200 bg-indigo-50/40 rounded-lg p-4 space-y-3" data-testid="vendor-prepare-dispatch-banner">
+      <div>
+        <p className="text-sm font-semibold text-indigo-900 flex items-center gap-1.5">
+          <FileText size={14} /> Prepare Dispatch — Upload Tax Invoice
+        </p>
+        <p className="text-xs text-indigo-800 mt-1">
+          Customer has cleared payment. Upload your GST tax invoice to release the shipment to Shiprocket.
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <div className="bg-white border border-indigo-200 rounded p-2.5 text-[11px] leading-relaxed" data-testid="vendor-billto-locofast">
+          <p className="font-semibold text-indigo-900 mb-1">Bill To (on your invoice)</p>
+          <p className="text-gray-800">Locofast Online Services Private Limited</p>
+          <p className="text-gray-700">GSTIN: <span className="font-mono">07AADCL8794N1ZM</span></p>
+          <p className="text-gray-600 mt-1">Plot 60, Sector 32, Gurugram 122001, Haryana</p>
+        </div>
+        <div className="bg-white border border-indigo-200 rounded p-2.5 text-[11px] leading-relaxed" data-testid="vendor-shipto-customer">
+          <p className="font-semibold text-indigo-900 mb-1">Ship To (Consignee)</p>
+          <p className="text-gray-800">{order.customer?.name}{order.customer?.company ? ` · ${order.customer.company}` : ""}</p>
+          <p className="text-gray-600">
+            {order.customer?.address}, {order.customer?.city}, {order.customer?.state} {order.customer?.pincode}
+          </p>
+          {order.customer?.gst_number && (
+            <p className="text-gray-700 mt-1">GSTIN: <span className="font-mono">{order.customer.gst_number}</span></p>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          type="text"
+          value={invNumber}
+          onChange={(e) => setInvNumber(e.target.value)}
+          placeholder="Invoice number *"
+          className="px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+          data-testid="prepare-dispatch-invoice-number"
+        />
+        <input
+          type="date"
+          value={invDate}
+          onChange={(e) => setInvDate(e.target.value)}
+          className="px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+          data-testid="prepare-dispatch-invoice-date"
+        />
+      </div>
+      <input
+        type="number"
+        value={invAmount}
+        onChange={(e) => setInvAmount(e.target.value)}
+        placeholder={`Invoice total (default ₹${inferredAmount.toLocaleString("en-IN")})`}
+        className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
+        data-testid="prepare-dispatch-invoice-amount"
+      />
+      <VendorFileUpload
+        value={invFile}
+        onChange={setInvFile}
+        folder="uploads/payouts/vendor-invoices"
+        accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+        testid="prepare-dispatch-invoice-upload"
+      />
+      <button
+        type="button"
+        onClick={submit}
+        disabled={busy}
+        className="w-full px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+        data-testid="prepare-dispatch-submit"
+      >
+        {busy ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+        {busy ? "Uploading…" : "Submit Invoice & Release to Shiprocket"}
+      </button>
+    </div>
+  );
+};
 
 // ─── Provisional bulk-order banner ────────────────────────────────
 const ProvisionalBanner = ({ order, onMarkReady }) => {
@@ -731,17 +886,6 @@ const MarkGoodsReadyModal = ({ order, onClose, onSuccess }) => {
     return init;
   });
   const [submitting, setSubmitting] = useState(false);
-  // Per-vendor tax invoice (required at goods-ready time)
-  const existingInvoice = useMemo(
-    () => (order.vendor_invoices || []).find((v) => (v.seller_id || "") === vendorId) || null,
-    [order, vendorId]
-  );
-  const [invFile, setInvFile] = useState(
-    existingInvoice?.url ? { url: existingInvoice.url, filename: existingInvoice.filename || "" } : null
-  );
-  const [invNumber, setInvNumber] = useState(existingInvoice?.invoice_number || "");
-  const [invDate, setInvDate] = useState(existingInvoice?.invoice_date || new Date().toISOString().slice(0, 10));
-  const [invAmount, setInvAmount] = useState(existingInvoice?.amount || "");
 
   const updateRoll = (fabricId, idx, field, value) => {
     setState((prev) => {
@@ -799,29 +943,9 @@ const MarkGoodsReadyModal = ({ order, onClose, onSuccess }) => {
       return;
     }
 
-    // Validate invoice (required at goods-ready time)
-    if (!invFile?.url) {
-      toast.error("Please upload your tax invoice PDF/image");
-      return;
-    }
-    if (!invNumber.trim()) {
-      toast.error("Invoice number is required");
-      return;
-    }
-    if (!invDate) {
-      toast.error("Invoice date is required");
-      return;
-    }
-
     setSubmitting(true);
     try {
-      const res = await vendorMarkGoodsReady(order.id, items, {
-        url: invFile.url,
-        filename: invFile.filename || "",
-        invoice_number: invNumber.trim(),
-        invoice_date: invDate,
-        amount: invAmount ? Number(invAmount) : null,
-      });
+      const res = await vendorMarkGoodsReady(order.id, items);
       toast.success(res.data?.all_ready
         ? "Goods marked ready — balance invoice emailed to customer"
         : "Quantities saved. Other vendors still need to confirm their items.");
@@ -967,51 +1091,13 @@ const MarkGoodsReadyModal = ({ order, onClose, onSuccess }) => {
             })
           )}
 
-          {/* Tax Invoice (required for vendor payouts) */}
+          {/* Note — invoice is no longer collected here. It moves to the
+              dedicated "Prepare Dispatch" stage that fires AFTER the
+              customer settles the balance. */}
           {myItems.length > 0 && (
-            <div className="border border-emerald-200 bg-emerald-50/40 rounded-lg p-4 space-y-3" data-testid="mark-ready-invoice-block">
-              <div>
-                <h3 className="font-medium text-gray-900 flex items-center gap-1.5">
-                  <FileText size={14} className="text-emerald-600" /> Tax Invoice for Payout
-                  <span className="text-red-500 text-xs">*</span>
-                </h3>
-                <p className="text-xs text-gray-600 mt-0.5">
-                  Upload your GST tax invoice now. This invoice is what your payout will be drawn against —
-                  no separate upload from My Payouts needed.
-                </p>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="text"
-                  value={invNumber}
-                  onChange={(e) => setInvNumber(e.target.value)}
-                  placeholder="Invoice number *"
-                  className="px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                  data-testid="mark-ready-invoice-number"
-                />
-                <input
-                  type="date"
-                  value={invDate}
-                  onChange={(e) => setInvDate(e.target.value)}
-                  className="px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                  data-testid="mark-ready-invoice-date"
-                />
-              </div>
-              <input
-                type="number"
-                value={invAmount}
-                onChange={(e) => setInvAmount(e.target.value)}
-                placeholder="Invoice total (optional — auto-derived from actual quantities × rate)"
-                className="w-full px-2.5 py-1.5 border border-gray-200 rounded text-sm"
-                data-testid="mark-ready-invoice-amount"
-              />
-              <VendorFileUpload
-                value={invFile}
-                onChange={setInvFile}
-                folder="uploads/payouts/vendor-invoices"
-                accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                testid="mark-ready-invoice-upload"
-              />
+            <div className="text-xs text-gray-500 border border-dashed border-gray-200 rounded p-2.5" data-testid="mark-ready-invoice-deferred-note">
+              Tax invoice is collected later, at the <strong>Prepare Dispatch</strong> step
+              (after the customer settles the balance).
             </div>
           )}
         </div>

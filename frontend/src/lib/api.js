@@ -445,8 +445,8 @@ export const createVendorFabric = (data) => api.post("/vendor/fabrics", data);
 export const updateVendorFabric = (id, data) => api.put(`/vendor/fabrics/${id}`, data);
 export const deleteVendorFabric = (id) => api.delete(`/vendor/fabrics/${id}`);
 export const getVendorOrders = () => api.get("/vendor/orders");
-export const vendorMarkGoodsReady = (orderId, items, vendor_invoice) =>
-  api.post(`/orders/${orderId}/mark-goods-ready`, { items, vendor_invoice });
+export const vendorMarkGoodsReady = (orderId, items, vendor_invoice = null) =>
+  api.post(`/orders/${orderId}/mark-goods-ready`, vendor_invoice ? { items, vendor_invoice } : { items });
 export const adminMarkBalancePaid = (orderId, payload = {}) =>
   api.post(`/orders/${orderId}/mark-balance-paid`, payload);
 export const vendorAcceptOrder = (orderId) => api.post(`/orders/${orderId}/vendor-accept`);

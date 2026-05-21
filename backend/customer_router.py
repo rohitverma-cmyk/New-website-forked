@@ -776,6 +776,15 @@ async def get_customer_orders(request: Request):
         {'_id': 0}
     ).sort('created_at', -1).to_list(100)
 
+    try:
+        from order_pipeline import compute_pipeline_stage, PIPELINE_LABELS
+        for o in orders:
+            stage = compute_pipeline_stage(o)
+            o['pipeline_stage'] = stage
+            o['pipeline_label'] = PIPELINE_LABELS.get(stage, stage)
+    except Exception:
+        pass
+
     return orders
 
 
@@ -794,6 +803,13 @@ async def get_customer_order(order_id: str, request: Request):
     )
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    try:
+        from order_pipeline import compute_pipeline_stage, PIPELINE_LABELS
+        stage = compute_pipeline_stage(order)
+        order['pipeline_stage'] = stage
+        order['pipeline_label'] = PIPELINE_LABELS.get(stage, stage)
+    except Exception:
+        pass
     return order
 
 
