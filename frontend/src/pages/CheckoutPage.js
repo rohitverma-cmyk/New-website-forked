@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ShoppingCart, Truck, CreditCard, CheckCircle2, AlertCircle, Loader2, Package, Tag, Wallet, X } from "lucide-react";
+import { ArrowLeft, ShoppingCart, Truck, CreditCard, CheckCircle2, AlertCircle, Loader2, Package, Wallet, X } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
-import { getFabric, createOrder, verifyPayment, sendOrderConfirmation, validateCoupon, getCreditBalance } from "../lib/api";
+import { getFabric, createOrder, verifyPayment, sendOrderConfirmation, getCreditBalance } from "../lib/api";
 import { trackBeginCheckout } from "../lib/analytics";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
 import SavedAddressPicker from "../components/SavedAddressPicker";
@@ -64,12 +64,6 @@ const CheckoutPage = () => {
     pincode: ""
   });
   const [notes, setNotes] = useState("");
-  
-  // Coupon
-  const [couponCode, setCouponCode] = useState("");
-  const [appliedCoupon, setAppliedCoupon] = useState(null);
-  const [couponLoading, setCouponLoading] = useState(false);
-  const [couponError, setCouponError] = useState("");
   
   // Pricing
   const [pricePerMeter, setPricePerMeter] = useState(0);
@@ -509,41 +503,32 @@ const CheckoutPage = () => {
     : 0;
   const grandTotal = total + creditCharge;
 
-  // Apply coupon
-  const handleApplyCoupon = async () => {
-    if (!couponCode.trim()) {
-      setCouponError("Please enter a coupon code");
-      return;
+  // Provisional bulk orders: customer pays only 10 % advance upfront and
+  // the 90 % balance once the supplier marks goods ready with the actual
+  // dispatched quantity. Samples always pay 100 % upfront.
+  // ─ Single-item PDP buyflow: bulk → provisional, sample → actual.
+  // ─ Multi-item cart: provisional iff any bulk item carries
+  //   qty_type === "provisional" (or qty_type empty defaults to provisional
+  //   for bulk).
+  const isProvisional = (() => {
+    if (isMultiItem) {
+      return cartItems.some((it) => {
+        const ot = (it.order_type || "bulk").toLowerCase();
+        const qt = (it.qty_type || "").toLowerCase();
+        if (ot !== "bulk") return false;
+        // Empty qty_type → defaults to provisional for bulk
+        return qt === "provisional" || qt === "";
+      });
     }
-    
-    setCouponLoading(true);
-    setCouponError("");
-    
-    try {
-      const response = await validateCoupon(couponCode, subtotal);
-      if (response.data.valid) {
-        setAppliedCoupon(response.data.coupon);
-        setDiscount(response.data.discount_amount);
-        toast.success(`Coupon applied! You saved ₹${response.data.discount_amount.toLocaleString()}`);
-      } else {
-        setCouponError(response.data.message || "Invalid coupon");
-        setAppliedCoupon(null);
-        setDiscount(0);
-      }
-    } catch (err) {
-      setCouponError(err.response?.data?.detail || "Failed to validate coupon");
-      setAppliedCoupon(null);
-      setDiscount(0);
-    }
-    setCouponLoading(false);
-  };
-
-  const removeCoupon = () => {
-    setAppliedCoupon(null);
-    setDiscount(0);
-    setCouponCode("");
-    setCouponError("");
-  };
+    return orderType === "bulk";
+  })();
+  const ADVANCE_PCT = 10;
+  const advanceAmount = isProvisional
+    ? Math.round(grandTotal * (ADVANCE_PCT / 100) * 100) / 100
+    : grandTotal;
+  const balanceAmount = isProvisional
+    ? Math.max(0, Math.round((grandTotal - advanceAmount) * 100) / 100)
+    : 0;
 
   const loadRazorpayScript = () => {
     return new Promise((resolve) => {
@@ -624,8 +609,10 @@ const CheckoutPage = () => {
             hsn_code: fabric.hsn_code || "",
             color_name: colorName || "",
             color_hex: colorHex || "",
-            // PDP buyflow is always "actual" — provisional only via agent shared cart
-            qty_type: "actual",
+            // Bulk orders are provisional by default (10% advance, 90%
+            // balance after goods-ready). Sample orders are always "actual"
+            // and are paid in full upfront.
+            qty_type: orderType === "bulk" ? "provisional" : "actual",
             unit: (fabric.fabric_type === "knitted" && fabric.category_id !== "cat-denim") ? "kg" : "m",
             fabric_type: fabric.fabric_type || "",
             dispatch_timeline: fabric.dispatch_timeline || (orderType === 'bulk' ? '15-20 days' : 'Ready Stock')
@@ -653,13 +640,8 @@ const CheckoutPage = () => {
         agent_email: agentEmail,
         agent_name: agentName,
         shared_cart_token: sharedCartToken,
-        coupon: appliedCoupon ? {
-          code: appliedCoupon.code,
-          discount_type: appliedCoupon.discount_type,
-          discount_value: appliedCoupon.discount_value,
-          discount_amount: discount
-        } : null,
-        discount: discount
+        coupon: null,
+        discount: 0
       };
 
       // CREDIT payment path — instant confirmation, no Razorpay
@@ -1237,60 +1219,6 @@ const CheckoutPage = () => {
                   )}
                 </div>
 
-                {/* Coupon Code */}
-                <div className="bg-white rounded-xl p-6 border border-gray-200">
-                  <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                    <Tag size={20} />
-                    Have a Coupon?
-                  </h2>
-                  
-                  {appliedCoupon ? (
-                    <div className="flex items-center justify-between p-4 bg-emerald-50 border border-emerald-200 rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <CheckCircle2 className="text-emerald-600" size={20} />
-                        <div>
-                          <p className="font-medium text-gray-900">{appliedCoupon.code}</p>
-                          <p className="text-sm text-emerald-600">
-                            You saved ₹{discount.toLocaleString()}!
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={removeCoupon}
-                        className="text-sm text-red-600 hover:text-red-700 font-medium"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ) : (
-                    <div>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={couponCode}
-                          onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
-                          placeholder="Enter coupon code"
-                          className="flex-1 px-4 py-2.5 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none uppercase"
-                          data-testid="coupon-input"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleApplyCoupon}
-                          disabled={couponLoading}
-                          className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
-                          data-testid="apply-coupon-btn"
-                        >
-                          {couponLoading ? <Loader2 className="animate-spin" size={18} /> : "Apply"}
-                        </button>
-                      </div>
-                      {couponError && (
-                        <p className="mt-2 text-sm text-red-600">{couponError}</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-
                 {/* Additional Notes */}
                 <div className="bg-white rounded-xl p-6 border border-gray-200">
                   <h2 className="text-lg font-semibold mb-4">Additional Notes</h2>
@@ -1428,6 +1356,11 @@ const CheckoutPage = () => {
                         <Wallet size={20} />
                         Pay with Credit ₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </>
+                    ) : isProvisional ? (
+                      <>
+                        <CreditCard size={20} />
+                        Pay 10% Advance · ₹{advanceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </>
                     ) : (
                       <>
                         <CreditCard size={20} />
@@ -1518,6 +1451,31 @@ const CheckoutPage = () => {
                     <span>Total Invoice Value</span>
                     <span className="text-emerald-600">₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
+
+                  {/* Advance vs Balance breakdown (provisional bulk orders) */}
+                  {isProvisional && (
+                    <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg space-y-2" data-testid="checkout-advance-breakdown">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                        <p className="text-xs text-amber-800 leading-snug">
+                          <strong>Bulk orders book at a 10% advance.</strong> Your supplier
+                          will mark goods ready with the actual dispatched quantity,
+                          after which we'll invoice the balance based on the real meterage.
+                        </p>
+                      </div>
+                      <div className="flex justify-between text-sm pt-2 border-t border-amber-200">
+                        <span className="text-amber-900">Pay now (10% advance)</span>
+                        <span className="font-semibold text-amber-900" data-testid="checkout-advance-amount">
+                          ₹{advanceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs text-amber-800">
+                        <span>Pay later (90% balance after goods-ready)</span>
+                        <span>₹{balanceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    </div>
+                  )}
+
                   <p className="text-xs text-amber-600 mt-3">For export orders, additional port charges, custom charges, export documentation &amp; cess may be applicable.</p>
                 </div>
 
@@ -1537,6 +1495,11 @@ const CheckoutPage = () => {
                     <>
                       <Wallet size={20} />
                       Pay with Credit
+                    </>
+                  ) : isProvisional ? (
+                    <>
+                      <CreditCard size={20} />
+                      Pay 10% Advance · ₹{advanceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </>
                   ) : (
                     <>

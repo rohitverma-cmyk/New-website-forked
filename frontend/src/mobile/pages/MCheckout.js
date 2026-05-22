@@ -189,6 +189,18 @@ function MCheckoutInner() {
   const tax = Math.round(taxableValue * GST_RATE * 100) / 100;
   const total = Math.round((taxableValue + tax) * 100) / 100;
 
+  // Provisional bulk: pay 10% advance now, 90% balance after goods-ready.
+  // Samples always pay 100% upfront.
+  const isProvisional = isMultiItem
+    ? cartItems.some((it) => {
+        const ot = (it.order_type || "bulk").toLowerCase();
+        const qt = (it.qty_type || "").toLowerCase();
+        return ot === "bulk" && (qt === "provisional" || qt === "");
+      })
+    : orderType === "bulk";
+  const advanceAmount = isProvisional ? Math.round(total * 0.10 * 100) / 100 : total;
+  const balanceAmount = isProvisional ? Math.max(0, Math.round((total - advanceAmount) * 100) / 100) : 0;
+
   // Variant resolution (for color)
   const variants = Array.isArray(fabric?.color_variants) ? fabric.color_variants : [];
   const variant = variantId
@@ -278,7 +290,7 @@ function MCheckoutInner() {
             dispatch_timeline: orderType === "sample" ? "48-72 hours" : (fabric.dispatch_timeline || "15-20 days"),
             color_name: color || "",
             color_hex: colorHex || "",
-            qty_type: "actual",
+            qty_type: orderType === "bulk" ? "provisional" : "actual",
           }];
 
       const orderData = {
@@ -554,6 +566,24 @@ function MCheckoutInner() {
             <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>Total Invoice Value</span>
             <span style={{ fontWeight: 800, fontSize: 20, color: "var(--m-orange-700)" }}>{formatPriceINR(total)}</span>
           </div>
+          {isProvisional && (
+            <div style={{ marginTop: 10, padding: 10, background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 10 }} data-testid="m-checkout-advance-breakdown">
+              <div style={{ display: "flex", gap: 6, alignItems: "flex-start", marginBottom: 6 }}>
+                <AlertCircle size={14} color="#B45309" style={{ flexShrink: 0, marginTop: 1 }} />
+                <p style={{ fontSize: 11, color: "#78350F", lineHeight: 1.4, margin: 0 }}>
+                  <strong>Bulk orders book at a 10% advance.</strong> Supplier marks goods ready with actual qty; we then invoice the 90% balance.
+                </p>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, paddingTop: 6, borderTop: "1px solid #FCD34D" }}>
+                <span style={{ color: "#78350F" }}>Pay now (10% advance)</span>
+                <span style={{ fontWeight: 700, color: "#78350F" }} data-testid="m-checkout-advance-amount">{formatPriceINR(advanceAmount)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#92400E", marginTop: 2 }}>
+                <span>Pay later (after goods-ready)</span>
+                <span>{formatPriceINR(balanceAmount)}</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -576,11 +606,11 @@ function MCheckoutInner() {
         boxShadow: "0 -4px 20px rgba(15,27,45,0.06)",
       }}>
         <div style={{ flex: 1 }}>
-          <div className="m-caption">Total</div>
-          <div style={{ fontSize: 20, fontWeight: 800, color: "var(--m-orange-700)", lineHeight: 1.1 }}>{formatPriceINR(total)}</div>
+          <div className="m-caption">{isProvisional ? "Pay now (10% advance)" : "Total"}</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: "var(--m-orange-700)", lineHeight: 1.1 }}>{formatPriceINR(isProvisional ? advanceAmount : total)}</div>
         </div>
         <button onClick={placeOrder} disabled={submitting} className="m-btn m-btn-primary" style={{ flex: 1.5 }}>
-          {submitting ? <><span className="m-spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Processing…</> : <>Pay {formatPriceINR(total)} <ArrowRight size={16} /></>}
+          {submitting ? <><span className="m-spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Processing…</> : <>Pay {formatPriceINR(isProvisional ? advanceAmount : total)} <ArrowRight size={16} /></>}
         </button>
       </div>
     </div>
