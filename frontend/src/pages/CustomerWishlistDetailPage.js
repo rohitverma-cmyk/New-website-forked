@@ -13,6 +13,7 @@ import {
 import { toast } from "sonner";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
+import CustomerLoginModal from "../components/CustomerLoginModal";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
 import {
   getWishlist, updateWishlist, shareWishlist, removeFromWishlist,
@@ -31,10 +32,11 @@ export default function CustomerWishlistDetailPage() {
   const [editing, setEditing] = useState(false);
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
-    if (!isLoggedIn) { navigate(`/login?next=/account/wishlists/${id}`); return; }
+    if (!isLoggedIn) { setShowLogin(true); setLoading(false); return; }
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, isLoggedIn, id]);
@@ -119,6 +121,23 @@ export default function CustomerWishlistDetailPage() {
     }
     setBusy(false);
   };
+
+  if (!isLoggedIn && !authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <Navbar />
+        <main className="max-w-2xl mx-auto px-4 py-16 text-center" data-testid="wishlist-detail-signin">
+          <Heart size={36} className="mx-auto text-rose-300 mb-2" />
+          <p className="text-base font-medium text-gray-900 mb-1">Sign in to view this wishlist</p>
+          <button onClick={() => setShowLogin(true)} className="px-5 py-2 mt-3 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-sm font-medium">
+            Sign in
+          </button>
+          <CustomerLoginModal open={showLogin} onClose={() => setShowLogin(false)} />
+        </main>
+        <Footer />
+      </div>
+    );
+  }
 
   if (loading || !wl) {
     return (

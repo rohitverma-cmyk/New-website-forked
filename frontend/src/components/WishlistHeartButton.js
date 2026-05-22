@@ -15,6 +15,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { Heart, Plus, Check, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
+import CustomerLoginModal from "./CustomerLoginModal";
 import {
   listWishlists, createWishlist, addToWishlist, removeFromWishlist,
 } from "../lib/api";
@@ -29,11 +30,23 @@ export default function WishlistHeartButton({
   const navigate = useNavigate();
   const loc = useLocation();
   const [open, setOpen] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [lists, setLists] = useState([]);
   const [newName, setNewName] = useState("");
   const ref = useRef(null);
+
+  // Mobile surfaces (/m/*) use their own login page; desktop uses an in-page modal.
+  const isMobileSurface = loc.pathname.startsWith("/m");
+
+  // Re-open the picker automatically once the customer logs in via the modal.
+  useEffect(() => {
+    if (isLoggedIn && showLogin) {
+      setShowLogin(false);
+      setOpen(true);
+    }
+  }, [isLoggedIn, showLogin]);
 
   // Derived: is this fabric already in any of my wishlists?
   const containedIn = lists.filter((w) => (w.fabric_ids || []).includes(fabricId));
@@ -52,22 +65,31 @@ export default function WishlistHeartButton({
     };
   }, [open]);
 
+  const refreshLists = async () => {
+    setLoading(true);
+    try {
+      const r = await listWishlists(token);
+      setLists(r.data || []);
+    } catch {
+      toast.error("Could not load your wishlists");
+    }
+    setLoading(false);
+  };
+
   const openPicker = async () => {
     if (!isLoggedIn) {
-      // Stash where to come back to so the heart still has context post-login.
-      navigate(`/login?next=${encodeURIComponent(loc.pathname + loc.search)}`);
+      if (isMobileSurface) {
+        // Mobile has a dedicated login page — preserve the return path.
+        navigate(`/m/login?next=${encodeURIComponent(loc.pathname + loc.search)}`);
+      } else {
+        // Desktop uses an in-page modal (there is no /login route).
+        setShowLogin(true);
+      }
       return;
     }
     setOpen(true);
     if (lists.length === 0) {
-      setLoading(true);
-      try {
-        const r = await listWishlists(token);
-        setLists(r.data || []);
-      } catch (e) {
-        toast.error("Could not load your wishlists");
-      }
-      setLoading(false);
+      await refreshLists();
     }
   };
 
@@ -120,6 +142,10 @@ export default function WishlistHeartButton({
 
   return (
     <div className={`relative ${className}`} ref={ref}>
+      {/* Login modal — only mounted when needed; closes itself on success. */}
+      {showLogin && (
+        <CustomerLoginModal open={showLogin} onClose={() => setShowLogin(false)} />
+      )}
       <button
         type="button"
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); openPicker(); }}

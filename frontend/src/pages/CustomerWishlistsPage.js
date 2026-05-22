@@ -11,23 +11,22 @@ import { Heart, Plus, ChevronRight, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
+import CustomerLoginModal from "../components/CustomerLoginModal";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
 import { listWishlists, createWishlist, deleteWishlist } from "../lib/api";
 
 export default function CustomerWishlistsPage() {
   const { token, isLoggedIn, loading: authLoading } = useCustomerAuth();
-  const navigate = useNavigate();
+  const navigate = useNavigate(); // eslint-disable-line no-unused-vars
   const [lists, setLists] = useState([]);
   const [loading, setLoading] = useState(true);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [showLogin, setShowLogin] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
-    if (!isLoggedIn) {
-      navigate("/login?next=/account/wishlists");
-      return;
-    }
+    if (!isLoggedIn) { setShowLogin(true); setLoading(false); return; }
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, isLoggedIn]);
@@ -78,6 +77,22 @@ export default function CustomerWishlistsPage() {
         </h1>
         <p className="text-sm text-gray-500 mb-6">Save fabrics to themed lists. Share any list with a private link.</p>
 
+        {!isLoggedIn ? (
+          <div className="bg-white border border-rose-100 rounded-lg p-8 text-center" data-testid="wishlists-signin-cta">
+            <Heart size={36} className="mx-auto text-rose-300 mb-2" />
+            <p className="text-base font-medium text-gray-900 mb-1">Sign in to manage your wishlists</p>
+            <p className="text-sm text-gray-500 mb-4">Curate fabrics for upcoming collections and share them with your team.</p>
+            <button
+              onClick={() => setShowLogin(true)}
+              className="px-5 py-2 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-sm font-medium"
+              data-testid="wishlists-signin-btn"
+            >
+              Sign in / Sign up
+            </button>
+            <CustomerLoginModal open={showLogin} onClose={() => setShowLogin(false)} />
+          </div>
+        ) : (
+          <>
         {/* Create */}
         <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
           <div className="flex items-center gap-2">
@@ -142,6 +157,8 @@ export default function CustomerWishlistsPage() {
               </div>
             ))}
           </div>
+        )}
+          </>
         )}
       </main>
       <Footer />
