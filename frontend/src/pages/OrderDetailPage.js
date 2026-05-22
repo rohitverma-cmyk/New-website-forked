@@ -23,6 +23,34 @@ import { toast } from "sonner";
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
+// Live countdown to a deadline. Highlights when the deadline is < 12h
+// out (urgent) or already past (expired). Re-ticks every minute.
+function BalanceCountdown({ dueAt }) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const due = new Date(dueAt);
+  const diffMs = due - now;
+  const expired = diffMs <= 0;
+  const totalMin = Math.max(0, Math.floor(diffMs / 60_000));
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const urgent = !expired && diffMs < 12 * 3600_000;
+  return (
+    <div
+      className={`mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium ${expired ? "bg-red-100 text-red-700" : urgent ? "bg-orange-100 text-orange-700" : "bg-amber-100 text-amber-700"}`}
+      data-testid="order-balance-countdown"
+    >
+      <Clock size={11} />
+      {expired
+        ? "Balance overdue — order may auto-cancel shortly"
+        : `Pay balance within ${h}h ${m}m or the order will auto-cancel`}
+    </div>
+  );
+}
+
 // Five canonical states surfaced to the buyer. Internal statuses
 // (confirmed, processing, shipped) collapse onto these stages as the order
 // moves forward. Cancelled is a terminal off-track state.
@@ -400,9 +428,12 @@ const OrderDetailPage = () => {
               </div>
             )}
             {isBalancePending && (
-              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-800">
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-800" data-testid="order-balance-pending-banner">
                 <div className="flex items-center gap-2 font-medium mb-1"><Clock size={12} /> Goods ready · pay balance to dispatch</div>
                 <p className="text-amber-700">Final invoice value: <strong>{formatRupees(order.actual_total || order.total)}</strong>. You've paid {formatRupees(order.advance_amount || 0)}; balance due is <strong>{formatRupees(order.balance_amount || 0)}</strong>. Once cleared, we hand the order to our logistics partner.</p>
+                {order.balance_due_at && (
+                  <BalanceCountdown dueAt={order.balance_due_at} />
+                )}
               </div>
             )}
           </div>

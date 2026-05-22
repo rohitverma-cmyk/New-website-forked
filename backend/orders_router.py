@@ -2619,6 +2619,13 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
                 "status": "goods_ready",
                 "goods_ready_at": datetime.now(timezone.utc).isoformat(),
                 "goods_ready_by": caller_seller_id or caller_role,
+                # Customer has BALANCE_PAYMENT_TIMEOUT_HOURS (default 48h)
+                # to settle the balance once goods are ready, after which
+                # the auto-cancel poller will void the order and notify Ops.
+                "balance_due_at": (
+                    datetime.now(timezone.utc)
+                    + timedelta(hours=int(os.environ.get("BALANCE_PAYMENT_TIMEOUT_HOURS", "48")))
+                ).isoformat(),
             })
         else:
             # Non-provisional: customer paid 100% upfront on the ordered
@@ -2660,6 +2667,11 @@ async def mark_goods_ready(order_id: str, data: dict, request: Request):
             # logistics + payouts can still proceed.
             if balance_amount > 0.005:
                 update_doc["payment_status"] = "balance_pending"
+                # 48h auto-cancel window on the extra balance
+                update_doc["balance_due_at"] = (
+                    datetime.now(timezone.utc)
+                    + timedelta(hours=int(os.environ.get("BALANCE_PAYMENT_TIMEOUT_HOURS", "48")))
+                ).isoformat()
 
     await db.orders.update_one({"id": order_id}, {"$set": update_doc})
 

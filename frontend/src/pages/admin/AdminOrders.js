@@ -683,10 +683,31 @@ const AdminOrders = () => {
                       <p className="text-xs text-amber-800 mt-2">Advance received — awaiting vendor to mark goods ready.</p>
                     )}
                     {selectedOrder.payment_status === 'balance_pending' && (
-                      <p className="text-xs text-orange-800 mt-2">
-                        Vendor reported ready quantities. Customer balance invoice has been emailed.
-                        Use <strong>Mark Balance Paid</strong> below if the customer paid offline (NEFT/UPI/cash).
-                      </p>
+                      <>
+                        <p className="text-xs text-orange-800 mt-2">
+                          Vendor reported ready quantities. Customer balance invoice has been emailed.
+                          Use <strong>Mark Balance Paid</strong> below if the customer paid offline (NEFT/UPI/cash).
+                        </p>
+                        {selectedOrder.balance_due_at && (() => {
+                          const due = new Date(selectedOrder.balance_due_at);
+                          const diffMs = due - new Date();
+                          const expired = diffMs <= 0;
+                          const totalMin = Math.max(0, Math.floor(diffMs / 60000));
+                          const h = Math.floor(totalMin / 60);
+                          const m = totalMin % 60;
+                          const urgent = !expired && diffMs < 12 * 3600000;
+                          return (
+                            <div
+                              className={`mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium ${expired ? "bg-red-100 text-red-700" : urgent ? "bg-orange-100 text-orange-800" : "bg-amber-100 text-amber-800"}`}
+                              data-testid="admin-balance-countdown"
+                            >
+                              {expired
+                                ? "Balance overdue — auto-cancel imminent"
+                                : `Auto-cancel in ${h}h ${m}m if balance stays unpaid`}
+                            </div>
+                          );
+                        })()}
+                      </>
                     )}
                   </div>
                 )}
