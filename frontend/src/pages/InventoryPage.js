@@ -211,12 +211,12 @@ const InventoryPage = () => {
               </div>
             </div>
             <p className="text-emerald-100 max-w-2xl">
-              Fabrics available for instant booking. Order samples (1-5m) or bulk quantities with tiered pricing.
+              Fabrics available for instant booking. Order samples or bulk quantities with tiered pricing.
             </p>
             <div className="flex items-center gap-6 mt-6 text-sm">
               <div className="flex items-center gap-2">
                 <Check size={18} className="text-emerald-300" />
-                <span>Sample Orders (1-5m)</span>
+                <span>Sample Orders</span>
               </div>
               <div className="flex items-center gap-2">
                 <Check size={18} className="text-emerald-300" />

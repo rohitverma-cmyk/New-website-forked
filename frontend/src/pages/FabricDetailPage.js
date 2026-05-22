@@ -955,7 +955,7 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                       data-testid="book-sample-btn"
                     >
                       <Package size={18} />
-                      Book Sample (1-5m)
+                      Book Sample
                     </button>
                   )}
                   <button
