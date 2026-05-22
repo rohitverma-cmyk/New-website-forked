@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Pencil, X, Upload, Check, Package, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, Pencil, X, Upload, Check, Package, Search, Trash2, ShieldCheck, AlertTriangle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import AdminLayout from "../../components/admin/AdminLayout";
 import PickupAddressesPanel from "../../components/admin/PickupAddressesPanel";
 import { getSeller, updateSeller, getCategories, getFabrics, uploadImage, approveFabric, rejectFabric, deleteFabric } from "../../lib/api";
 import { useConfirm } from "../../components/useConfirm";
+
+const API_URL = process.env.REACT_APP_BACKEND_URL;
 
 const AdminSellerDetail = () => {
   const confirm = useConfirm();
@@ -27,8 +29,11 @@ const AdminSellerDetail = () => {
     established_year: "", monthly_capacity: "", employee_count: "",
     factory_size: "", turnover_range: "", certifications: "",
     export_markets: "", gst_number: "",
+    gst_verified: false, gst_legal_name: "", gst_trade_name: "",
   };
   const [profileForm, setProfileForm] = useState(emptyForm);
+  const [gstVerifying, setGstVerifying] = useState(false);
+  const [gstError, setGstError] = useState("");
 
   // SKUs tab state
   const [fabrics, setFabrics] = useState([]);
@@ -99,8 +104,51 @@ const AdminSellerDetail = () => {
       certifications: (seller.certifications || []).join(", "),
       export_markets: (seller.export_markets || []).join(", "),
       gst_number: seller.gst_number || "",
+      gst_verified: !!seller.gst_verified,
+      gst_legal_name: seller.gst_legal_name || "",
+      gst_trade_name: seller.gst_trade_name || "",
     });
+    setGstError("");
     setEditingProfile(true);
+  };
+
+  // GST verification — calls Sandbox.co.in via /api/gst/verify and
+  // auto-fills the legal/trade names + city/state. Required before
+  // saving when the GSTIN has been changed.
+  const handleVerifyGst = async () => {
+    const gstin = (profileForm.gst_number || "").trim().toUpperCase();
+    setGstError("");
+    if (!gstin) { setGstError("Enter GSTIN first"); return; }
+    if (gstin.length !== 15) { setGstError("GSTIN must be 15 characters"); return; }
+    setGstVerifying(true);
+    try {
+      const res = await fetch(`${API_URL}/api/gst/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gstin }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.valid) {
+        setGstError(data.message || data.detail || "GST verification failed");
+        setProfileForm((p) => ({ ...p, gst_verified: false }));
+        return;
+      }
+      setProfileForm((p) => ({
+        ...p,
+        gst_number: gstin,
+        gst_verified: true,
+        gst_legal_name: data.legal_name || "",
+        gst_trade_name: data.trade_name || "",
+        // Best-effort city/state autofill from verified record
+        city: p.city || data.city || "",
+        state: p.state || data.state || "",
+      }));
+      toast.success(`GST verified · ${data.legal_name || data.trade_name || gstin}`);
+    } catch {
+      setGstError("Could not reach GST service. Try again.");
+    } finally {
+      setGstVerifying(false);
+    }
   };
 
   const handleLogoUpload = async (e) => {
@@ -128,6 +176,13 @@ const AdminSellerDetail = () => {
     e.preventDefault();
     if (!profileForm.name || !profileForm.company_name) {
       toast.error("Name and Company Name are required");
+      return;
+    }
+    // Guard: if GSTIN was changed, force the admin to re-verify before save.
+    const originalGst = (seller?.gst_number || "").toUpperCase();
+    const newGst = (profileForm.gst_number || "").toUpperCase();
+    if (newGst && newGst !== originalGst && !profileForm.gst_verified) {
+      toast.error("Please click Verify GST to confirm the new GSTIN before saving.");
       return;
     }
     try {
@@ -303,7 +358,25 @@ const AdminSellerDetail = () => {
                       <ProfileField label="Location" value={[seller.city, seller.state].filter(Boolean).join(", ")} />
                       <ProfileField label="Email" value={seller.contact_email} />
                       <ProfileField label="Phone" value={seller.contact_phone} />
-                      <ProfileField label="GST Number" value={seller.gst_number} />
+                      <div className="border-b border-gray-50 pb-2">
+                        <p className="text-xs text-gray-400 mb-1">GST Number</p>
+                        <p className="text-sm font-medium flex items-center gap-2">
+                          <span className="font-mono">{seller.gst_number || "-"}</span>
+                          {seller.gst_number && seller.gst_verified && (
+                            <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] rounded inline-flex items-center gap-0.5 border border-emerald-200" data-testid="seller-detail-gst-verified-badge">
+                              <ShieldCheck size={10} /> Verified
+                            </span>
+                          )}
+                          {seller.gst_number && !seller.gst_verified && (
+                            <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] rounded inline-flex items-center gap-0.5 border border-amber-200" data-testid="seller-detail-gst-unverified-badge">
+                              <AlertTriangle size={10} /> Not Verified
+                            </span>
+                          )}
+                        </p>
+                        {seller.gst_verified && (seller.gst_legal_name || seller.gst_trade_name) && (
+                          <p className="text-[11px] text-gray-500 mt-0.5">{seller.gst_legal_name || seller.gst_trade_name}</p>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -442,9 +515,55 @@ const AdminSellerDetail = () => {
                         <label className="block text-xs font-medium text-gray-500 mb-1">Established Year</label>
                         <input type="number" value={profileForm.established_year} onChange={e => setProfileForm({ ...profileForm, established_year: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="2005" />
                       </div>
-                      <div>
+                      <div className="col-span-2">
                         <label className="block text-xs font-medium text-gray-500 mb-1">GST Number</label>
-                        <input type="text" value={profileForm.gst_number} onChange={e => setProfileForm({ ...profileForm, gst_number: e.target.value })} className="w-full px-3 py-2 border border-gray-200 rounded text-sm" placeholder="24AABCS1429B1Z5" />
+                        <div className={`border rounded-lg p-3 ${profileForm.gst_verified ? "border-emerald-200 bg-emerald-50/40" : "border-amber-200 bg-amber-50/40"}`} data-testid="seller-detail-gst-box">
+                          <div className="flex items-center gap-2">
+                            <ShieldCheck size={16} className={profileForm.gst_verified ? "text-emerald-600" : "text-amber-600"} />
+                            <input
+                              type="text"
+                              value={profileForm.gst_number}
+                              onChange={e => {
+                                const v = e.target.value.toUpperCase();
+                                // Reset verified flag the moment GSTIN changes — admin must
+                                // re-verify the new number before saving.
+                                setProfileForm(p => ({
+                                  ...p,
+                                  gst_number: v,
+                                  gst_verified: v === (seller?.gst_number || "") ? !!seller?.gst_verified : false,
+                                }));
+                              }}
+                              className="flex-1 px-2 py-1.5 border border-gray-200 rounded text-sm bg-white"
+                              placeholder="24AABCS1429B1Z5"
+                              maxLength={15}
+                              data-testid="seller-detail-gst-input"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleVerifyGst}
+                              disabled={gstVerifying || profileForm.gst_verified || !profileForm.gst_number}
+                              className={`px-3 py-1.5 rounded text-xs font-medium inline-flex items-center gap-1 whitespace-nowrap ${profileForm.gst_verified ? "bg-emerald-600 text-white cursor-default" : "bg-[#2563EB] text-white hover:bg-blue-600 disabled:opacity-50"}`}
+                              data-testid="seller-detail-gst-verify-btn"
+                            >
+                              {gstVerifying ? <Loader2 size={12} className="animate-spin" />
+                                : profileForm.gst_verified ? <><Check size={12} /> Verified</>
+                                : <>Verify GST</>}
+                            </button>
+                          </div>
+                          {gstError && (
+                            <p className="text-xs text-red-600 mt-1.5 flex items-center gap-1" data-testid="seller-detail-gst-error">
+                              <AlertTriangle size={11} /> {gstError}
+                            </p>
+                          )}
+                          {profileForm.gst_verified && (profileForm.gst_legal_name || profileForm.gst_trade_name) && (
+                            <p className="text-xs text-emerald-700 mt-1.5">
+                              {profileForm.gst_legal_name || profileForm.gst_trade_name}
+                            </p>
+                          )}
+                          {!profileForm.gst_verified && profileForm.gst_number && (
+                            <p className="text-[11px] text-amber-700 mt-1.5">Click Verify GST to confirm the GSTIN before saving.</p>
+                          )}
+                        </div>
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-gray-500 mb-1">Monthly Capacity</label>
