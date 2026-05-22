@@ -1612,8 +1612,14 @@ async def brand_create_order(data: BrandOrderCreate, user=Depends(get_current_br
                 m = _re.match(r"\s*(\d+)", moq_raw)
                 if m:
                     moq = int(m.group(1))
-            if it.quantity < moq:
-                raise HTTPException(status_code=400, detail=f"{f.get('name')}: qty {it.quantity} below MOQ {moq}")
+            # Enterprise (brand) channel floor: brands placing orders from
+            # their enterprise dashboard can book as low as 30 m per line
+            # even if the vendor-set MOQ is higher. Vendor MOQs apply on the
+            # public customer flow only.
+            ENTERPRISE_BULK_MIN = 30
+            effective_moq = min(moq, ENTERPRISE_BULK_MIN) if moq > 0 else ENTERPRISE_BULK_MIN
+            if it.quantity < effective_moq:
+                raise HTTPException(status_code=400, detail=f"{f.get('name')}: qty {it.quantity} below minimum {effective_moq}m")
             # Defence-in-depth: stock cap. If the fabric has a recorded
             # quantity_available > 0, refuse any bulk line that exceeds it.
             stock_q = int(f.get("quantity_available") or 0)

@@ -218,7 +218,10 @@ const AgentDashboardPage = () => {
       category_id: fabric.category_id || "",
       seller_company: fabric.seller_company || "",
       seller_id: fabric.seller_id || "",
-      quantity: isSample ? 1 : (parseInt(fabric.moq) || 100),
+      // Agent-assisted floor: bulk minimum is 30 m regardless of the
+      // vendor's public MOQ (vendor MOQs apply to direct-customer
+      // checkouts only). Samples remain 1 m.
+      quantity: isSample ? 1 : 30,
       price_per_meter: isSample ? (fabric.sample_price || fabric.rate_per_meter || 0) : (fabric.rate_per_meter || 0),
       order_type: orderType,
       image_url: fabric.images?.[0] || "",
@@ -235,14 +238,22 @@ const AgentDashboardPage = () => {
   };
 
   const updateCartQty = (fabricId, delta) => {
-    setCart(cart.map((c) => c.fabric_id === fabricId ? { ...c, quantity: Math.max(1, c.quantity + delta) } : c));
+    setCart(cart.map((c) => {
+      if (c.fabric_id !== fabricId) return c;
+      const floor = c.order_type === "sample" ? 1 : 30; // 30 m bulk floor on agent path
+      return { ...c, quantity: Math.max(floor, c.quantity + delta) };
+    }));
   };
 
-  // Direct quantity setter — used by the typeable input. Coerces to a sensible
-  // minimum (1) and ignores non-numeric input gracefully.
+  // Direct quantity setter — used by the typeable input. Coerces to the
+  // agent-channel floor (30 m bulk · 1 m sample) and ignores non-numeric input.
   const setCartQty = (fabricId, value) => {
-    const next = Math.max(1, parseInt(value, 10) || 1);
-    setCart(cart.map((c) => c.fabric_id === fabricId ? { ...c, quantity: next } : c));
+    setCart(cart.map((c) => {
+      if (c.fabric_id !== fabricId) return c;
+      const floor = c.order_type === "sample" ? 1 : 30;
+      const next = Math.max(floor, parseInt(value, 10) || floor);
+      return { ...c, quantity: next };
+    }));
   };
 
   const removeFromCart = (fabricId) => {
