@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { User, Mail, Phone, Building2, MapPin, FileText, LogOut, ChevronRight, Package, ShoppingBag, MessageSquare, Bell, Shield, Smartphone, Wallet } from "lucide-react";
+import { User, Mail, Phone, Building2, MapPin, FileText, LogOut, ChevronRight, Package, ShoppingBag, MessageSquare, Bell, Shield, Smartphone, Wallet, Heart } from "lucide-react";
 import { toast } from "sonner";
 import { useCustomerAuth } from "../../context/CustomerAuthContext";
 import { getCustomerProfile, updateCustomerProfile } from "../../lib/api";
@@ -291,6 +291,16 @@ export default function MAccount() {
           <div style={{ flex: 1, minWidth: 0 }}>
             <p style={{ fontSize: 14, fontWeight: 700, color: "var(--m-ink)", margin: 0 }}>Credit & Ledger</p>
             <p style={{ fontSize: 11, color: "var(--m-ink-3)", margin: "2px 0 0" }}>Limits · disbursements · payments · adjustments</p>
+          </div>
+          <ChevronRight size={16} color="var(--m-ink-3)" />
+        </button>
+        <button onClick={() => navigate("/m/wishlists")} className="m-card" style={{ width: "100%", padding: "12px 14px", textAlign: "left", border: "1px solid var(--m-border)", cursor: "pointer", marginTop: 10, display: "flex", alignItems: "center", gap: 10 }} data-testid="m-account-wishlists-cta">
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: "#FEE2E2", display: "grid", placeItems: "center", flexShrink: 0 }}>
+            <Heart size={18} color="#E11D48" />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ fontSize: 14, fontWeight: 700, color: "var(--m-ink)", margin: 0 }}>My Wishlists</p>
+            <p style={{ fontSize: 11, color: "var(--m-ink-3)", margin: "2px 0 0" }}>Saved fabrics · shareable lists</p>
           </div>
           <ChevronRight size={16} color="var(--m-ink-3)" />
         </button>

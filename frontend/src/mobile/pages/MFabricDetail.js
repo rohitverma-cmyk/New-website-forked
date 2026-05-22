@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ChevronLeft, Share2, Heart, Zap, Package, Truck, Shield, ShoppingBag, MessageCircle, FileText } from "lucide-react";
+import { ChevronLeft, Share2, Zap, Package, Truck, Shield, ShoppingBag, MessageCircle, FileText } from "lucide-react";
+import WishlistHeartButton from "../../components/WishlistHeartButton";
 import api from "../../lib/api";
 import {
   formatCompositionShort,
@@ -117,13 +118,14 @@ export default function MFabricDetail() {
           <button onClick={() => navigate(-1)} style={iconButtonStyle()} aria-label="Back">
             <ChevronLeft size={22} />
           </button>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button onClick={onShare} style={iconButtonStyle()} aria-label="Share">
               <Share2 size={18} />
             </button>
-            <button style={iconButtonStyle()} aria-label="Save">
-              <Heart size={18} />
-            </button>
+            {/* Wire up the placeholder save-icon to the real wishlist picker.
+                `WishlistHeartButton` already renders the heart + outside-click
+                picker overlay, so we hide the legacy bare button. */}
+            <WishlistHeartButton fabricId={fabric.id} variant="icon" size={18} />
           </div>
         </div>
       </div>

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { Store, Package } from "lucide-react";
+import WishlistHeartButton from "../../components/WishlistHeartButton";
 import {
   formatCompositionShort,
   formatWeight,
@@ -75,6 +76,14 @@ export default function FabricCard({ fabric, variant = "rail" }) {
               boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
             }}>⚡ BOOK NOW</span>
           )}
+        </div>
+        {/* Wishlist heart — absolute-positioned over the image. Stops link
+            propagation so tapping the heart doesn't navigate the card. */}
+        <div
+          style={{ position: "absolute", top: 8, right: 8 }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        >
+          <WishlistHeartButton fabricId={fabric.id} variant="overlay" size={16} />
         </div>
       </div>
       <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 6 }}>

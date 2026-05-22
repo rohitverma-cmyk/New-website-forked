@@ -99,6 +99,9 @@ const LoginPreview = lazy(() => import("./pages/LoginPreview"));
 const LedgerPreviewMock = lazy(() => import("./pages/LedgerPreviewMock"));
 const AdminCreditAdjustmentsPage = lazy(() => import("./pages/AdminCreditAdjustmentsPage"));
 const CustomerQueryDetail = lazy(() => import("./pages/CustomerQueryDetail"));
+const CustomerWishlistsPage = lazy(() => import("./pages/CustomerWishlistsPage"));
+const CustomerWishlistDetailPage = lazy(() => import("./pages/CustomerWishlistDetailPage"));
+const PublicWishlistPage = lazy(() => import("./pages/PublicWishlistPage"));
 const SharedCartPage = lazy(() => import("./pages/SharedCartPage"));
 
 // Agent pages
@@ -277,6 +280,9 @@ function App() {
           <Route path="/admin/credit-adjustments" element={<Suspense fallback={<PageLoader />}><AdminCreditAdjustmentsPage /></Suspense>} />
           <Route path="/account/queries/:rfqId" element={<Suspense fallback={<PageLoader />}><CustomerQueryDetail /></Suspense>} />
           <Route path="/account/orders/:orderId" element={<Suspense fallback={<PageLoader />}><OrderDetailPage /></Suspense>} />
+          <Route path="/account/wishlists" element={<Suspense fallback={<PageLoader />}><CustomerWishlistsPage /></Suspense>} />
+          <Route path="/account/wishlists/:id" element={<Suspense fallback={<PageLoader />}><CustomerWishlistDetailPage /></Suspense>} />
+          <Route path="/wishlist/:token" element={<Suspense fallback={<PageLoader />}><PublicWishlistPage /></Suspense>} />
           
           {/* Shared Cart (customer-facing) */}
           <Route path="/shared-cart/:token" element={<SharedCartPage />} />

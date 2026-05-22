@@ -160,6 +160,22 @@ export const placeOrderFromQuote = (token, quoteId, payload) =>
   api.post(`/customer/queries/quotes/${quoteId}/place-order`, payload, { headers: { Authorization: `Bearer ${token}` } });
 
 
+// Customer Wishlists
+const _h = (token) => ({ headers: { Authorization: `Bearer ${token}` } });
+export const listWishlists = (token) => api.get("/wishlists", _h(token));
+export const createWishlist = (token, name) => api.post("/wishlists", { name }, _h(token));
+export const getWishlist = (token, id) => api.get(`/wishlists/${id}`, _h(token));
+export const updateWishlist = (token, id, data) => api.patch(`/wishlists/${id}`, data, _h(token));
+export const deleteWishlist = (token, id) => api.delete(`/wishlists/${id}`, _h(token));
+export const addToWishlist = (token, id, fabricId) =>
+  api.post(`/wishlists/${id}/items`, { fabric_id: fabricId }, _h(token));
+export const removeFromWishlist = (token, id, fabricId) =>
+  api.delete(`/wishlists/${id}/items/${fabricId}`, _h(token));
+export const shareWishlist = (token, id, regenerate = false) =>
+  api.post(`/wishlists/${id}/share`, { regenerate }, _h(token));
+export const getSharedWishlist = (shareToken) => api.get(`/wishlists/share/${shareToken}`);
+
+
 // Articles (Color Variant Grouping)
 export const getArticles = (params) => api.get("/articles", { params });
 export const getArticle = (id) => api.get(`/articles/${id}`);

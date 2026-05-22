@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import ExpandableText from "../components/ExpandableText";
+import WishlistHeartButton from "../components/WishlistHeartButton";
 import RFQModal from "../components/RFQModal";
 import InventoryShortfallModal from "../components/InventoryShortfallModal";
 import { getFabric, createEnquiry, getFabricSEO, getRelatedFabrics, getOtherSellers } from "../lib/api";
@@ -970,6 +971,7 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                     <MessageSquare size={18} />
                     Request a Quote
                   </button>
+                  <WishlistHeartButton fabricId={fabric.id} className="w-full" />
                   <DispatchStrip fabric={fabric} className="mt-2" />
                 </div>
               </div>

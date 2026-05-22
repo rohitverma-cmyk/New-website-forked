@@ -613,6 +613,9 @@ import customer_router
 customer_router.set_db(db)
 app.include_router(customer_router.router)
 
+import wishlist_router
+app.include_router(wishlist_router.router)
+
 import agent_router
 agent_router.set_db(db)
 app.include_router(agent_router.router)

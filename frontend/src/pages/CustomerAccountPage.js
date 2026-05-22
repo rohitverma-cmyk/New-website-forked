@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { User, Package, Mail, Phone, Building2, MapPin, Pencil, Save, Loader2, LogOut, ArrowRight, Clock, CheckCircle, Truck, XCircle, MessageSquare, FileText, ShieldCheck, Globe, Wallet } from "lucide-react";
+import { User, Package, Mail, Phone, Building2, MapPin, Pencil, Save, Loader2, LogOut, ArrowRight, Clock, CheckCircle, Truck, XCircle, MessageSquare, FileText, ShieldCheck, Globe, Wallet, Heart } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
@@ -231,6 +231,9 @@ const CustomerAccountPage = () => {
             </button>
             <button onClick={() => setActiveTab("ledger")} className={`px-6 py-3 text-sm font-medium border-b-2 ${activeTab === "ledger" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-gray-500 hover:text-gray-700"}`} data-testid="tab-credit-ledger">
               <Wallet size={16} className="inline mr-2" />Credit & Ledger
+            </button>
+            <button onClick={() => navigate("/account/wishlists")} className="px-6 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-testid="tab-wishlists">
+              <Heart size={16} className="inline mr-2" />Wishlists
             </button>
             <button onClick={() => setActiveTab("profile")} className={`px-6 py-3 text-sm font-medium border-b-2 ${activeTab === "profile" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-gray-500 hover:text-gray-700"}`} data-testid="tab-profile">
               <User size={16} className="inline mr-2" />Profile
