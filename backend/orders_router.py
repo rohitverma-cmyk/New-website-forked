@@ -630,16 +630,17 @@ async def create_order(order_data: OrderCreate):
         logger.error("Razorpay client not initialized")
         raise HTTPException(status_code=503, detail="Payment service not configured. Please contact support.")
 
-    # Provisional bulk-order: now driven by the AGENT'S choice (per-item
-    # qty_type="provisional") rather than blanket "all bulk = provisional".
-    # An order is provisional iff ANY item carries qty_type="provisional".
-    # The `is_provisional` flag on the request acts as a hard-override
-    # (e.g. for legacy callers / Bangladesh PI flow).
+    # Provisional rule (Feb 2026): every BULK order placed by a customer
+    # online is provisional — the customer pays a 10 % advance now and the
+    # 90 % balance after the supplier marks goods ready. The only way to
+    # opt OUT is an explicit `qty_type="actual"` per item (used by agents
+    # for negotiated full-payment deals). `order_data.is_provisional` is
+    # still honoured as a hard override for legacy callers / PI flow.
     from provisional_orders import resolve_advance_pct, split_amounts
     items_raw = [i.model_dump() for i in order_data.items]
     has_provisional_item = any(
-        ((it.get("qty_type") or "").lower() == "provisional")
-        and ((it.get("order_type") or "bulk") == "bulk")
+        ((it.get("order_type") or "bulk") == "bulk")
+        and ((it.get("qty_type") or "").lower() != "actual")
         for it in items_raw
     )
     use_provisional = order_data.is_provisional or has_provisional_item
