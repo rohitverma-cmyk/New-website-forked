@@ -271,10 +271,14 @@ const VendorOrders = () => {
                   />
                 )}
                 {/* Non-provisional Mark Ready CTA — supplier uploads rolls only.
-                    Includes `status='paid'` since some legacy/credit-path orders
-                    don't advance to "confirmed" but are functionally ready for
-                    dispatch the moment payment is captured. */}
-                {!selectedOrder.is_provisional && ["confirmed", "processing", "paid"].includes(selectedOrder.status) && !selectedOrder.goods_ready_at && (
+                    Gated strictly on `pipeline_stage === "awaiting_confirm"`
+                    so the CTA disappears the moment the order moves to
+                    "Confirmed / Waiting to be Dispatched" or "Prepare
+                    Dispatch". This prevents the banner from showing on
+                    sample orders (which skip the goods-ready step entirely)
+                    and on bulk orders whose goods are already marked ready
+                    but the vendor opened the detail modal again later. */}
+                {!selectedOrder.is_provisional && selectedOrder.pipeline_stage === "awaiting_confirm" && !selectedOrder.goods_ready_at && (
                   <MarkReadyBanner order={selectedOrder} onMarkReady={() => setReadyOrder(selectedOrder)} />
                 )}
                 {/* Prepare Dispatch (tax invoice upload) — triggers Shiprocket push */}
