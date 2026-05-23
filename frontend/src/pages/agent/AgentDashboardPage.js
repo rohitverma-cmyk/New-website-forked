@@ -8,6 +8,7 @@ import { getFabrics, getFabricsCount, getCategories, getFabricFilterOptions, get
 import { getCheapestBulkPrice, formatQtyThreshold } from "../../lib/pricing";
 import { getFabricUnit, getFabricUnitLabel } from "../../lib/fabricUnit";
 import { thumbImage } from "../../lib/imageUrl";
+import { OrderSourceChip } from "../../components/OrderTypeChips";
 import Watermark from "../../components/Watermark";
 import AgentAISearchBar from "../../components/agent/AgentAISearchBar";
 import CreateCatalogueModal from "../../components/agent/CreateCatalogueModal";
@@ -1493,6 +1494,7 @@ Locofast Online Services`,
                             <span className={`px-2 py-1 rounded-full text-xs font-bold ${isSample ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>
                               {isSample ? 'SAMPLE' : 'BULK'}
                             </span>
+                            <span className="ml-1 inline-block align-middle"><OrderSourceChip order={o} /></span>
                           </td>
                           <td className="px-4 py-4">
                             <p className="text-sm font-medium">{o.customer?.name}</p>

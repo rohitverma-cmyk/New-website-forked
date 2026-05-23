@@ -4,6 +4,7 @@ import { Clock, Truck, IndianRupee, Boxes, FileText, ArrowRight, Package, Loader
 import VendorLayout from "../../components/vendor/VendorLayout";
 import { getVendorStats, getVendorOrders } from "../../lib/api";
 import { useVendorAuth } from "../../context/VendorAuthContext";
+import { OrderTypeChipPair } from "../../components/OrderTypeChips";
 
 // ── Helpers ────────────────────────────────────────────────────────
 const fmtINR = (n) => {
@@ -67,10 +68,8 @@ const OrderRow = ({ order, ctaLabel, ctaTo, vendorQty, vendorValue }) => {
           >
             {order.order_number}
           </Link>
+          <OrderTypeChipPair order={order} />
           <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${meta.tone}`}>{meta.label}</span>
-          {(order.source || "inventory") === "rfq" && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700">RFQ</span>
-          )}
         </div>
         <p className="text-sm text-gray-600 mt-1 truncate">
           {(order.items || []).slice(0, 2).map((it) => it.fabric_name).filter(Boolean).join(" · ") || "Order items"}

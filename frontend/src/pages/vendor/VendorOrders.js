@@ -5,6 +5,7 @@ import VendorFileUpload from "../../components/vendor/VendorFileUpload";
 import { getVendorOrders, vendorMarkGoodsReady, vendorAcceptOrder, vendorCancelOrder } from "../../lib/api";
 import api from "../../lib/api";
 import { toast } from "sonner";
+import { OrderTypeChipPair, OrderTypeChip, OrderSourceChip } from "../../components/OrderTypeChips";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -188,13 +189,10 @@ const VendorOrders = () => {
                     >
                       <td className="px-4 py-4">
                         <p className="font-medium text-blue-600">{order.order_number}</p>
-                        <span className={`inline-block mt-1 text-[10px] font-semibold tracking-wide rounded-full px-2 py-0.5 border ${
-                          (order.source || "inventory") === "rfq"
-                            ? "bg-violet-50 text-violet-700 border-violet-100"
-                            : "bg-gray-50 text-gray-600 border-gray-200"
-                        }`} data-testid={`vendor-order-source-${order.order_number}`}>
-                          {(order.source || "inventory") === "rfq" ? "RFQ" : "Inventory"}
-                        </span>
+                        <div className="mt-1.5 flex items-center gap-1">
+                          <OrderTypeChip order={order} />
+                          <OrderSourceChip order={order} />
+                        </div>
                       </td>
                       <td className="px-4 py-4">
                         <p className="text-sm">
@@ -251,10 +249,11 @@ const VendorOrders = () => {
           <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setSelectedOrder(null)}>
             <div className="bg-white rounded-xl max-w-lg w-full max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
               <div className="p-6 border-b border-gray-100">
-                <div className="flex items-center justify-between">
-                  <div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
                     <h2 className="text-xl font-semibold">{selectedOrder.order_number}</h2>
                     <p className="text-sm text-gray-500">{formatDate(selectedOrder.created_at)}</p>
+                    <div className="mt-2"><OrderTypeChipPair order={selectedOrder} size="sm" /></div>
                   </div>
                   <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStageInfo(selectedOrder).color}`}>
                     {getStageInfo(selectedOrder).label}

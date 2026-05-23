@@ -6,6 +6,7 @@ import SetCreditByGstModal from "../../components/admin/SetCreditByGstModal";
 import OrderEmailAudit from "../../components/admin/OrderEmailAudit";
 import api, { listOrders, updateOrderStatus, updateOrderPaymentStatus, getOrderStats, sendOrderConfirmation, downloadInvoice, cancelOrder, listCreditWallets, editCreditWallet, pushOrderToShiprocket, getOrderSellerCommissions, adminMarkBalancePaid } from "../../lib/api";
 import { toast } from "sonner";
+import { OrderSourceChip } from "../../components/OrderTypeChips";
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -493,6 +494,7 @@ const AdminOrders = () => {
                           <td className="px-4 py-4"><p className="font-medium text-blue-600">{order.order_number}</p></td>
                           <td className="px-4 py-4">
                             <span className={`px-2 py-1 rounded-full text-xs font-bold ${isSample ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{isSample ? 'SAMPLE' : 'BULK'}</span>
+                            <span className="ml-1 inline-block align-middle"><OrderSourceChip order={order} /></span>
                             {order.payment_method === 'credit' && <span className="ml-1 px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-700">CREDIT</span>}
                             <span className={`ml-1 px-2 py-1 rounded-full text-xs ${order.booking_type === 'assisted_online' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
                               {order.booking_type === 'assisted_online' ? 'Assisted Online' : 'Online'}
@@ -638,9 +640,15 @@ const AdminOrders = () => {
           <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setSelectedOrder(null)}>
             <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
               <div className="p-6 border-b flex items-center justify-between">
-                <div>
+                <div className="min-w-0">
                   <h2 className="text-xl font-semibold">Order {selectedOrder.order_number}</h2>
                   <p className="text-sm text-gray-500">{formatDate(selectedOrder.created_at)}</p>
+                  <div className="mt-2 inline-flex items-center gap-1.5 flex-wrap">
+                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${(selectedOrder.items || []).every(it => (it.order_type || 'bulk') === 'sample') ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                      {(selectedOrder.items || []).every(it => (it.order_type || 'bulk') === 'sample') ? 'SAMPLE' : 'BULK'}
+                    </span>
+                    <OrderSourceChip order={selectedOrder} size="sm" />
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   {selectedOrder.payment_method === 'credit' && <span className="px-3 py-1 rounded-full text-xs bg-purple-100 text-purple-700 font-medium">Credit</span>}
