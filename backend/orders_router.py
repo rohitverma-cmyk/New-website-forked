@@ -2866,11 +2866,31 @@ async def vendor_upload_invoice(order_id: str, data: dict, request: Request):
         "amount": inv_amount,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     })
+    # Auto-stamp `goods_ready_at` for the sample / small-bulk flow. On these
+    # orders the vendor's *only* dispatch action is uploading the tax
+    # invoice — there's no separate "Mark Goods Ready" step. We stamp
+    # the timestamp so downstream pipelines (e-way bill scheduling, SR
+    # push, status calculators) behave identically to the large-bulk
+    # flow which captures `goods_ready_at` explicitly at confirmation.
+    auto_ready_fields: dict = {}
+    if not order.get("goods_ready_at"):
+        try:
+            from order_pipeline import compute_vendor_bucket
+            vendor_fabric_ids_set = set(
+                await db.fabrics.distinct('id', {'seller_id': caller_seller_id})
+            )
+            v_bucket = compute_vendor_bucket(order, caller_seller_id, vendor_fabric_ids_set)
+        except Exception:
+            v_bucket = "small_bulk"
+        if v_bucket in ("sample", "small_bulk"):
+            auto_ready_fields["goods_ready_at"] = datetime.now(timezone.utc).isoformat()
+            auto_ready_fields["status"] = "goods_ready"
     await db.orders.update_one(
         {"id": order_id},
         {"$set": {
             "vendor_invoices": existing,
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            **auto_ready_fields,
         }},
     )
 

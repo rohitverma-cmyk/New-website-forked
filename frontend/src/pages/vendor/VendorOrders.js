@@ -5,7 +5,7 @@ import VendorFileUpload from "../../components/vendor/VendorFileUpload";
 import { getVendorOrders, vendorMarkGoodsReady, vendorAcceptOrder, vendorCancelOrder } from "../../lib/api";
 import api from "../../lib/api";
 import { toast } from "sonner";
-import { OrderTypeChipPair, OrderTypeChip, OrderSourceChip } from "../../components/OrderTypeChips";
+import { OrderSourceChip } from "../../components/OrderTypeChips";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -30,7 +30,35 @@ const pipelineConfig = {
   cancelled: { label: "Cancelled", color: "bg-red-100 text-red-700", icon: AlertTriangle },
 };
 
+// Vendor-screen stage config — quantity-bucketed flow. Backend sends
+// `vendor_stage` on every order; the labels below are rendered as-is
+// on the vendor orders table, tabs, and dashboard panels.
+//
+//   sample / small_bulk:   update_dispatch_details → dispatch_awaited → dispatched → delivered
+//   large_bulk (≥500m):    order_confirmation_needed → awaiting_customer_full_payment
+//                          → update_dispatch_details → dispatch_awaited → dispatched → delivered
+const vendorStageConfig = {
+  order_confirmation_needed: { label: "Order Confirmation Needed", color: "bg-amber-100 text-amber-700", icon: Clock },
+  awaiting_customer_full_payment: { label: "Awaiting Customer Full Payment", color: "bg-blue-100 text-blue-700", icon: Clock },
+  update_dispatch_details: { label: "Update Dispatch Details", color: "bg-indigo-100 text-indigo-700", icon: FileText },
+  dispatch_awaited: { label: "Dispatch Awaited", color: "bg-purple-100 text-purple-700", icon: Truck },
+  dispatched: { label: "Dispatched", color: "bg-purple-100 text-purple-700", icon: Truck },
+  delivered: { label: "Delivered", color: "bg-emerald-100 text-emerald-700", icon: CheckCircle },
+  cancelled: { label: "Cancelled", color: "bg-red-100 text-red-700", icon: AlertTriangle },
+};
+
+const VENDOR_BUCKET_PILL = {
+  sample: { label: "Sample", tone: "bg-sky-50 text-sky-700 border-sky-200" },
+  small_bulk: { label: "Small Bulk", tone: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  large_bulk: { label: "Large Bulk", tone: "bg-orange-50 text-orange-700 border-orange-200" },
+};
+
 const getStageInfo = (order) => {
+  // Vendor screens prefer the bucketed `vendor_stage`. Fall back to the
+  // legacy `pipeline_stage` (for cached/old order shapes), then to the
+  // raw status as the ultimate safety net.
+  const vs = order?.vendor_stage;
+  if (vs && vendorStageConfig[vs]) return vendorStageConfig[vs];
   const stage = order?.pipeline_stage;
   if (stage && pipelineConfig[stage]) return pipelineConfig[stage];
   return statusConfig[order?.status] || statusConfig.confirmed;
@@ -64,7 +92,7 @@ const VendorOrders = () => {
 
   const visibleOrders = orders.filter((o) => {
     if (sourceFilter !== "all" && (o.source || "inventory") !== sourceFilter) return false;
-    if (statusFilter && (o.pipeline_stage || "") !== statusFilter) return false;
+    if (statusFilter && (o.vendor_stage || o.pipeline_stage || "") !== statusFilter) return false;
     return true;
   });
 
@@ -113,20 +141,24 @@ const VendorOrders = () => {
           </div>
         </div>
 
-        {/* Status tabs — 6-stage pipeline shared across admin / vendor / customer */}
+        {/* Status tabs — vendor pipeline (quantity-bucketed). Tabs map to
+            `vendor_stage` keys returned by the backend.
+            sample / small_bulk:   skip the "Order Confirmation" step
+            large_bulk (≥500m):    includes the provisional 2-phase flow */}
         <div className="bg-white rounded-lg border border-gray-200 mb-4" data-testid="vendor-order-status-tabs">
           <div className="flex items-center gap-1 px-2 py-2 overflow-x-auto">
             {[
               { key: "", label: "All" },
-              { key: "awaiting_confirm", label: "Waiting to be Confirmed" },
-              { key: "confirmed_pending_dispatch", label: "Confirmed / Waiting to be Dispatched" },
-              { key: "prepare_dispatch", label: "Prepare Dispatch (Invoice)" },
+              { key: "order_confirmation_needed", label: "Order Confirmation Needed" },
+              { key: "awaiting_customer_full_payment", label: "Awaiting Customer Full Payment" },
+              { key: "update_dispatch_details", label: "Update Dispatch Details" },
+              { key: "dispatch_awaited", label: "Dispatch Awaited" },
               { key: "dispatched", label: "Dispatched" },
               { key: "delivered", label: "Delivered" },
               { key: "cancelled", label: "Cancelled" },
             ].map((t) => {
               const scoped = orders.filter((o) => sourceFilter === "all" || (o.source || "inventory") === sourceFilter);
-              const count = t.key === "" ? scoped.length : scoped.filter((o) => (o.pipeline_stage || "") === t.key).length;
+              const count = t.key === "" ? scoped.length : scoped.filter((o) => (o.vendor_stage || o.pipeline_stage || "") === t.key).length;
               const active = statusFilter === t.key;
               return (
                 <button
@@ -189,8 +221,17 @@ const VendorOrders = () => {
                     >
                       <td className="px-4 py-4">
                         <p className="font-medium text-blue-600">{order.order_number}</p>
-                        <div className="mt-1.5 flex items-center gap-1">
-                          <OrderTypeChip order={order} />
+                        <div className="mt-1.5 flex items-center gap-1 flex-wrap">
+                          {(() => {
+                            const b = order.vendor_bucket;
+                            const cfg = VENDOR_BUCKET_PILL[b];
+                            if (!cfg) return null;
+                            return (
+                              <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${cfg.tone}`} data-testid={`vendor-bucket-${b}`}>
+                                {cfg.label}
+                              </span>
+                            );
+                          })()}
                           <OrderSourceChip order={order} />
                         </div>
                       </td>
@@ -253,7 +294,19 @@ const VendorOrders = () => {
                   <div className="min-w-0">
                     <h2 className="text-xl font-semibold">{selectedOrder.order_number}</h2>
                     <p className="text-sm text-gray-500">{formatDate(selectedOrder.created_at)}</p>
-                    <div className="mt-2"><OrderTypeChipPair order={selectedOrder} size="sm" /></div>
+                    <div className="mt-2 inline-flex items-center gap-1.5 flex-wrap">
+                      {(() => {
+                        const b = selectedOrder.vendor_bucket;
+                        const cfg = VENDOR_BUCKET_PILL[b];
+                        if (!cfg) return null;
+                        return (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium border ${cfg.tone}`}>
+                            {cfg.label}
+                          </span>
+                        );
+                      })()}
+                      <OrderSourceChip order={selectedOrder} size="sm" />
+                    </div>
                   </div>
                   <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStageInfo(selectedOrder).color}`}>
                     {getStageInfo(selectedOrder).label}
@@ -262,26 +315,33 @@ const VendorOrders = () => {
               </div>
 
               <div className="p-6 space-y-6">
-                {/* Provisional bulk order banner */}
-                {selectedOrder.is_provisional && (
+                {/* Large-bulk (≥500m, provisional 10/90) — vendor first
+                    confirms the order and enters actual qty (rolls × length)
+                    via the ProvisionalBanner. This is the new "Order
+                    Confirmation Needed" stage. */}
+                {selectedOrder.vendor_bucket === "large_bulk" && selectedOrder.vendor_stage === "order_confirmation_needed" && (
                   <ProvisionalBanner
                     order={selectedOrder}
                     onMarkReady={() => setReadyOrder(selectedOrder)}
                   />
                 )}
-                {/* Non-provisional Mark Ready CTA — supplier uploads rolls only.
-                    Gated strictly on `pipeline_stage === "awaiting_confirm"`
-                    so the CTA disappears the moment the order moves to
-                    "Confirmed / Waiting to be Dispatched" or "Prepare
-                    Dispatch". This prevents the banner from showing on
-                    sample orders (which skip the goods-ready step entirely)
-                    and on bulk orders whose goods are already marked ready
-                    but the vendor opened the detail modal again later. */}
-                {!selectedOrder.is_provisional && selectedOrder.pipeline_stage === "awaiting_confirm" && !selectedOrder.goods_ready_at && (
-                  <MarkReadyBanner order={selectedOrder} onMarkReady={() => setReadyOrder(selectedOrder)} />
+                {/* Awaiting customer full payment — passive wait, no CTA */}
+                {selectedOrder.vendor_stage === "awaiting_customer_full_payment" && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4" data-testid="vendor-banner-awaiting-balance">
+                    <p className="text-sm font-semibold text-blue-900 flex items-center gap-1.5">
+                      <Clock size={14} /> Awaiting customer full payment
+                    </p>
+                    <p className="text-xs text-blue-800 mt-1">
+                      Goods ready. Customer has been invoiced for the balance. Dispatch will unlock once payment is settled.
+                    </p>
+                  </div>
                 )}
-                {/* Prepare Dispatch (tax invoice upload) — triggers Shiprocket push */}
-                {selectedOrder.pipeline_stage === "prepare_dispatch" && (
+                {/* Update Dispatch Details — sample / small_bulk skip the
+                    confirmation step entirely; large_bulk lands here after
+                    balance payment is settled. Uploading the tax invoice
+                    here triggers the auto-mark-goods-ready stamp + the
+                    Shiprocket push in one shot. */}
+                {selectedOrder.vendor_stage === "update_dispatch_details" && (
                   <PrepareDispatchBanner
                     order={selectedOrder}
                     onUploaded={(updated) => {

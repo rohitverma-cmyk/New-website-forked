@@ -4,7 +4,7 @@ import { Clock, Truck, IndianRupee, Boxes, FileText, ArrowRight, Package, Loader
 import VendorLayout from "../../components/vendor/VendorLayout";
 import { getVendorStats, getVendorOrders } from "../../lib/api";
 import { useVendorAuth } from "../../context/VendorAuthContext";
-import { OrderTypeChipPair } from "../../components/OrderTypeChips";
+import { OrderSourceChip } from "../../components/OrderTypeChips";
 
 // ── Helpers ────────────────────────────────────────────────────────
 const fmtINR = (n) => {
@@ -16,12 +16,19 @@ const fmtINR = (n) => {
 const fmtMeters = (n) => `${Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })} m`;
 
 const stageMeta = {
-  awaiting_confirm: { label: "Waiting to be Confirmed", tone: "bg-amber-100 text-amber-800" },
-  confirmed_pending_dispatch: { label: "Confirmed · Pending Dispatch", tone: "bg-blue-100 text-blue-800" },
-  prepare_dispatch: { label: "Prepare Dispatch", tone: "bg-indigo-100 text-indigo-800" },
+  order_confirmation_needed: { label: "Order Confirmation Needed", tone: "bg-amber-100 text-amber-800" },
+  awaiting_customer_full_payment: { label: "Awaiting Customer Full Payment", tone: "bg-blue-100 text-blue-800" },
+  update_dispatch_details: { label: "Update Dispatch Details", tone: "bg-indigo-100 text-indigo-800" },
+  dispatch_awaited: { label: "Dispatch Awaited", tone: "bg-purple-100 text-purple-800" },
   dispatched: { label: "Dispatched", tone: "bg-purple-100 text-purple-800" },
   delivered: { label: "Delivered", tone: "bg-emerald-100 text-emerald-800" },
   cancelled: { label: "Cancelled", tone: "bg-red-100 text-red-700" },
+};
+
+const bucketPill = {
+  sample: { label: "Sample", tone: "bg-sky-50 text-sky-700 border-sky-200" },
+  small_bulk: { label: "Small Bulk", tone: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  large_bulk: { label: "Large Bulk", tone: "bg-orange-50 text-orange-700 border-orange-200" },
 };
 
 // ── Hero stat tile ────────────────────────────────────────────────
@@ -55,8 +62,10 @@ const HeroStat = ({ icon: Icon, label, value, sub, tone, to, accent, testid }) =
 
 // ── Action-orders row ─────────────────────────────────────────────
 const OrderRow = ({ order, ctaLabel, ctaTo, vendorQty, vendorValue }) => {
-  const stage = order.pipeline_stage || "awaiting_confirm";
-  const meta = stageMeta[stage] || stageMeta.awaiting_confirm;
+  const stage = order.vendor_stage || order.pipeline_stage || "order_confirmation_needed";
+  const meta = stageMeta[stage] || stageMeta.order_confirmation_needed;
+  const bucket = order.vendor_bucket;
+  const bp = bucketPill[bucket];
   return (
     <div className="px-5 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors" data-testid={`vendor-dash-order-${order.id}`}>
       <div className="min-w-0 flex-1">
@@ -68,7 +77,10 @@ const OrderRow = ({ order, ctaLabel, ctaTo, vendorQty, vendorValue }) => {
           >
             {order.order_number}
           </Link>
-          <OrderTypeChipPair order={order} />
+          {bp && (
+            <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium border ${bp.tone}`}>{bp.label}</span>
+          )}
+          <OrderSourceChip order={order} />
           <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${meta.tone}`}>{meta.label}</span>
         </div>
         <p className="text-sm text-gray-600 mt-1 truncate">
@@ -183,7 +195,10 @@ const VendorDashboard = () => {
     return () => { cancelled = true; };
   }, []);
 
-  // Bucket + annotate orders for the two action panels.
+  // Bucket + annotate orders for the action panels.
+  // pending     = "Order Confirmation Needed" (large_bulk only)
+  // awaiting    = "Awaiting Customer Full Payment" (large_bulk after confirm)
+  // dispatch    = "Update Dispatch Details" + "Dispatch Awaited" (all buckets)
   const { pendingApproval, dispatchPending } = useMemo(() => {
     const enrich = (o) => {
       const qty = (o.items || []).reduce((s, it) => s + Number(it.quantity || 0), 0);
@@ -194,11 +209,10 @@ const VendorDashboard = () => {
     const dp = [];
     for (const raw of orders) {
       const o = enrich(raw);
-      const s = o.pipeline_stage;
-      if (s === "awaiting_confirm") pa.push(o);
-      else if (s === "confirmed_pending_dispatch" || s === "prepare_dispatch") dp.push(o);
+      const s = o.vendor_stage || o.pipeline_stage;
+      if (s === "order_confirmation_needed") pa.push(o);
+      else if (s === "update_dispatch_details" || s === "dispatch_awaited") dp.push(o);
     }
-    // Most recent first (orders endpoint already sorts by created_at desc, but keep stable).
     return { pendingApproval: pa.slice(0, 8), dispatchPending: dp.slice(0, 8) };
   }, [orders]);
 
@@ -219,9 +233,9 @@ const VendorDashboard = () => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
           <HeroStat
             icon={Clock}
-            label="Orders pending approval"
+            label="Order confirmation needed"
             value={loading ? "…" : (stats?.orders_pending_approval ?? 0)}
-            sub={loading ? " " : `${fmtINR(stats?.orders_pending_approval_value)} to confirm`}
+            sub={loading ? " " : `${fmtINR(stats?.orders_pending_approval_value)} large-bulk awaiting your confirm`}
             tone="bg-amber-100 text-amber-700"
             accent="border-amber-200 bg-gradient-to-br from-amber-50 to-white"
             to="/vendor/orders"
@@ -231,7 +245,7 @@ const VendorDashboard = () => {
             icon={Truck}
             label="Dispatch pending"
             value={loading ? "…" : (stats?.orders_dispatch_pending ?? 0)}
-            sub={loading ? " " : `${fmtINR(stats?.orders_dispatch_pending_value)} in pipeline`}
+            sub={loading ? " " : `${fmtINR(stats?.orders_dispatch_pending_value)} ready to ship`}
             tone="bg-indigo-100 text-indigo-700"
             accent="border-indigo-200 bg-gradient-to-br from-indigo-50 to-white"
             to="/vendor/orders"
@@ -252,11 +266,11 @@ const VendorDashboard = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
           <ActionPanel
             testid="vendor-dash-panel-pending"
-            title={<><Clock size={16} className="text-amber-600" /> Orders pending approval</>}
-            hint="Mark goods ready to confirm these orders"
+            title={<><Clock size={16} className="text-amber-600" /> Order confirmation needed</>}
+            hint="Confirm and enter actual roll quantities for large-bulk orders"
             orders={pendingApproval}
-            emptyMsg={loading ? "Loading…" : "Nothing waiting on you. Nice."}
-            ctaLabel="Mark Ready"
+            emptyMsg={loading ? "Loading…" : "Nothing waiting on your confirmation. Nice."}
+            ctaLabel="Confirm"
             ctaTo="/vendor/orders"
             accent="bg-amber-50/50"
             count={stats?.orders_pending_approval ?? 0}
@@ -264,8 +278,8 @@ const VendorDashboard = () => {
           />
           <ActionPanel
             testid="vendor-dash-panel-dispatch"
-            title={<><FileText size={16} className="text-indigo-600" /> Dispatch pending</>}
-            hint="Upload tax invoice to release to Shiprocket"
+            title={<><FileText size={16} className="text-indigo-600" /> Update dispatch details</>}
+            hint="Upload tax invoice — auto-pushes to Shiprocket"
             orders={dispatchPending}
             emptyMsg={loading ? "Loading…" : "No dispatch tasks pending."}
             ctaLabel="Open"

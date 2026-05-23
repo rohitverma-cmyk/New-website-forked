@@ -450,12 +450,20 @@ async def get_vendor_orders(
     #         name, company, address, city/state/pincode, GSTIN.
     #         PHONE & EMAIL stay redacted in all stages — vendor never
     #         contacts the customer directly.
-    from order_pipeline import compute_pipeline_stage, PIPELINE_LABELS
+    from order_pipeline import (
+        compute_pipeline_stage,
+        compute_vendor_stage,
+        compute_vendor_bucket,
+        PIPELINE_LABELS,
+        VENDOR_STAGE_LABELS,
+        VENDOR_BUCKET_LABELS,
+    )
     DISPATCH_STAGES = {"prepare_dispatch", "dispatched", "delivered"}
+    vendor_fabric_id_set = set(vendor_fabric_ids)
     for order in orders:
         order['items'] = [
             item for item in order.get('items', [])
-            if item.get('fabric_id') in vendor_fabric_ids or item.get('seller_id') == seller_id
+            if item.get('fabric_id') in vendor_fabric_id_set or item.get('seller_id') == seller_id
         ]
         stage = compute_pipeline_stage(order)
         cust = order.get('customer') or {}
@@ -480,6 +488,12 @@ async def get_vendor_orders(
         try:
             order['pipeline_stage'] = stage
             order['pipeline_label'] = PIPELINE_LABELS.get(stage, stage)
+            v_stage = compute_vendor_stage(order, seller_id, vendor_fabric_id_set)
+            v_bucket = compute_vendor_bucket(order, seller_id, vendor_fabric_id_set)
+            order['vendor_stage'] = v_stage
+            order['vendor_stage_label'] = VENDOR_STAGE_LABELS.get(v_stage, v_stage)
+            order['vendor_bucket'] = v_bucket
+            order['vendor_bucket_label'] = VENDOR_BUCKET_LABELS.get(v_bucket, v_bucket)
         except Exception:
             pass
 
@@ -496,10 +510,11 @@ async def get_vendor_stats(vendor=Depends(get_current_vendor)):
       - Top 5 selling products (by metres shipped) restricted to the
         vendor's own items
     """
-    from order_pipeline import compute_pipeline_stage
+    from order_pipeline import compute_vendor_stage, compute_vendor_bucket
 
     vendor_fabric_ids = await db.fabrics.distinct('id', {'seller_id': vendor['id']})
     seller_id = vendor['id']
+    vendor_fabric_id_set = set(vendor_fabric_ids)
 
     total_fabrics = await db.fabrics.count_documents({'seller_id': seller_id})
     approved_fabrics = await db.fabrics.count_documents({'seller_id': seller_id, 'status': 'approved'})
@@ -523,9 +538,11 @@ async def get_vendor_stats(vendor=Depends(get_current_vendor)):
          'actual_total': 1, 'total': 1}
     ).to_list(5000)
 
-    pending_approval_count = 0
+    pending_approval_count = 0           # Bucket 3 step 1 — Order Confirmation Needed
     pending_approval_value = 0.0
-    dispatch_pending_count = 0
+    awaiting_balance_count = 0           # Bucket 3 step 2 — Awaiting Customer Full Payment
+    awaiting_balance_value = 0.0
+    dispatch_pending_count = 0           # All buckets step "Update Dispatch Details" + "Dispatch Awaited"
     dispatch_pending_value = 0.0
     delivered_count = 0
     total_business_value = 0.0  # GMV across paid/delivered orders
@@ -538,7 +555,7 @@ async def get_vendor_stats(vendor=Depends(get_current_vendor)):
         # the vendor actually supplies on the order.
         my_items = [
             it for it in (o.get('items') or [])
-            if it.get('fabric_id') in vendor_fabric_ids or it.get('seller_id') == seller_id
+            if it.get('fabric_id') in vendor_fabric_id_set or it.get('seller_id') == seller_id
         ]
         if not my_items:
             continue
@@ -547,14 +564,17 @@ async def get_vendor_stats(vendor=Depends(get_current_vendor)):
             for it in my_items
         )
 
-        stage = compute_pipeline_stage(o)
-        if stage == 'awaiting_confirm':
+        v_stage = compute_vendor_stage(o, seller_id, vendor_fabric_id_set)
+        if v_stage == 'order_confirmation_needed':
             pending_approval_count += 1
             pending_approval_value += vendor_value
-        elif stage in ('confirmed_pending_dispatch', 'prepare_dispatch'):
+        elif v_stage == 'awaiting_customer_full_payment':
+            awaiting_balance_count += 1
+            awaiting_balance_value += vendor_value
+        elif v_stage in ('update_dispatch_details', 'dispatch_awaited'):
             dispatch_pending_count += 1
             dispatch_pending_value += vendor_value
-        elif stage == 'delivered':
+        elif v_stage == 'delivered':
             delivered_count += 1
 
         # GMV: any order where the customer has paid (advance counts —
@@ -564,9 +584,10 @@ async def get_vendor_stats(vendor=Depends(get_current_vendor)):
             if ps in ('paid', 'advance_paid', 'balance_pending'):
                 total_business_value += vendor_value
 
-        # Top-products: count metres on orders that have reached at
-        # least "confirmed" (i.e. excludes cancelled + awaiting_confirm).
-        if stage in ('confirmed_pending_dispatch', 'prepare_dispatch', 'dispatched', 'delivered'):
+        # Top-products: any non-cancelled order that's progressed past
+        # the confirmation stage (excludes orders still awaiting vendor
+        # confirmation, which haven't been "sold" yet).
+        if v_stage in ('update_dispatch_details', 'dispatch_awaited', 'dispatched', 'delivered'):
             for it in my_items:
                 fid = it.get('fabric_id') or ''
                 if not fid:
@@ -592,7 +613,7 @@ async def get_vendor_stats(vendor=Depends(get_current_vendor)):
     total_orders = sum(
         1 for o in orders
         if any(
-            it.get('fabric_id') in vendor_fabric_ids or it.get('seller_id') == seller_id
+            it.get('fabric_id') in vendor_fabric_id_set or it.get('seller_id') == seller_id
             for it in (o.get('items') or [])
         )
     )
@@ -605,9 +626,11 @@ async def get_vendor_stats(vendor=Depends(get_current_vendor)):
         'approved_fabrics': approved_fabrics,
         'pending_fabrics': pending_fabrics,
         'rejected_fabrics': rejected_fabrics,
-        # Orders pipeline
+        # Orders pipeline (vendor-screen labels)
         'orders_pending_approval': pending_approval_count,
         'orders_pending_approval_value': round(pending_approval_value, 2),
+        'orders_awaiting_balance': awaiting_balance_count,
+        'orders_awaiting_balance_value': round(awaiting_balance_value, 2),
         'orders_dispatch_pending': dispatch_pending_count,
         'orders_dispatch_pending_value': round(dispatch_pending_value, 2),
         'orders_delivered': delivered_count,
