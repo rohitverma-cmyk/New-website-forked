@@ -38,6 +38,13 @@ Build a CMS-driven B2B fabric sourcing platform ("locofast.com v 2.0"). Core req
 
 ## Completed Features
 
+### Invoice Branding & Trade Name (Feb 2026)
+- Replaced legacy "LOCOFAST" text wordmark with embedded SVG brand logo on the top-left header of both Tax Invoice (`GET /api/orders/{id}/invoice`) and Proforma Invoice (`GET /api/orders/{id}/proforma-invoice`).
+- Logo asset: `/app/backend/assets/locofast-logo.svg` (rendered via svglib `svg2rlg` at PDF build time).
+- `_hydrate_customer_trade_name()` re-fetches the canonical customer record by email at invoice-generation time so the "Bill To" block prints the GST-registered trade name (`customer.company`) even on legacy orders whose snapshot stored an empty company. Contact name appears as `Attn:` below.
+- New backend deps: `svglib==1.6.0`, `lxml==6.1.1`, `cssselect2==0.9.0`, `tinycss2==1.5.1`, `webencodings==0.5.1`.
+- Tested: paid order `ORD-BGFIJQ` (`220475e5-fa34-40c5-ae1d-8738781996b1`) → invoice shows logo image + trade name "Locofast" with "Attn: Deepak wadhwa".
+
 ### Phase 1-7: Core Platform, Checkout, Lead Gen, Emails, SEO, Supplier Storefront, Reviews (All Complete)
 
 ### Phase 8: Unified Admin Seller Detail + Comprehensive Vendor Form (Complete - Feb 2026)

@@ -47,6 +47,33 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
+# Locofast brand logo (SVG) used on the top-left header of every PDF the
+# platform ships (tax invoice + proforma invoice). Resolved once at
+# import time; we re-parse on each render so per-PDF scaling can be
+# applied without mutating a shared cache.
+_LOGO_SVG_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'locofast-logo.svg')
+
+
+def _get_logo_drawing(target_height_mm: float = 11):
+    """Return the Locofast logo as a reportlab Drawing scaled to
+    `target_height_mm`. Returns None if the SVG is missing or svglib
+    cannot parse it (PDFs then fall back to the wordmark)."""
+    try:
+        from svglib.svglib import svg2rlg
+        d = svg2rlg(_LOGO_SVG_PATH)
+        if d is None or not d.height:
+            return None
+        target_pt = target_height_mm * mm
+        scale = target_pt / d.height
+        d.width = d.width * scale
+        d.height = d.height * scale
+        d.scale(scale, scale)
+        # Tight bounding box so the Drawing sits flush in table cells.
+        d.hAlign = 'LEFT'
+        return d
+    except Exception:  # noqa: BLE001 — never let logo issues break the PDF
+        return None
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -3974,6 +4001,40 @@ def number_to_words(num: float) -> str:
         return f"{rupees_words} {rupee_unit} and {_words_under_100(paise)} {paise_unit} Only"
     return f"{rupees_words} {rupee_unit} Only"
 
+async def _hydrate_customer_trade_name(order: dict) -> None:
+    """In-place: ensure `order['customer']['company']` is the customer's
+    GST-registered trade name. The order snapshot stores whatever the
+    customer typed at checkout, which is often blank — but the canonical
+    customer record (synced from the GST registry) holds the true trade
+    name. Re-fetch it by email so every invoice prints the registered
+    business name on the "Bill To" line."""
+    if db is None:
+        return
+    cust = order.get('customer') or {}
+    email = (cust.get('email') or '').strip().lower()
+    if not email:
+        return
+    try:
+        live = await db.customers.find_one(
+            {'email': email},
+            {'_id': 0, 'company': 1, 'gst_number': 1, 'gst_verified': 1}
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if not live:
+        return
+    live_company = (live.get('company') or '').strip()
+    snap_company = (cust.get('company') or '').strip()
+    if live_company and (not snap_company or live.get('gst_verified')):
+        # Prefer the canonical (GST-verified) trade name over the
+        # snapshot — the snapshot may pre-date verification.
+        cust['company'] = live_company
+    # Same for GSTIN — if the customer has since verified GST, surface it.
+    if (live.get('gst_number') or '').strip() and not (cust.get('gst_number') or '').strip():
+        cust['gst_number'] = live['gst_number']
+    order['customer'] = cust
+
+
 def generate_invoice_pdf(order: dict) -> io.BytesIO:
     """Generate a GST-compliant invoice PDF in Locofast brand style"""
     buffer = io.BytesIO()
@@ -4016,10 +4077,34 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         if pay_status == 'PAID' else
         f'<font color="#b45309" size="8"><b>● {pay_status}</b></font>'
     )
-    left_brand = (
-        f'<font color="{BRAND_BLUE}" size="20"><b>LOCOFAST</b></font><br/>'
-        f'<font color="#64748b" size="9">B2B Fabric Sourcing Platform</font>'
+    tagline_para = Paragraph(
+        '<font color="#64748b" size="9">B2B Fabric Sourcing Platform</font>',
+        ParagraphStyle('lb', parent=styles['Normal'], fontSize=10, leading=14)
     )
+    logo_drawing = _get_logo_drawing(target_height_mm=11)
+    if logo_drawing is not None:
+        # Stack the logo on top of the tagline so the brand mark replaces
+        # the legacy "LOCOFAST" wordmark on the top-left of every invoice.
+        left_cell = Table(
+            [[logo_drawing], [tagline_para]],
+            colWidths=[110*mm]
+        )
+        left_cell.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 2),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 0),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ]))
+    else:
+        # Fallback for environments without svglib — keep the wordmark.
+        left_brand = (
+            f'<font color="{BRAND_BLUE}" size="20"><b>LOCOFAST</b></font><br/>'
+            f'<font color="#64748b" size="9">B2B Fabric Sourcing Platform</font>'
+        )
+        left_cell = Paragraph(left_brand, ParagraphStyle('lb', parent=styles['Normal'], fontSize=10, leading=14))
     right_meta = (
         f'<font color="#64748b" size="8">INVOICE DATE</font><br/>'
         f'<font size="10"><b>{invoice_date}</b></font><br/>'
@@ -4029,7 +4114,7 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         f'<font size="10"><b>{pay_method}</b></font> &nbsp; {paid_badge}'
     )
     header_tbl = Table(
-        [[Paragraph(left_brand, ParagraphStyle('lb', parent=styles['Normal'], fontSize=10, leading=14)),
+        [[left_cell,
           Paragraph(right_meta, ParagraphStyle('rm', parent=styles['Normal'], fontSize=9, leading=13, alignment=TA_RIGHT))]],
         colWidths=[110*mm, 70*mm]
     )
@@ -4429,7 +4514,15 @@ async def get_invoice(order_id: str):
     # Only allow invoice for paid orders
     if order.get('payment_status') != 'paid':
         raise HTTPException(status_code=400, detail="Invoice available only for paid orders")
-    
+
+    # Resolve the customer's current GST trade name. The order snapshot's
+    # `customer.company` can be empty on legacy / pre-GST-verification
+    # orders — in those cases we look up the canonical customer record
+    # and patch the trade name into the snapshot so the tax invoice's
+    # "Bill To" prints the registered business name, not just the
+    # contact name.
+    await _hydrate_customer_trade_name(order)
+
     # Generate PDF
     try:
         pdf_buffer = generate_invoice_pdf(order)
@@ -4528,7 +4621,11 @@ def generate_pi_pdf(order: dict) -> io.BytesIO:
     small_style = ParagraphStyle('PISmall', parent=styles['Normal'], fontSize=7, leading=9)
     header_style = ParagraphStyle('PIHeader', parent=styles['Normal'], fontSize=9, leading=12, fontName='Helvetica-Bold', textColor=colors.HexColor('#1e3a5f'))
 
-    # Header
+    # Header — Locofast logo (top-left) + centered PROFORMA INVOICE title.
+    pi_logo = _get_logo_drawing(target_height_mm=11)
+    if pi_logo is not None:
+        elements.append(pi_logo)
+        elements.append(Spacer(1, 2*mm))
     elements.append(Paragraph("PROFORMA INVOICE", title_style))
     elements.append(Spacer(1, 2*mm))
 
@@ -4822,6 +4919,8 @@ async def get_proforma_invoice(order_id: str):
         raise HTTPException(status_code=404, detail="Order not found")
     if order.get('dispatch_country') != 'bangladesh':
         raise HTTPException(status_code=400, detail="Proforma Invoice only available for export orders")
+
+    await _hydrate_customer_trade_name(order)
 
     pdf_buffer = generate_pi_pdf(order)
     pi_num = order.get('pi_number', order_id).replace('/', '-')
