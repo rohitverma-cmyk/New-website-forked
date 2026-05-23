@@ -441,31 +441,43 @@ async def get_vendor_orders(
     orders = await db.orders.find(base_q, {'_id': 0}).sort('created_at', -1).to_list(500)
 
     # Filter items to only show vendor's fabrics OR vendor's seller_id (rfq path)
-    # Strip ALL customer PII from vendor view per platform rule:
-    #   - name, company, email, phone, GST are NEVER exposed to vendors
-    #   - only the rough shipping zone (city/state/pincode) is shown so the
-    #     vendor can plan packaging / freight. The full consignee label is
-    #     on the Shiprocket pickup waybill (managed by Locofast Ops).
+    # Customer PII redaction rules (privacy + lawful necessity):
+    #   - Stages BEFORE prepare_dispatch:
+    #         expose only city/state/pincode (no name, no address, no GST).
+    #   - Stage == prepare_dispatch (and beyond, once dispatched/delivered):
+    #         the supplier needs the legal consignee identity to draft the
+    #         tax invoice (Bill-To Locofast / Ship-To Customer). Expose
+    #         name, company, address, city/state/pincode, GSTIN.
+    #         PHONE & EMAIL stay redacted in all stages — vendor never
+    #         contacts the customer directly.
     from order_pipeline import compute_pipeline_stage, PIPELINE_LABELS
+    DISPATCH_STAGES = {"prepare_dispatch", "dispatched", "delivered"}
     for order in orders:
         order['items'] = [
             item for item in order.get('items', [])
             if item.get('fabric_id') in vendor_fabric_ids or item.get('seller_id') == seller_id
         ]
+        stage = compute_pipeline_stage(order)
         cust = order.get('customer') or {}
         if cust:
-            order['customer'] = {
+            base = {
                 'city': cust.get('city', ''),
                 'state': cust.get('state', ''),
                 'pincode': cust.get('pincode', ''),
-                # name / company / phone / email / gst_number intentionally OMITTED
             }
+            if stage in DISPATCH_STAGES:
+                base.update({
+                    'name': cust.get('name', ''),
+                    'company': cust.get('company', ''),
+                    'address': cust.get('address', ''),
+                    'gst_number': cust.get('gst_number', ''),
+                })
+            order['customer'] = base
         # Always expose source label so vendor UI can render the chip
         if not order.get('source'):
             order['source'] = 'inventory'
         # Read-time pipeline bucket — drives the new 6-tab vendor UI
         try:
-            stage = compute_pipeline_stage(order)
             order['pipeline_stage'] = stage
             order['pipeline_label'] = PIPELINE_LABELS.get(stage, stage)
         except Exception:
