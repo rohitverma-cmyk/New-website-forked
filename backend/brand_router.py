@@ -1853,6 +1853,21 @@ def _order_email_html(order, audience_line, cta_html=""):
     c = order.get("customer", {})
     addr_parts = [c.get("address", ""), c.get("city", ""), c.get("state", ""), c.get("pincode", "")]
     addr = ", ".join(p for p in addr_parts if p)
+    # GST tax-invoice CTA — surfaced on the placer + brand-admin email
+    # for any PAID order (samples included). The /api/orders/{id}/invoice
+    # endpoint already generates a GST-compliant PDF for samples and
+    # bulk alike; this just makes the link discoverable in inbox.
+    invoice_cta = ""
+    if (order.get("payment_status") or "").lower() == "paid":
+        from email_router import SITE_URL as _SITE_URL
+        invoice_cta = (
+            '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:6px;padding:18px;margin-top:14px;text-align:center;">'
+            f'<a href="{_SITE_URL}/api/orders/{order.get("id", "")}/invoice" '
+            'style="display:inline-block;background:#2563EB;color:#fff;text-decoration:none;padding:11px 26px;border-radius:6px;font-weight:600;font-size:13px;">'
+            'Download Tax Invoice (GST)</a>'
+            '<p style="margin:8px 0 0;font-size:11px;color:#64748b;">A GST-compliant invoice has been generated for this order.</p>'
+            '</div>'
+        )
     return f"""
       <div style="font-family:-apple-system,Segoe UI,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#0f172a;">
         <div style="background:#059669;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0;">
@@ -1880,6 +1895,7 @@ def _order_email_html(order, audience_line, cta_html=""):
             <strong>Dispatch commitments</strong><br>
             {"• Samples dispatched in 24–48 hours" if order.get("order_type") == "sample" else "• Bulk: 24–48 hours for packaging &amp; dispatch (in-stock items)<br>• Manufactured-to-order items typically dispatch within ~30 days of confirmation"}
           </div>
+          {invoice_cta}
           {cta_html}
         </div>
       </div>
