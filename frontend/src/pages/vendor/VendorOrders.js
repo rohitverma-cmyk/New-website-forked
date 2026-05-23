@@ -385,27 +385,19 @@ const VendorOrders = () => {
                 </div>
 
 
-                {/* Shipping */}
+                {/* Shipping zone (consignee identity is redacted — Locofast
+                    Ops handles delivery via Shiprocket end-to-end) */}
                 <div>
-                  <h3 className="font-medium text-gray-900 mb-3">Ship To</h3>
+                  <h3 className="font-medium text-gray-900 mb-3">Ship-To Zone</h3>
                   <div className="bg-gray-50 rounded-lg p-4">
-                    <p className="font-medium">{selectedOrder.customer?.name}</p>
-                    {selectedOrder.customer?.company && (
-                      <p className="text-gray-600">{selectedOrder.customer.company}</p>
-                    )}
-                    <div className="flex items-start gap-2 mt-2 text-sm text-gray-600">
-                      <MapPin size={16} className="mt-0.5 flex-shrink-0" />
-                      <span>
-                        {selectedOrder.customer?.address}, {selectedOrder.customer?.city}, {selectedOrder.customer?.state} {selectedOrder.customer?.pincode}
+                    <div className="flex items-start gap-2 text-sm text-gray-700">
+                      <MapPin size={16} className="mt-0.5 flex-shrink-0 text-gray-400" />
+                      <span data-testid="vendor-ship-zone">
+                        {selectedOrder.customer?.city || "—"}{selectedOrder.customer?.state ? `, ${selectedOrder.customer.state}` : ""} {selectedOrder.customer?.pincode || ""}
                       </span>
                     </div>
-                    {selectedOrder.customer?.gst_number && (
-                      <p className="text-xs text-gray-700 mt-2" data-testid="vendor-customer-gstin">
-                        GSTIN: <span className="font-mono font-medium">{selectedOrder.customer.gst_number}</span>
-                      </p>
-                    )}
                     <p className="text-[11px] text-gray-400 mt-2 italic" data-testid="vendor-pii-hidden-note">
-                      Customer contact details are managed by Locofast Ops. Use this address only for dispatch.
+                      Full consignee details (name · contact · GSTIN) are on the Shiprocket pickup label. Direct customer queries to Locofast Ops.
                     </p>
                   </div>
                 </div>
@@ -719,14 +711,13 @@ const PrepareDispatchBanner = ({ order, onUploaded }) => {
           <p className="text-gray-600 mt-1">Plot 60, Sector 32, Gurugram 122001, Haryana</p>
         </div>
         <div className="bg-white border border-indigo-200 rounded p-2.5 text-[11px] leading-relaxed" data-testid="vendor-shipto-customer">
-          <p className="font-semibold text-indigo-900 mb-1">Ship To (Consignee)</p>
-          <p className="text-gray-800">{order.customer?.name}{order.customer?.company ? ` · ${order.customer.company}` : ""}</p>
-          <p className="text-gray-600">
-            {order.customer?.address}, {order.customer?.city}, {order.customer?.state} {order.customer?.pincode}
+          <p className="font-semibold text-indigo-900 mb-1">Ship-To Zone</p>
+          <p className="text-gray-700">
+            {order.customer?.city || "—"}{order.customer?.state ? `, ${order.customer.state}` : ""} {order.customer?.pincode || ""}
           </p>
-          {order.customer?.gst_number && (
-            <p className="text-gray-700 mt-1">GSTIN: <span className="font-mono">{order.customer.gst_number}</span></p>
-          )}
+          <p className="text-[10px] text-gray-400 mt-1 italic">
+            Full consignee address + GSTIN are on the Shiprocket pickup label.
+          </p>
         </div>
       </div>
 

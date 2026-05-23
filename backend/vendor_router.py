@@ -441,10 +441,11 @@ async def get_vendor_orders(
     orders = await db.orders.find(base_q, {'_id': 0}).sort('created_at', -1).to_list(500)
 
     # Filter items to only show vendor's fabrics OR vendor's seller_id (rfq path)
-    # Also strip customer PII (phone/email) — vendors only need name + address
-    # for dispatch. Logistics is handled by Shiprocket end-to-end so no need
-    # for direct contact channels. GSTIN is preserved because it's required
-    # on the supplier's tax invoice (Bill-To party identification).
+    # Strip ALL customer PII from vendor view per platform rule:
+    #   - name, company, email, phone, GST are NEVER exposed to vendors
+    #   - only the rough shipping zone (city/state/pincode) is shown so the
+    #     vendor can plan packaging / freight. The full consignee label is
+    #     on the Shiprocket pickup waybill (managed by Locofast Ops).
     from order_pipeline import compute_pipeline_stage, PIPELINE_LABELS
     for order in orders:
         order['items'] = [
@@ -454,14 +455,10 @@ async def get_vendor_orders(
         cust = order.get('customer') or {}
         if cust:
             order['customer'] = {
-                'name': cust.get('name', ''),
-                'company': cust.get('company', ''),
-                'address': cust.get('address', ''),
                 'city': cust.get('city', ''),
                 'state': cust.get('state', ''),
                 'pincode': cust.get('pincode', ''),
-                'gst_number': cust.get('gst_number', ''),
-                # phone/email intentionally OMITTED
+                # name / company / phone / email / gst_number intentionally OMITTED
             }
         # Always expose source label so vendor UI can render the chip
         if not order.get('source'):

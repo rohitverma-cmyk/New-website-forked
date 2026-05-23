@@ -487,16 +487,14 @@ def get_seller_order_notification_email(order: dict, items: list, seller: dict) 
             </table>
         </div>
         
-        <!-- Shipping To (NO phone number) -->
+        <!-- Shipping zone (Ship-To details redacted — Locofast ops handles
+             consignee identity end-to-end via Shiprocket. Vendor only needs
+             a region for routing decisions.) -->
         <div style="background: #f8fafc; padding: 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
-            <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #475569;">Ship To</h3>
+            <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #475569;">Ship-To Zone</h3>
             <p style="margin: 0; color: #1e293b;">
-                <strong>{customer.get('name', '')}</strong><br>
-                {f"{customer.get('company', '')}<br>" if customer.get('company') else ''}
-                {customer.get('address', '')}<br>
-                {customer.get('city', '')}, {customer.get('state', '')} {customer.get('pincode', '')}<br>
-                <br>
-                <strong>Email:</strong> {customer.get('email', '')}
+                <strong>{customer.get('city', '')}, {customer.get('state', '')} {customer.get('pincode', '')}</strong><br>
+                <span style="color:#64748b; font-size:13px;">Full consignee details (name / contact / GSTIN) are on the Shiprocket pickup label. Address customer queries to Locofast Ops only.</span>
             </p>
         </div>
         
