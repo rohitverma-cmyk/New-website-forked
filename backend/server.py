@@ -616,6 +616,10 @@ app.include_router(customer_router.router)
 import wishlist_router
 app.include_router(wishlist_router.router)
 
+import agent_assistance_router
+agent_assistance_router.init(db)
+app.include_router(agent_assistance_router.router)
+
 import agent_router
 agent_router.set_db(db)
 app.include_router(agent_router.router)
@@ -802,6 +806,15 @@ async def startup_create_default_admin():
         asyncio.create_task(start_autocancel_poller(db))
     except Exception as e:
         logger.error(f"Auto-cancel poller failed to start: {e}")
+
+    # Checkout drop-off notifier — emails Locofast agents whenever a
+    # customer reaches the address/payment step but doesn't pay within
+    # 15 min. See checkout_dropoff_notifier.py for the full spec.
+    try:
+        from checkout_dropoff_notifier import start_dropoff_poller
+        asyncio.create_task(start_dropoff_poller(db))
+    except Exception as e:
+        logger.error(f"Checkout drop-off poller failed to start: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
