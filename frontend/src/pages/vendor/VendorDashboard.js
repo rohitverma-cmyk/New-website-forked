@@ -1,203 +1,312 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Layers, Package, ShoppingCart, Plus, TrendingUp } from "lucide-react";
+import { Clock, Truck, IndianRupee, Boxes, FileText, ArrowRight, Package, Loader2, TrendingUp } from "lucide-react";
 import VendorLayout from "../../components/vendor/VendorLayout";
-import { getVendorStats, getVendorFabrics, getVendorOrders } from "../../lib/api";
+import { getVendorStats, getVendorOrders } from "../../lib/api";
 import { useVendorAuth } from "../../context/VendorAuthContext";
 
+// ── Helpers ────────────────────────────────────────────────────────
+const fmtINR = (n) => {
+  const v = Number(n || 0);
+  if (v >= 1e7) return `₹${(v / 1e7).toFixed(2)} Cr`;
+  if (v >= 1e5) return `₹${(v / 1e5).toFixed(2)} L`;
+  return `₹${v.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+};
+const fmtMeters = (n) => `${Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })} m`;
+
+const stageMeta = {
+  awaiting_confirm: { label: "Waiting to be Confirmed", tone: "bg-amber-100 text-amber-800" },
+  confirmed_pending_dispatch: { label: "Confirmed · Pending Dispatch", tone: "bg-blue-100 text-blue-800" },
+  prepare_dispatch: { label: "Prepare Dispatch", tone: "bg-indigo-100 text-indigo-800" },
+  dispatched: { label: "Dispatched", tone: "bg-purple-100 text-purple-800" },
+  delivered: { label: "Delivered", tone: "bg-emerald-100 text-emerald-800" },
+  cancelled: { label: "Cancelled", tone: "bg-red-100 text-red-700" },
+};
+
+// ── Hero stat tile ────────────────────────────────────────────────
+const HeroStat = ({ icon: Icon, label, value, sub, tone, to, accent, testid }) => {
+  const content = (
+    <div
+      className={`relative overflow-hidden rounded-2xl border ${accent} p-6 transition-all hover:shadow-md hover:-translate-y-0.5`}
+      data-testid={testid}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">{label}</p>
+          <p className="text-4xl font-bold mt-2 text-gray-900 tabular-nums">{value}</p>
+          {sub && <p className="text-xs text-gray-500 mt-1.5">{sub}</p>}
+        </div>
+        <div className={`w-11 h-11 rounded-xl ${tone} flex items-center justify-center shrink-0`}>
+          <Icon size={20} />
+        </div>
+      </div>
+      {to && (
+        <div className="mt-4 flex items-center gap-1.5 text-xs font-medium text-gray-700 group-hover:text-gray-900">
+          View orders <ArrowRight size={12} />
+        </div>
+      )}
+    </div>
+  );
+  return to ? (
+    <Link to={to} className="group block">{content}</Link>
+  ) : content;
+};
+
+// ── Action-orders row ─────────────────────────────────────────────
+const OrderRow = ({ order, ctaLabel, ctaTo, vendorQty, vendorValue }) => {
+  const stage = order.pipeline_stage || "awaiting_confirm";
+  const meta = stageMeta[stage] || stageMeta.awaiting_confirm;
+  return (
+    <div className="px-5 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors" data-testid={`vendor-dash-order-${order.id}`}>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            to="/vendor/orders"
+            className="font-semibold text-blue-600 hover:underline tabular-nums"
+            data-testid={`vendor-dash-order-link-${order.id}`}
+          >
+            {order.order_number}
+          </Link>
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${meta.tone}`}>{meta.label}</span>
+          {(order.source || "inventory") === "rfq" && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700">RFQ</span>
+          )}
+        </div>
+        <p className="text-sm text-gray-600 mt-1 truncate">
+          {(order.items || []).slice(0, 2).map((it) => it.fabric_name).filter(Boolean).join(" · ") || "Order items"}
+        </p>
+        <p className="text-[11px] text-gray-400 mt-0.5">
+          {fmtMeters(vendorQty)} · {fmtINR(vendorValue)}
+        </p>
+      </div>
+      <Link
+        to={ctaTo}
+        className="shrink-0 px-3 py-1.5 text-xs font-medium bg-gray-900 text-white rounded-lg hover:bg-gray-800 inline-flex items-center gap-1.5"
+        data-testid={`vendor-dash-cta-${order.id}`}
+      >
+        {ctaLabel} <ArrowRight size={12} />
+      </Link>
+    </div>
+  );
+};
+
+// ── Action-orders panel ───────────────────────────────────────────
+const ActionPanel = ({ title, hint, orders, emptyMsg, ctaLabel, ctaTo, accent, count, value, testid }) => (
+  <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden" data-testid={testid}>
+    <div className={`px-5 py-4 border-b border-gray-100 flex items-center justify-between ${accent}`}>
+      <div className="min-w-0">
+        <h2 className="font-semibold text-gray-900 flex items-center gap-2">{title}</h2>
+        {hint && <p className="text-xs text-gray-500 mt-0.5">{hint}</p>}
+      </div>
+      <div className="text-right shrink-0">
+        <p className="text-2xl font-bold text-gray-900 tabular-nums">{count}</p>
+        <p className="text-[11px] text-gray-500">{fmtINR(value)}</p>
+      </div>
+    </div>
+    <div className="divide-y divide-gray-100 max-h-[360px] overflow-y-auto">
+      {orders.length === 0 ? (
+        <div className="px-5 py-10 text-center text-sm text-gray-500">{emptyMsg}</div>
+      ) : (
+        orders.map((o) => (
+          <OrderRow key={o.id} order={o} ctaLabel={ctaLabel} ctaTo={ctaTo} vendorQty={o.__vendor_qty} vendorValue={o.__vendor_value} />
+        ))
+      )}
+    </div>
+    {orders.length > 0 && (
+      <Link to={ctaTo} className="block px-5 py-3 text-center text-xs font-medium text-gray-700 hover:text-gray-900 border-t border-gray-100">
+        Open Orders inbox →
+      </Link>
+    )}
+  </div>
+);
+
+// ── Top sellers strip ─────────────────────────────────────────────
+const TopProducts = ({ products }) => (
+  <div className="bg-white rounded-2xl border border-gray-200" data-testid="vendor-dash-top-products">
+    <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+      <div>
+        <h2 className="font-semibold text-gray-900">Top selling products</h2>
+        <p className="text-xs text-gray-500 mt-0.5">Highest dispatched metres on Locofast</p>
+      </div>
+      <TrendingUp className="text-gray-300" size={18} />
+    </div>
+    {products.length === 0 ? (
+      <div className="px-5 py-8 text-center text-sm text-gray-500">
+        <Package className="w-10 h-10 text-gray-200 mx-auto mb-2" />
+        No products dispatched yet
+      </div>
+    ) : (
+      <div className="divide-y divide-gray-100">
+        {products.map((p, i) => (
+          <div key={p.fabric_id} className="px-5 py-3 flex items-center gap-3" data-testid={`vendor-top-product-${p.fabric_id}`}>
+            <span className="text-xs font-semibold text-gray-400 w-5 tabular-nums">#{i + 1}</span>
+            {p.image_url ? (
+              <img src={p.image_url} alt="" className="w-9 h-9 rounded-md object-cover" />
+            ) : (
+              <div className="w-9 h-9 rounded-md bg-gray-100 flex items-center justify-center"><Package size={14} className="text-gray-400" /></div>
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-gray-900 truncate">{p.fabric_name || p.fabric_code || "—"}</p>
+              <p className="text-[11px] text-gray-500 truncate">{p.category_name || ""}{p.fabric_code ? ` · ${p.fabric_code}` : ""}</p>
+            </div>
+            <div className="text-right shrink-0">
+              <p className="text-sm font-semibold text-gray-900 tabular-nums">{fmtMeters(p.quantity_sold)}</p>
+              <p className="text-[11px] text-gray-500">{p.orders_count} order{p.orders_count === 1 ? "" : "s"}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>
+);
+
+// ── Page ──────────────────────────────────────────────────────────
 const VendorDashboard = () => {
-  const { vendor, getToken } = useVendorAuth();
+  const { vendor } = useVendorAuth();
   const [stats, setStats] = useState(null);
-  const [recentFabrics, setRecentFabrics] = useState([]);
-  const [recentOrders, setRecentOrders] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    (async () => {
+      try {
+        const [statsRes, ordersRes] = await Promise.all([getVendorStats(), getVendorOrders()]);
+        if (cancelled) return;
+        setStats(statsRes.data);
+        setOrders(ordersRes.data || []);
+      } catch (e) {
+        // Layout still renders zero-state safely; no toast spam.
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
-  const fetchData = async () => {
-    try {
-      // Set auth header for vendor requests
-      const token = getToken();
-      const config = { headers: { Authorization: `Bearer ${token}` } };
-      
-      const [statsRes, fabricsRes, ordersRes] = await Promise.all([
-        getVendorStats(),
-        getVendorFabrics(),
-        getVendorOrders()
-      ]);
-      
-      setStats(statsRes.data);
-      setRecentFabrics(fabricsRes.data.slice(0, 5));
-      setRecentOrders(ordersRes.data.slice(0, 5));
-    } catch (err) {
-      console.error("Failed to load dashboard data", err);
+  // Bucket + annotate orders for the two action panels.
+  const { pendingApproval, dispatchPending } = useMemo(() => {
+    const enrich = (o) => {
+      const qty = (o.items || []).reduce((s, it) => s + Number(it.quantity || 0), 0);
+      const val = (o.items || []).reduce((s, it) => s + Number(it.quantity || 0) * Number(it.price_per_meter || 0), 0);
+      return { ...o, __vendor_qty: qty, __vendor_value: val };
+    };
+    const pa = [];
+    const dp = [];
+    for (const raw of orders) {
+      const o = enrich(raw);
+      const s = o.pipeline_stage;
+      if (s === "awaiting_confirm") pa.push(o);
+      else if (s === "confirmed_pending_dispatch" || s === "prepare_dispatch") dp.push(o);
     }
-    setLoading(false);
-  };
+    // Most recent first (orders endpoint already sorts by created_at desc, but keep stable).
+    return { pendingApproval: pa.slice(0, 8), dispatchPending: dp.slice(0, 8) };
+  }, [orders]);
 
   return (
     <VendorLayout>
-      <div className="p-8" data-testid="vendor-dashboard">
+      <div className="p-8 max-w-[1500px] mx-auto" data-testid="vendor-dashboard">
         {/* Welcome */}
         <div className="mb-8">
           <h1 className="text-2xl font-semibold text-gray-900">
             Welcome, {vendor?.name || "Vendor"}
           </h1>
           <p className="text-gray-500 mt-1">
-            {vendor?.company_name} • {stats?.vendor_code || ""}
+            {vendor?.company_name || ""}{stats?.vendor_code ? ` • ${stats.vendor_code}` : ""}
           </p>
         </div>
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="bg-white rounded-xl p-6 border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-500">Total Fabrics</p>
-                <p className="text-3xl font-semibold mt-1">{stats?.total_fabrics || 0}</p>
-              </div>
-              <div className="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
-                <Layers className="w-6 h-6 text-blue-600" />
-              </div>
-            </div>
-          </div>
-          
-          <div className="bg-white rounded-xl p-6 border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-500">Approved (Live)</p>
-                <p className="text-3xl font-semibold mt-1 text-emerald-600">{stats?.approved_fabrics || 0}</p>
-              </div>
-              <div className="w-12 h-12 bg-emerald-100 rounded-xl flex items-center justify-center">
-                <Package className="w-6 h-6 text-emerald-600" />
-              </div>
-            </div>
-          </div>
-          
-          <div className="bg-white rounded-xl p-6 border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-500">Pending Approval</p>
-                <p className="text-3xl font-semibold mt-1 text-yellow-600">{stats?.pending_fabrics || 0}</p>
-              </div>
-              <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
-                <TrendingUp className="w-6 h-6 text-yellow-600" />
-              </div>
-            </div>
-          </div>
-          
-          <div className="bg-white rounded-xl p-6 border border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm text-gray-500">Total Enquiries</p>
-                <p className="text-3xl font-semibold mt-1">{stats?.total_enquiries || 0}</p>
-              </div>
-              <div className="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
-                <ShoppingCart className="w-6 h-6 text-purple-600" />
-              </div>
-            </div>
-          </div>
+        {/* Hero stats — orders-first */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
+          <HeroStat
+            icon={Clock}
+            label="Orders pending approval"
+            value={loading ? "…" : (stats?.orders_pending_approval ?? 0)}
+            sub={loading ? " " : `${fmtINR(stats?.orders_pending_approval_value)} to confirm`}
+            tone="bg-amber-100 text-amber-700"
+            accent="border-amber-200 bg-gradient-to-br from-amber-50 to-white"
+            to="/vendor/orders"
+            testid="vendor-dash-stat-pending"
+          />
+          <HeroStat
+            icon={Truck}
+            label="Dispatch pending"
+            value={loading ? "…" : (stats?.orders_dispatch_pending ?? 0)}
+            sub={loading ? " " : `${fmtINR(stats?.orders_dispatch_pending_value)} in pipeline`}
+            tone="bg-indigo-100 text-indigo-700"
+            accent="border-indigo-200 bg-gradient-to-br from-indigo-50 to-white"
+            to="/vendor/orders"
+            testid="vendor-dash-stat-dispatch"
+          />
+          <HeroStat
+            icon={IndianRupee}
+            label="Business value generated"
+            value={loading ? "…" : fmtINR(stats?.total_business_value)}
+            sub={loading ? " " : `${stats?.orders_delivered ?? 0} delivered · ${stats?.total_orders ?? 0} total orders`}
+            tone="bg-emerald-100 text-emerald-700"
+            accent="border-emerald-200 bg-gradient-to-br from-emerald-50 to-white"
+            testid="vendor-dash-stat-gmv"
+          />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Recent Fabrics */}
-          <div className="bg-white rounded-xl border border-gray-200">
-            <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="font-semibold">Recent Fabrics</h2>
-              <Link
-                to="/vendor/inventory"
-                className="text-sm text-emerald-600 hover:underline"
-              >
-                View all
-              </Link>
-            </div>
-            <div className="divide-y divide-gray-100">
-              {loading ? (
-                <div className="p-8 text-center text-gray-500">Loading...</div>
-              ) : recentFabrics.length === 0 ? (
-                <div className="p-8 text-center">
-                  <Package className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                  <p className="text-gray-500">No fabrics yet</p>
-                  <Link
-                    to="/vendor/inventory"
-                    className="inline-flex items-center gap-2 text-emerald-600 hover:underline mt-2"
-                  >
-                    <Plus size={16} />
-                    Add your first fabric
-                  </Link>
-                </div>
-              ) : (
-                recentFabrics.map((fabric) => (
-                  <div key={fabric.id} className="p-4 flex items-center gap-4">
-                    <img
-                      src={fabric.images?.[0] || "https://images.unsplash.com/photo-1558171813-4c088753af8f?w=100"}
-                      alt={fabric.name}
-                      className="w-12 h-12 rounded-lg object-cover"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-900 truncate">{fabric.name}</p>
-                      <p className="text-sm text-gray-500">{fabric.category_name}</p>
-                    </div>
-                    <span className={`px-2 py-1 text-xs rounded-full ${
-                      fabric.status === "approved" ? "bg-emerald-100 text-emerald-700" :
-                      fabric.status === "pending" ? "bg-yellow-100 text-yellow-700" :
-                      fabric.status === "rejected" ? "bg-red-100 text-red-700" :
-                      "bg-gray-100 text-gray-600"
-                    }`}>
-                      {fabric.status === "approved" ? "Live" :
-                       fabric.status === "pending" ? "Pending" :
-                       fabric.status === "rejected" ? "Rejected" : "Draft"}
-                    </span>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* Recent Orders */}
-          <div className="bg-white rounded-xl border border-gray-200">
-            <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="font-semibold">Recent Orders</h2>
-              <Link
-                to="/vendor/orders"
-                className="text-sm text-emerald-600 hover:underline"
-              >
-                View all
-              </Link>
-            </div>
-            <div className="divide-y divide-gray-100">
-              {loading ? (
-                <div className="p-8 text-center text-gray-500">Loading...</div>
-              ) : recentOrders.length === 0 ? (
-                <div className="p-8 text-center">
-                  <ShoppingCart className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                  <p className="text-gray-500">No orders yet</p>
-                  <p className="text-sm text-gray-400 mt-1">Orders will appear here when customers place them</p>
-                </div>
-              ) : (
-                recentOrders.map((order) => (
-                  <div key={order.id} className="p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="font-medium text-blue-600">{order.order_number}</p>
-                      <span className={`px-2 py-1 text-xs rounded-full ${
-                        order.status === "confirmed" ? "bg-emerald-100 text-emerald-700" :
-                        order.status === "shipped" ? "bg-purple-100 text-purple-700" :
-                        "bg-yellow-100 text-yellow-700"
-                      }`}>
-                        {order.status}
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-600">
-                      {order.items?.reduce((sum, item) => sum + item.quantity, 0) || 0}m total
-                    </p>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
+        {/* Action panels — the meat of the dashboard */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          <ActionPanel
+            testid="vendor-dash-panel-pending"
+            title={<><Clock size={16} className="text-amber-600" /> Orders pending approval</>}
+            hint="Mark goods ready to confirm these orders"
+            orders={pendingApproval}
+            emptyMsg={loading ? "Loading…" : "Nothing waiting on you. Nice."}
+            ctaLabel="Mark Ready"
+            ctaTo="/vendor/orders"
+            accent="bg-amber-50/50"
+            count={stats?.orders_pending_approval ?? 0}
+            value={stats?.orders_pending_approval_value ?? 0}
+          />
+          <ActionPanel
+            testid="vendor-dash-panel-dispatch"
+            title={<><FileText size={16} className="text-indigo-600" /> Dispatch pending</>}
+            hint="Upload tax invoice to release to Shiprocket"
+            orders={dispatchPending}
+            emptyMsg={loading ? "Loading…" : "No dispatch tasks pending."}
+            ctaLabel="Open"
+            ctaTo="/vendor/orders"
+            accent="bg-indigo-50/50"
+            count={stats?.orders_dispatch_pending ?? 0}
+            value={stats?.orders_dispatch_pending_value ?? 0}
+          />
         </div>
+
+        {/* Bottom strip: top products (compact) */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2">
+            <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl border border-gray-200 p-6 h-full flex flex-col justify-between" data-testid="vendor-dash-cta-block">
+              <div>
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2"><Boxes size={16} className="text-gray-600" /> Keep your catalog fresh</h3>
+                <p className="text-sm text-gray-600 mt-1.5 max-w-xl">
+                  Approved fabrics are visible to brand buyers right now. Add new variants or update stock to keep your conversion high.
+                </p>
+              </div>
+              <div className="mt-5 flex flex-wrap items-center gap-4">
+                <Link to="/vendor/inventory" className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 inline-flex items-center gap-1.5" data-testid="vendor-dash-inventory-cta">
+                  Manage inventory <ArrowRight size={14} />
+                </Link>
+                <span className="text-xs text-gray-500">
+                  <span className="font-semibold text-emerald-700">{stats?.approved_fabrics ?? 0}</span> live ·
+                  <span className="font-semibold text-amber-700 ml-1">{stats?.pending_fabrics ?? 0}</span> pending ·
+                  <span className="font-semibold text-gray-700 ml-1">{stats?.total_fabrics ?? 0}</span> total
+                </span>
+              </div>
+            </div>
+          </div>
+          <TopProducts products={stats?.top_products || []} />
+        </div>
+
+        {loading && (
+          <div className="fixed bottom-6 right-6 bg-white border border-gray-200 shadow-md rounded-full px-3 py-2 text-xs text-gray-600 flex items-center gap-2" data-testid="vendor-dash-loading">
+            <Loader2 size={12} className="animate-spin" /> Refreshing
+          </div>
+        )}
       </div>
     </VendorLayout>
   );

@@ -487,29 +487,137 @@ async def get_vendor_orders(
 
 @router.get("/stats")
 async def get_vendor_stats(vendor=Depends(get_current_vendor)):
-    """Get vendor statistics"""
-    total_fabrics = await db.fabrics.count_documents({'seller_id': vendor['id']})
-    approved_fabrics = await db.fabrics.count_documents({'seller_id': vendor['id'], 'status': 'approved'})
-    pending_fabrics = await db.fabrics.count_documents({'seller_id': vendor['id'], 'status': 'pending'})
-    rejected_fabrics = await db.fabrics.count_documents({'seller_id': vendor['id'], 'status': 'rejected'})
-    
-    # Get vendor's fabric IDs
+    """Vendor dashboard stats — order-pipeline first.
+
+    Returns:
+      - Inventory counts (legacy, still used by tooltips)
+      - Orders-focused metrics: pending approval, dispatch pending,
+        delivered, total business value (GMV) generated through Locofast
+      - Top 5 selling products (by metres shipped) restricted to the
+        vendor's own items
+    """
+    from order_pipeline import compute_pipeline_stage
+
     vendor_fabric_ids = await db.fabrics.distinct('id', {'seller_id': vendor['id']})
-    
-    # Count orders with vendor's fabrics
-    total_orders = await db.orders.count_documents({'items.fabric_id': {'$in': vendor_fabric_ids}})
-    
-    # Count enquiries
+    seller_id = vendor['id']
+
+    total_fabrics = await db.fabrics.count_documents({'seller_id': seller_id})
+    approved_fabrics = await db.fabrics.count_documents({'seller_id': seller_id, 'status': 'approved'})
+    pending_fabrics = await db.fabrics.count_documents({'seller_id': seller_id, 'status': 'pending'})
+    rejected_fabrics = await db.fabrics.count_documents({'seller_id': seller_id, 'status': 'rejected'})
+
+    # Pull every order touching this vendor (same filter as /vendor/orders)
+    base_q = {
+        '$or': [
+            {'items.fabric_id': {'$in': vendor_fabric_ids}},
+            {'items.seller_id': seller_id},
+        ],
+        'is_parent_order': {'$ne': True},
+    }
+    orders = await db.orders.find(
+        base_q,
+        {'_id': 0, 'status': 1, 'payment_status': 1, 'items': 1,
+         'goods_ready_at': 1, 'is_provisional': 1, 'vendor_invoices': 1,
+         'eway_bill_no': 1, 'shiprocket_shipments': 1,
+         'shiprocket_order_id': 1, 'shiprocket_waybill_no': 1,
+         'actual_total': 1, 'total': 1}
+    ).to_list(5000)
+
+    pending_approval_count = 0
+    pending_approval_value = 0.0
+    dispatch_pending_count = 0
+    dispatch_pending_value = 0.0
+    delivered_count = 0
+    total_business_value = 0.0  # GMV across paid/delivered orders
+
+    # Aggregate top-selling products by metres (vendor's items only)
+    fabric_qty: dict[str, dict] = {}
+
+    for o in orders:
+        # Filter items to this vendor only — value calcs reflect what
+        # the vendor actually supplies on the order.
+        my_items = [
+            it for it in (o.get('items') or [])
+            if it.get('fabric_id') in vendor_fabric_ids or it.get('seller_id') == seller_id
+        ]
+        if not my_items:
+            continue
+        vendor_value = sum(
+            float(it.get('quantity') or 0) * float(it.get('price_per_meter') or 0)
+            for it in my_items
+        )
+
+        stage = compute_pipeline_stage(o)
+        if stage == 'awaiting_confirm':
+            pending_approval_count += 1
+            pending_approval_value += vendor_value
+        elif stage in ('confirmed_pending_dispatch', 'prepare_dispatch'):
+            dispatch_pending_count += 1
+            dispatch_pending_value += vendor_value
+        elif stage == 'delivered':
+            delivered_count += 1
+
+        # GMV: any order where the customer has paid (advance counts —
+        # the order has commercial substance) and isn't cancelled.
+        if (o.get('status') or '').lower() != 'cancelled':
+            ps = (o.get('payment_status') or '').lower()
+            if ps in ('paid', 'advance_paid', 'balance_pending'):
+                total_business_value += vendor_value
+
+        # Top-products: count metres on orders that have reached at
+        # least "confirmed" (i.e. excludes cancelled + awaiting_confirm).
+        if stage in ('confirmed_pending_dispatch', 'prepare_dispatch', 'dispatched', 'delivered'):
+            for it in my_items:
+                fid = it.get('fabric_id') or ''
+                if not fid:
+                    continue
+                bucket = fabric_qty.setdefault(fid, {
+                    'fabric_id': fid,
+                    'fabric_name': it.get('fabric_name') or '',
+                    'fabric_code': it.get('fabric_code') or '',
+                    'category_name': it.get('category_name') or '',
+                    'image_url': it.get('image_url') or '',
+                    'quantity_sold': 0.0,
+                    'orders_count': 0,
+                })
+                bucket['quantity_sold'] += float(it.get('quantity') or 0)
+                bucket['orders_count'] += 1
+
+    top_products = sorted(
+        fabric_qty.values(),
+        key=lambda r: r['quantity_sold'],
+        reverse=True
+    )[:5]
+
+    total_orders = sum(
+        1 for o in orders
+        if any(
+            it.get('fabric_id') in vendor_fabric_ids or it.get('seller_id') == seller_id
+            for it in (o.get('items') or [])
+        )
+    )
+
     total_enquiries = await db.enquiries.count_documents({'fabric_id': {'$in': vendor_fabric_ids}})
-    
+
     return {
+        # Inventory
         'total_fabrics': total_fabrics,
         'approved_fabrics': approved_fabrics,
         'pending_fabrics': pending_fabrics,
         'rejected_fabrics': rejected_fabrics,
+        # Orders pipeline
+        'orders_pending_approval': pending_approval_count,
+        'orders_pending_approval_value': round(pending_approval_value, 2),
+        'orders_dispatch_pending': dispatch_pending_count,
+        'orders_dispatch_pending_value': round(dispatch_pending_value, 2),
+        'orders_delivered': delivered_count,
+        'total_business_value': round(total_business_value, 2),
+        # Top sellers
+        'top_products': top_products,
+        # Legacy
         'total_orders': total_orders,
         'total_enquiries': total_enquiries,
-        'vendor_code': vendor.get('seller_code', '')
+        'vendor_code': vendor.get('seller_code', ''),
     }
 
 @router.get("/categories")
