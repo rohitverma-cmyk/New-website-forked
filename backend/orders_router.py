@@ -4018,11 +4018,12 @@ def number_to_words(num: float) -> str:
 
 async def _hydrate_customer_trade_name(order: dict) -> None:
     """In-place: ensure `order['customer']['company']` is the customer's
-    GST-registered trade name. The order snapshot stores whatever the
-    customer typed at checkout, which is often blank — but the canonical
-    customer record (synced from the GST registry) holds the true trade
-    name. Re-fetch it by email so every invoice prints the registered
-    business name on the "Bill To" line."""
+    GST-registered trade name and `order['customer']['gst_number']` is
+    their canonical GSTIN. The order snapshot stores whatever the
+    customer typed at checkout (often blank); the live `customers`
+    document — auto-filled from the GST registry — holds the truth.
+    Note the field-name mismatch: the live doc uses `gstin`, the order
+    snapshot uses `gst_number`."""
     if db is None:
         return
     cust = order.get('customer') or {}
@@ -4032,7 +4033,7 @@ async def _hydrate_customer_trade_name(order: dict) -> None:
     try:
         live = await db.customers.find_one(
             {'email': email},
-            {'_id': 0, 'company': 1, 'gst_number': 1, 'gst_verified': 1}
+            {'_id': 0, 'company': 1, 'gstin': 1, 'gst_number': 1, 'gst_verified': 1, 'name': 1, 'phone': 1}
         )
     except Exception:  # noqa: BLE001
         return
@@ -4044,9 +4045,11 @@ async def _hydrate_customer_trade_name(order: dict) -> None:
         # Prefer the canonical (GST-verified) trade name over the
         # snapshot — the snapshot may pre-date verification.
         cust['company'] = live_company
-    # Same for GSTIN — if the customer has since verified GST, surface it.
-    if (live.get('gst_number') or '').strip() and not (cust.get('gst_number') or '').strip():
-        cust['gst_number'] = live['gst_number']
+    # GSTIN — `customers.gstin` is the canonical store; fall back to
+    # legacy `gst_number` if it ever existed.
+    live_gstin = (live.get('gstin') or live.get('gst_number') or '').strip()
+    if live_gstin and not (cust.get('gst_number') or '').strip():
+        cust['gst_number'] = live_gstin
     order['customer'] = cust
 
 
