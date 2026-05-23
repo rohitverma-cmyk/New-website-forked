@@ -4106,7 +4106,24 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         except Exception:
             invoice_date = datetime.now().strftime('%Y-%m-%d')
     inv_number = order.get('order_number', 'N/A')
-    pay_method = (order.get('payment_method', 'razorpay')).title()
+    # Pretty-print the payment method on the invoice header so internal
+    # codes (`sample_credit`, `lc_90_days`, `razorpay`) read as proper
+    # business labels. Falls back to a Title-cased version of the raw
+    # value for anything not in the map.
+    _pm_raw = (order.get('payment_method') or 'razorpay').lower()
+    _PM_LABELS = {
+        'razorpay': 'Online (Razorpay)',
+        'credit': 'Credit Line',
+        'sample_credit': 'Sample Credits',
+        'lc_90_days': 'LC 90 Days',
+        'neft': 'NEFT',
+        'rtgs': 'RTGS',
+        'imps': 'IMPS',
+        'upi': 'UPI',
+        'cheque': 'Cheque',
+        'cash': 'Cash',
+    }
+    pay_method = _PM_LABELS.get(_pm_raw, _pm_raw.replace('_', ' ').title())
     pay_status = (order.get('payment_status', 'N/A')).upper()
 
     # Header — logo + tagline LEFT, invoice meta block RIGHT with PAID badge
@@ -4442,6 +4459,13 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         totals_data.append([f'Coupon ({coupon_code}):', f"-Rs {discount:,.2f}"])
 
     totals_data.append(['Total Invoice Value:', f"Rs {total:,.2f}"])
+    # If the order was settled from the brand's pre-purchased sample
+    # credit wallet, add a "Settled via" row so the buyer's accounts
+    # team immediately knows no cash was charged on this invoice. The
+    # GST + total still print at their full value (statutory display);
+    # this row just clarifies the source of funds.
+    if _pm_raw == 'sample_credit':
+        totals_data.append(['Settled via:', 'Sample Credits'])
     
     totals_table = Table(totals_data, colWidths=[44*mm, 36*mm])
     totals_table.setStyle(TableStyle([
