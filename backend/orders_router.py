@@ -47,31 +47,46 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 
-# Locofast brand logo (SVG) used on the top-left header of every PDF the
-# platform ships (tax invoice + proforma invoice). Resolved once at
-# import time; we re-parse on each render so per-PDF scaling can be
-# applied without mutating a shared cache.
+# Locofast brand logo used on the top-left header of every PDF the
+# platform ships (tax invoice + proforma invoice). The PNG is
+# pre-rendered with a transparent background so it composites cleanly
+# on the white invoice canvas.
+_LOGO_PNG_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'locofast-logo.png')
 _LOGO_SVG_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'locofast-logo.svg')
 
 
 def _get_logo_drawing(target_height_mm: float = 11):
-    """Return the Locofast logo as a reportlab Drawing scaled to
-    `target_height_mm`. Returns None if the SVG is missing or svglib
-    cannot parse it (PDFs then fall back to the wordmark)."""
+    """Return the Locofast logo as a reportlab flowable scaled to
+    `target_height_mm`. Prefers the PNG (transparent BG, ships with the
+    repo); falls back to the legacy SVG if the PNG is missing. Returns
+    None if neither asset is loadable — callers then render the
+    wordmark fallback."""
+    target_pt = target_height_mm * mm
+    # Preferred path: PNG via reportlab's Image (no extra deps needed).
+    if os.path.exists(_LOGO_PNG_PATH):
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(_LOGO_PNG_PATH) as im:
+                w_px, h_px = im.size
+            aspect = w_px / h_px if h_px else 1.0
+            img = Image(_LOGO_PNG_PATH, width=target_pt * aspect, height=target_pt)
+            img.hAlign = 'LEFT'
+            return img
+        except Exception:  # noqa: BLE001
+            pass
+    # Fallback: SVG via svglib.
     try:
         from svglib.svglib import svg2rlg
         d = svg2rlg(_LOGO_SVG_PATH)
         if d is None or not d.height:
             return None
-        target_pt = target_height_mm * mm
         scale = target_pt / d.height
         d.width = d.width * scale
         d.height = d.height * scale
         d.scale(scale, scale)
-        # Tight bounding box so the Drawing sits flush in table cells.
         d.hAlign = 'LEFT'
         return d
-    except Exception:  # noqa: BLE001 — never let logo issues break the PDF
+    except Exception:  # noqa: BLE001
         return None
 
 # Configure logging
