@@ -4092,33 +4092,16 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         if pay_status == 'PAID' else
         f'<font color="#b45309" size="8"><b>● {pay_status}</b></font>'
     )
-    tagline_para = Paragraph(
-        '<font color="#64748b" size="9">B2B Fabric Sourcing Platform</font>',
-        ParagraphStyle('lb', parent=styles['Normal'], fontSize=10, leading=14)
-    )
-    logo_drawing = _get_logo_drawing(target_height_mm=11)
+    logo_drawing = _get_logo_drawing(target_height_mm=14)
     if logo_drawing is not None:
-        # Stack the logo on top of the tagline so the brand mark replaces
-        # the legacy "LOCOFAST" wordmark on the top-left of every invoice.
-        left_cell = Table(
-            [[logo_drawing], [tagline_para]],
-            colWidths=[110*mm]
-        )
-        left_cell.setStyle(TableStyle([
-            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('TOPPADDING', (0, 0), (-1, -1), 0),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 2),
-            ('BOTTOMPADDING', (0, 1), (-1, -1), 0),
-            ('LEFTPADDING', (0, 0), (-1, -1), 0),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
-        ]))
+        # Brand mark replaces the legacy "LOCOFAST" wordmark on the
+        # top-left of every invoice. The tagline "Tech • Textile •
+        # Sourcing" is already part of the logo asset itself, so no
+        # secondary tagline is added below.
+        left_cell = logo_drawing
     else:
-        # Fallback for environments without svglib — keep the wordmark.
-        left_brand = (
-            f'<font color="{BRAND_BLUE}" size="20"><b>LOCOFAST</b></font><br/>'
-            f'<font color="#64748b" size="9">B2B Fabric Sourcing Platform</font>'
-        )
+        # Fallback for environments without svglib/PIL — keep the wordmark.
+        left_brand = f'<font color="{BRAND_BLUE}" size="20"><b>LOCOFAST</b></font>'
         left_cell = Paragraph(left_brand, ParagraphStyle('lb', parent=styles['Normal'], fontSize=10, leading=14))
     right_meta = (
         f'<font color="#64748b" size="8">INVOICE DATE</font><br/>'
@@ -4453,12 +4436,38 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
     ]))
 
     # Authorised signatory (left) + totals stack (right), like the mockup.
-    signatory = Paragraph(
-        '<font size="9"><b>For LOCOFAST ONLINE SERVICES PRIVATE LIMITED</b></font><br/><br/><br/>'
-        '<font size="9" color="#64748b">_________________________</font><br/>'
+    # Stamp + signature image is embedded above the "Authorised Signatory"
+    # line so every tax invoice ships with an authentic seal.
+    _sig_path = os.path.join(os.path.dirname(__file__), 'assets', 'signature.png')
+    sig_block_cells = [[Paragraph(
+        '<font size="9"><b>For LOCOFAST ONLINE SERVICES PRIVATE LIMITED</b></font>',
+        ParagraphStyle('SigHead', parent=styles['Normal'], fontSize=9, leading=12, alignment=TA_LEFT)
+    )]]
+    if os.path.exists(_sig_path):
+        # Scale the stamp to a print-friendly footprint (~32mm wide).
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(_sig_path) as _im:
+                _sw, _sh = _im.size
+            _aspect = _sw / _sh if _sh else 2.0
+        except Exception:  # noqa: BLE001
+            _aspect = 2.0
+        stamp_w = 32 * mm
+        stamp = Image(_sig_path, width=stamp_w, height=stamp_w / _aspect)
+        stamp.hAlign = 'LEFT'
+        sig_block_cells.append([stamp])
+    sig_block_cells.append([Paragraph(
         '<font size="9"><b>Authorised Signatory</b></font>',
-        ParagraphStyle('Sig', parent=styles['Normal'], fontSize=9, leading=12, alignment=TA_LEFT)
-    )
+        ParagraphStyle('SigFoot', parent=styles['Normal'], fontSize=9, leading=12, alignment=TA_LEFT)
+    )])
+    signatory = Table(sig_block_cells, colWidths=[100*mm])
+    signatory.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+    ]))
     sig_and_totals = Table([[signatory, totals_table]], colWidths=[100*mm, 80*mm])
     sig_and_totals.setStyle(TableStyle([
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
