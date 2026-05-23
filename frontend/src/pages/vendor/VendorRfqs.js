@@ -241,7 +241,7 @@ const VendorRfqs = () => {
 
   return (
     <VendorLayout>
-      <div className="p-6 max-w-6xl mx-auto" data-testid="vendor-rfqs-page">
+      <div className="p-8" data-testid="vendor-rfqs-page">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-2xl font-bold text-gray-900">Requests</h1>
           <div className="flex items-center gap-2">
