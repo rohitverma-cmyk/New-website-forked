@@ -227,6 +227,89 @@ def get_order_confirmation_email(order: dict) -> str:
     </html>
     """
 
+
+def _build_order_context_strip(order: dict) -> str:
+    """Standalone HTML strip describing how an order originated. Rendered
+    below the order-number bar in vendor + admin notification emails.
+
+    Three independent dimensions:
+      1. Booking — Self-Serve (the customer placed it themselves) vs.
+         Assisted Online (a Locofast agent placed it on the customer's
+         behalf). When assisted, the agent's name is shown so the vendor
+         knows who owns special instructions.
+      2. Source — Inventory (vendor's catalog) vs RFQ (vendor's submitted
+         quote). RFQ orders honour the quote's lead time + price, so we
+         link the parent RFQ for traceability.
+      3. Type — Sample / Small Bulk / Large Bulk, computed from the
+         summed line-item quantity. Large bulk (≥500m) implies the
+         provisional 10/90 payment flow.
+    """
+    booking_type = (order.get("booking_type") or "online").lower()
+    if booking_type == "assisted_online":
+        agent_name = (order.get("agent_name") or "").strip() or "Locofast Agent"
+        booking_label = "Assisted Online"
+        booking_detail = f"Placed by {agent_name}"
+        booking_color = "#7c3aed"
+        booking_bg = "#ede9fe"
+    else:
+        booking_label = "Self-Serve"
+        booking_detail = "Customer placed this order directly on locofast.com"
+        booking_color = "#0369a1"
+        booking_bg = "#e0f2fe"
+
+    source = (order.get("source") or "inventory").lower()
+    if source == "rfq":
+        rfq_id = (order.get("rfq_id") or "").strip()
+        source_label = "RFQ Quote"
+        source_detail = f"From RFQ {rfq_id}" if rfq_id else "Converted from your RFQ quote"
+        source_color = "#7c2d12"
+        source_bg = "#fef3c7"
+    else:
+        source_label = "Inventory"
+        source_detail = "Direct catalog order"
+        source_color = "#374151"
+        source_bg = "#f3f4f6"
+
+    items = order.get("items") or []
+    qty = sum(float(it.get("quantity") or 0) for it in items)
+    all_samples = bool(items) and all(
+        (it.get("order_type") or "bulk").lower() == "sample" for it in items
+    )
+    if all_samples or qty < 5:
+        type_label = "Sample"
+        type_detail = f"{qty:g}m — auto-confirm, single-shot dispatch"
+        type_color = "#0c4a6e"
+        type_bg = "#e0f2fe"
+    elif qty >= 500:
+        type_label = "Large Bulk"
+        type_detail = f"{qty:g}m — provisional 10/90 payment flow"
+        type_color = "#9a3412"
+        type_bg = "#fed7aa"
+    else:
+        type_label = "Small Bulk"
+        type_detail = f"{qty:g}m — single-shot full payment"
+        type_color = "#065f46"
+        type_bg = "#d1fae5"
+
+    def _row(label_color, label_bg, label, detail):
+        return (
+            f'<tr><td style="padding: 6px 0; vertical-align: top; width: 110px;">'
+            f'<span style="display: inline-block; background: {label_bg}; color: {label_color}; '
+            f'padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700;">{label}</span>'
+            f'</td><td style="padding: 6px 0; font-size: 13px; color: #475569;">{detail}</td></tr>'
+        )
+
+    return (
+        '<div style="background: #ffffff; padding: 14px 20px; border: 1px solid #e2e8f0; border-top: none;" data-testid="email-order-context">'
+        '<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 8px;">Order Context</div>'
+        '<table style="width: 100%; border-collapse: collapse;">'
+        + _row(booking_color, booking_bg, booking_label, booking_detail)
+        + _row(source_color, source_bg, source_label, source_detail)
+        + _row(type_color, type_bg, type_label, type_detail)
+        + '</table></div>'
+    )
+
+
 def get_order_received_admin_email(order: dict) -> str:
     """Generate admin notification email for new order — includes ALL customer info"""
     items_html = ""
@@ -287,6 +370,8 @@ def get_order_received_admin_email(order: dict) -> str:
                 </tr>
             </table>
         </div>
+        
+        {_build_order_context_strip(order)}
         
         <!-- Customer Details (FULL info including phone) -->
         <div style="background: #f8fafc; padding: 20px; border: 1px solid #e2e8f0; border-top: none;">
@@ -420,6 +505,8 @@ def get_seller_order_notification_email(order: dict, items: list, seller: dict) 
                 </tr>
             </table>
         </div>
+        
+        {_build_order_context_strip(order)}
         
         <!-- Action Required -->
         <div style="background: #fef3c7; padding: 15px 20px; border-left: 4px solid #f59e0b;">

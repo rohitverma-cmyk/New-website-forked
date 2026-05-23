@@ -497,7 +497,7 @@ const AdminOrders = () => {
                             <span className="ml-1 inline-block align-middle"><OrderSourceChip order={order} /></span>
                             {order.payment_method === 'credit' && <span className="ml-1 px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-700">CREDIT</span>}
                             <span className={`ml-1 px-2 py-1 rounded-full text-xs ${order.booking_type === 'assisted_online' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
-                              {order.booking_type === 'assisted_online' ? 'Assisted Online' : 'Online'}
+                              {order.booking_type === 'assisted_online' ? 'Assisted Online' : 'Self-Serve'}
                             </span>
                             {order.agent_name && <span className="ml-1 text-xs text-blue-600 font-medium">{order.agent_name}</span>}
                           </td>
