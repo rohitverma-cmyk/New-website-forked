@@ -464,7 +464,7 @@ def get_order_received_admin_email(order: dict) -> str:
         </div>
         
         <div style="text-align: center; padding: 20px; background: #f8fafc; border-radius: 0 0 12px 12px; border: 1px solid #e2e8f0; border-top: none;">
-            <a href="https://shop.locofast.com/admin/orders" style="background: #2563EB; color: white; padding: 10px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View in Admin Panel</a>
+            <a href="https://locofast.com/admin/orders" style="background: #2563EB; color: white; padding: 10px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View in Admin Panel</a>
         </div>
         
     </body>
