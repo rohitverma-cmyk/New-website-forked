@@ -280,7 +280,7 @@ const CustomerAccountPage = () => {
                             )}
                             {order.parent_order_number && (
                               <p className="text-[11px] text-gray-500 mt-1" data-testid={`order-child-badge-${order.order_number}`}>
-                                Shipment from {order.seller_company || "vendor"} · part of {order.parent_order_number}
+                                Shipment · part of {order.parent_order_number}
                               </p>
                             )}
                           </div>

@@ -119,30 +119,31 @@ def get_order_confirmation_email(order: dict, child_orders: Optional[list] = Non
 
     # Invoice CTA block — single button for standalone orders, one
     # button per sub-order for split (multi-vendor) parents.
+    # NOTE: We deliberately hide the vendor company name from the
+    # customer (B2B marketplace policy — Locofast is the seller of
+    # record). Sub-orders are labelled "Shipment 1", "Shipment 2", … .
     if child_orders:
         child_buttons = ""
-        for co in child_orders:
+        for ci, co in enumerate(child_orders, start=1):
             cid = co.get("id") or ""
             cnum = co.get("order_number") or ""
-            scomp = (co.get("seller_company") or "").strip()
-            label_suffix = f" — {scomp}" if scomp else ""
             child_buttons += (
                 f'<div style="margin: 6px 0;">'
                 f'<a href="{SITE_URL}/api/orders/{cid}/invoice" '
                 f'style="display: inline-block; background: #2563EB; color: #fff; '
                 f'text-decoration: none; padding: 10px 22px; border-radius: 8px; '
                 f'font-weight: 600; font-size: 13px;">'
-                f'Download Invoice {cnum}{label_suffix}'
+                f'Download Invoice — Shipment {ci} ({cnum})'
                 f'</a></div>'
             )
         invoice_cta_html = (
             f'<div style="background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-top: none; text-align: center;">'
             f'<p style="margin: 0 0 12px 0; font-size: 13px; color: #475569; font-weight: 600;">'
-            f'Your order ships from multiple mills — one GST invoice per sub-order:'
+            f'Your order ships in {len(child_orders)} shipments — one GST invoice per shipment:'
             f'</p>'
             f'{child_buttons}'
             f'<p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">'
-            f'Each sub-order carries its own sequential GST invoice number.'
+            f'Each shipment carries its own sequential GST invoice number.'
             f'</p>'
             f'</div>'
         )
@@ -1714,12 +1715,14 @@ async def send_order_notification_emails(order: dict, order_db=None):
 
     # If this is a multi-vendor master order, fetch the sub-orders so we
     # can list one invoice CTA per child (the parent has no invoice).
+    # We don't fetch `seller_company` — vendor identity is masked from
+    # the customer; sub-orders are labelled "Shipment N" instead.
     child_orders_for_email: list = []
     if use_db and order.get("is_parent_order") and (order.get("child_order_ids") or (order.get("vendor_count") or 0) > 1):
         try:
             child_orders_for_email = await use_db.orders.find(
                 {"parent_order_id": order.get("id")},
-                {"_id": 0, "id": 1, "order_number": 1, "seller_company": 1, "vendor_label": 1},
+                {"_id": 0, "id": 1, "order_number": 1},
             ).to_list(length=50)
         except Exception as e:
             logger.warning(f"Failed to fetch child orders for invoice CTAs ({order_number}): {e}")
