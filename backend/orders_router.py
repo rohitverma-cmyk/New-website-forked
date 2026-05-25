@@ -366,14 +366,21 @@ async def split_order_into_child_orders(parent_order: dict) -> List[dict]:
         child_total = round(child_subtotal + child_tax + child_logistics + child_packaging, 2)
         child_total_share = round(parent_total * share, 2)  # what they actually paid for this vendor's portion
 
-        suffix = suffix_letters[idx] if idx < len(suffix_letters) else f"{idx + 1}"
+        # Each child gets its own SEQUENTIAL invoice number (e.g. LF/ORD/052,
+        # LF/ORD/053) rather than the legacy suffix scheme (LF/ORD/051-A,
+        # -B). Sequential numbering keeps the GST invoice series unbroken
+        # and matches accounting practice. The suffix letter is still
+        # retained as `vendor_label` so the UI / Shiprocket can show a
+        # short tag distinguishing the splits of the same master order.
+        vendor_label = suffix_letters[idx] if idx < len(suffix_letters) else f"{idx + 1}"
         child_id = str(uuid.uuid4())
-        child_number = f"{parent_order['order_number']}-{suffix}"
+        child_number = await generate_order_number()
         seller_company = sub_items[0].get("seller_company", "") if sub_items else ""
 
         child_doc = {
             "id": child_id,
             "order_number": child_number,
+            "vendor_label": vendor_label,
             "parent_order_id": parent_order["id"],
             "parent_order_number": parent_order["order_number"],
             "is_parent_order": False,
@@ -4585,6 +4592,19 @@ async def get_invoice(order_id: str):
     # Only allow invoice for paid orders
     if order.get('payment_status') != 'paid':
         raise HTTPException(status_code=400, detail="Invoice available only for paid orders")
+
+    # No invoice for the parent of a split (multi-vendor) order. Each
+    # sub-order (one per vendor) carries its own sequential invoice
+    # number and is downloadable independently. The parent is a
+    # master/grouping record only.
+    if order.get('is_parent_order') and (order.get('child_order_ids') or (order.get('vendor_count') or 0) > 1):
+        child_numbers = order.get('child_order_numbers') or []
+        msg = "Invoice is not generated for the master order. Download invoices from each sub-order"
+        if child_numbers:
+            msg = f"{msg}: {', '.join(child_numbers)}."
+        else:
+            msg = f"{msg}."
+        raise HTTPException(status_code=400, detail=msg)
 
     # Resolve the customer's current GST trade name. The order snapshot's
     # `customer.company` can be empty on legacy / pre-GST-verification

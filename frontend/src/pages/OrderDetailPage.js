@@ -311,6 +311,7 @@ const OrderDetailPage = () => {
   }
 
   const isPaid = order.payment_status === "paid";
+  const isParentSplit = !!(order.is_parent_order && ((order.child_order_ids || []).length > 0 || (order.vendor_count || 0) > 1));
   const isProvisional = !!order.is_provisional;
   const isAdvancePending = order.payment_status === "pending_advance" || order.payment_status === "initiated";
   const isAdvancePaid = order.payment_status === "advance_paid";
@@ -365,7 +366,7 @@ const OrderDetailPage = () => {
                     Pay balance · {formatRupees(order.balance_amount || 0)}
                   </button>
                 )}
-                {isPaid && (
+                {isPaid && !isParentSplit && (
                   <button
                     onClick={handleDownloadInvoice}
                     className="inline-flex items-center gap-2 bg-white border border-gray-300 text-gray-800 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50"
@@ -373,6 +374,14 @@ const OrderDetailPage = () => {
                   >
                     <Download size={14} /> Download invoice
                   </button>
+                )}
+                {isPaid && isParentSplit && (
+                  <span
+                    className="inline-flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 px-3 py-2 rounded-lg text-xs font-medium"
+                    data-testid="order-detail-parent-invoice-note"
+                  >
+                    <FileText size={14} /> Invoices available on each sub-order below
+                  </span>
                 )}
                 {trackingUrl && (
                   <a

@@ -63,6 +63,7 @@ const OrderConfirmationPage = () => {
   const customer = order.customer || {};
   const items = order.items || [];
   const isPaid = order.payment_status === "paid";
+  const isParentSplit = !!(order.is_parent_order && ((order.child_order_ids || []).length > 0 || (order.vendor_count || 0) > 1));
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FAFAFA]">
@@ -102,7 +103,7 @@ const OrderConfirmationPage = () => {
                     <p className="text-2xl font-semibold text-blue-600">{order.order_number}</p>
                   </div>
                   <div className="flex items-center gap-3 flex-wrap">
-                    {isPaid && (
+                    {isPaid && !isParentSplit && (
                       <a
                         href={downloadInvoice(order.id || order.order_number)}
                         target="_blank"
@@ -113,6 +114,15 @@ const OrderConfirmationPage = () => {
                         <FileText size={16} />
                         Download Invoice
                       </a>
+                    )}
+                    {isPaid && isParentSplit && (
+                      <span
+                        className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg text-xs font-medium"
+                        data-testid="parent-invoice-note"
+                      >
+                        <FileText size={14} />
+                        Invoices on each sub-order
+                      </span>
                     )}
                     <span className={`px-3 py-1.5 rounded-full text-sm font-medium ${
                       isPaid 

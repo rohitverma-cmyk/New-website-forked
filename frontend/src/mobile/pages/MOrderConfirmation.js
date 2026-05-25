@@ -99,9 +99,15 @@ export default function MOrderConfirmation() {
         </div>
 
         {/* CTAs */}
-        <button onClick={handleDownload} className="m-btn m-btn-primary" style={{ width: "100%", marginBottom: 10 }}>
-          <Download size={16} /> Download invoice (PDF)
-        </button>
+        {!(order.is_parent_order && ((order.child_order_ids || []).length > 0 || (order.vendor_count || 0) > 1)) ? (
+          <button onClick={handleDownload} className="m-btn m-btn-primary" style={{ width: "100%", marginBottom: 10 }}>
+            <Download size={16} /> Download invoice (PDF)
+          </button>
+        ) : (
+          <div style={{ width: "100%", marginBottom: 10, padding: "10px 12px", background: "var(--m-blue-50)", border: "1px solid #DBEAFE", borderRadius: 8, fontSize: 12, color: "var(--m-blue)", textAlign: "center" }} data-testid="m-parent-invoice-note">
+            Invoices are available on each sub-order
+          </div>
+        )}
         <button onClick={() => navigate(`/m/orders/${order.id}`)} className="m-btn m-btn-outline" style={{ width: "100%", marginBottom: 10 }}>
           <Truck size={16} /> Track shipment <ChevronRight size={14} style={{ marginLeft: "auto" }} />
         </button>

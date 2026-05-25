@@ -87,8 +87,14 @@ class EmailRequest(BaseModel):
 
 # ==================== EMAIL TEMPLATES ====================
 
-def get_order_confirmation_email(order: dict) -> str:
-    """Generate order confirmation email HTML"""
+def get_order_confirmation_email(order: dict, child_orders: Optional[list] = None) -> str:
+    """Generate order confirmation email HTML.
+
+    When `child_orders` is provided (multi-vendor split), the invoice CTA
+    block is rendered as one button per sub-order — the master parent
+    itself never gets a GST invoice (each sub-order carries its own
+    sequential invoice number).
+    """
     items_html = ""
     for item in order.get("items", []):
         items_html += f"""
@@ -110,7 +116,51 @@ def get_order_confirmation_email(order: dict) -> str:
         """
     
     customer = order.get("customer", {})
-    
+
+    # Invoice CTA block — single button for standalone orders, one
+    # button per sub-order for split (multi-vendor) parents.
+    if child_orders:
+        child_buttons = ""
+        for co in child_orders:
+            cid = co.get("id") or ""
+            cnum = co.get("order_number") or ""
+            scomp = (co.get("seller_company") or "").strip()
+            label_suffix = f" — {scomp}" if scomp else ""
+            child_buttons += (
+                f'<div style="margin: 6px 0;">'
+                f'<a href="{SITE_URL}/api/orders/{cid}/invoice" '
+                f'style="display: inline-block; background: #2563EB; color: #fff; '
+                f'text-decoration: none; padding: 10px 22px; border-radius: 8px; '
+                f'font-weight: 600; font-size: 13px;">'
+                f'Download Invoice {cnum}{label_suffix}'
+                f'</a></div>'
+            )
+        invoice_cta_html = (
+            f'<div style="background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-top: none; text-align: center;">'
+            f'<p style="margin: 0 0 12px 0; font-size: 13px; color: #475569; font-weight: 600;">'
+            f'Your order ships from multiple mills — one GST invoice per sub-order:'
+            f'</p>'
+            f'{child_buttons}'
+            f'<p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">'
+            f'Each sub-order carries its own sequential GST invoice number.'
+            f'</p>'
+            f'</div>'
+        )
+    else:
+        invoice_cta_html = (
+            f'<div style="background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-top: none; text-align: center;">'
+            f'<a href="{SITE_URL}/api/orders/{order.get("id", "")}/invoice" '
+            f'style="display: inline-block; background: #2563EB; color: #fff; '
+            f'text-decoration: none; padding: 12px 28px; border-radius: 8px; '
+            f'font-weight: 600; font-size: 14px;">'
+            f'Download Tax Invoice (GST)'
+            f'</a>'
+            f'<p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">'
+            f'A GST-compliant invoice has been generated for this order.'
+            f'</p>'
+            f'</div>'
+        )
+
     return f"""
     <!DOCTYPE html>
     <html>
@@ -193,12 +243,7 @@ def get_order_confirmation_email(order: dict) -> str:
         </div>
         
         <!-- Invoice CTA -->
-        <div style="background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-top: none; text-align: center;">
-            <a href="{SITE_URL}/api/orders/{order.get('id', '')}/invoice" style="display: inline-block; background: #2563EB; color: #fff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px;">
-                Download Tax Invoice (GST)
-            </a>
-            <p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">A GST-compliant invoice has been generated for this order.</p>
-        </div>
+        {invoice_cta_html}
 
         <!-- Order Terms -->
         <div style="background: #ecfdf5; padding: 22px; border: 1px solid #d1fae5; border-radius: 0 0 12px 12px;">
@@ -1666,11 +1711,24 @@ async def send_order_notification_emails(order: dict, order_db=None):
     customer_email = order.get("customer", {}).get("email")
     brand_id = order.get("brand_id")
     customer_id = order.get("customer_id")
-    
+
+    # If this is a multi-vendor master order, fetch the sub-orders so we
+    # can list one invoice CTA per child (the parent has no invoice).
+    child_orders_for_email: list = []
+    if use_db and order.get("is_parent_order") and (order.get("child_order_ids") or (order.get("vendor_count") or 0) > 1):
+        try:
+            child_orders_for_email = await use_db.orders.find(
+                {"parent_order_id": order.get("id")},
+                {"_id": 0, "id": 1, "order_number": 1, "seller_company": 1, "vendor_label": 1},
+            ).to_list(length=50)
+        except Exception as e:
+            logger.warning(f"Failed to fetch child orders for invoice CTAs ({order_number}): {e}")
+            child_orders_for_email = []
+
     # 1. Send customer confirmation email
     if customer_email:
         subject = f"Order Confirmed - {order_number} | Locofast"
-        html = get_order_confirmation_email(order)
+        html = get_order_confirmation_email(order, child_orders=child_orders_for_email or None)
         try:
             params = {"from": SENDER_EMAIL, "to": [customer_email], "subject": subject, "html": html}
             await asyncio.to_thread(resend.Emails.send, params)
