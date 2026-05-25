@@ -1597,6 +1597,76 @@ async def create_shiprocket_shipments_multi(order: dict, only_seller_ids: Option
         if not filter_ids:
             return {"success": False, "error": "No suppliers selected"}
 
+    # If this order is the PARENT of a multi-vendor split, push each
+    # child individually using its OWN sequential order_number (which
+    # equals the GST invoice number). This keeps the Shiprocket
+    # reference and the customer's invoice in lock-step — no more
+    # `-A`/`-B` suffix divergence from the invoice series.
+    if order.get("is_parent_order") and (order.get("child_order_ids") or []):
+        children = await db.orders.find(
+            {"parent_order_id": order["id"]},
+            {"_id": 0},
+        ).to_list(length=200)
+        if filter_ids is not None:
+            children = [c for c in children if (c.get("seller_id") or "") in filter_ids]
+        if not children:
+            return {"success": False, "error": "No matching child orders to push"}
+        # Hydrate ship_to and other top-level fields from parent if a
+        # child happens to be missing them (rare on freshly-split orders).
+        for c in children:
+            c.setdefault("customer", order.get("customer", {}))
+            c.setdefault("ship_to", order.get("ship_to", {}))
+            c.setdefault("currency", order.get("currency", "INR"))
+            c.setdefault("payment_method", order.get("payment_method", ""))
+
+        shipments: list = []
+        any_success = False
+        for child in children:
+            sid = child.get("seller_id") or ""
+            seller_doc = None
+            if sid:
+                seller_doc = await db.sellers.find_one({"id": sid}, {"_id": 0, "company_name": 1, "name": 1}) or {}
+            sub_items = child.get("items") or []
+            subtotal = round(
+                sum(float(i.get("price_per_meter", 0)) * float(i.get("quantity", 1)) for i in sub_items),
+                2,
+            )
+            try:
+                # Push using the child as-is — sr_order_ref will be the
+                # child's order_number (e.g. LF/ORD/052), matching the
+                # invoice the customer downloads.
+                res = await create_shiprocket_shipment(child)
+            except Exception as e:
+                logger.exception(f"[shiprocket-multi] child {child.get('order_number')} push raised: {e}")
+                res = {"success": False, "error": str(e), "raw_error": str(e)}
+            shipment = {
+                "seller_id": sid,
+                "seller_company": (seller_doc or {}).get("company_name") or (seller_doc or {}).get("name") or "",
+                "child_order_id": child.get("id"),
+                "child_order_number": child.get("order_number"),
+                "items_count": len(sub_items),
+                "subtotal": subtotal,
+                "success": bool(res.get("success")),
+                "order_id": str(res.get("order_id") or "") if res.get("order_id") is not None else "",
+                "shipment_id": res.get("shipment_id"),
+                "awb_code": res.get("awb_code", ""),
+                "courier_name": res.get("courier_name", ""),
+                "vertical": res.get("vertical", "courier"),
+                "error": res.get("error", ""),
+                "raw_error": (str(res.get("error") or "") if not res.get("success") else "")[:4000],
+                "awaiting_manual_association": bool(res.get("awaiting_manual_association")),
+                "manual_action_reason": res.get("manual_action_reason", ""),
+                "pushed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            shipments.append(shipment)
+            if shipment["success"]:
+                any_success = True
+        return {
+            "success": any_success,
+            "count": len(shipments),
+            "shipments": shipments,
+        }
+
     # Group items by seller_id (preserving insertion order for stable suffixes)
     seller_groups: dict = {}
     seller_order: list = []

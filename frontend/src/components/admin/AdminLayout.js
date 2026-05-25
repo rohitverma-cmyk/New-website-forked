@@ -17,6 +17,7 @@ const AdminLayout = ({ children }) => {
   // gated server-side too; hiding the items here just keeps the UI clean.
   const accountsNav = [
     { path: "/admin/payouts", label: "Vendor Payouts", icon: IndianRupee },
+    { path: "/admin/accounts/invoices", label: "All Invoices", icon: FileText },
     { path: "/admin/credit-adjustments", label: "Credit Adjustments", icon: Wallet },
     { path: "/admin/credit", label: "Credit Limits", icon: Wallet },
     { path: "/admin/orders", label: "Orders", icon: ShoppingCart },
@@ -27,6 +28,7 @@ const AdminLayout = ({ children }) => {
     { path: "/admin", label: "Dashboard", icon: LayoutDashboard },
     { path: "/admin/orders", label: "Orders", icon: ShoppingCart },
     { path: "/admin/payouts", label: "Payouts", icon: IndianRupee },
+    { path: "/admin/accounts/invoices", label: "All Invoices", icon: FileText },
     { path: "/admin/customers", label: "Customers", icon: Users },
     { path: "/admin/rfq", label: "RFQ", icon: ClipboardList },
     { path: "/admin/fabrics", label: "Fabrics", icon: Layers },
