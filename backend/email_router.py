@@ -629,11 +629,23 @@ def get_seller_order_notification_email(order: dict, items: list, seller: dict) 
         <!-- Shipping zone (Ship-To details redacted — Locofast ops handles
              consignee identity end-to-end via Shiprocket. Vendor only needs
              a region for routing decisions.) -->
-        <div style="background: #f8fafc; padding: 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
+        <div style="background: #f8fafc; padding: 20px; border: 1px solid #e2e8f0; border-top: none;">
             <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #475569;">Ship-To Zone</h3>
             <p style="margin: 0; color: #1e293b;">
                 <strong>{customer.get('city', '')}, {customer.get('state', '')} {customer.get('pincode', '')}</strong><br>
                 <span style="color:#64748b; font-size:13px;">Full consignee details (name / contact / GSTIN) are on the Shiprocket pickup label. Address customer queries to Locofast Ops only.</span>
+            </p>
+        </div>
+
+        <!-- Prepare For Dispatch CTA — deep-links the supplier into
+             their Locofast vendor dashboard so they can act on this
+             order immediately (mark goods ready, upload invoice, etc.). -->
+        <div style="background: #fff; padding: 22px 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px; text-align: center;">
+            <a href="{SITE_URL}/vendor" style="display: inline-block; background: #059669; color: #ffffff; text-decoration: none; padding: 13px 30px; border-radius: 8px; font-weight: 700; font-size: 14px; letter-spacing: 0.2px;" data-testid="prepare-for-dispatch-cta">
+                Prepare For Dispatch &nbsp;→
+            </a>
+            <p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">
+                Opens your Vendor Dashboard to start dispatch preparation.
             </p>
         </div>
         
