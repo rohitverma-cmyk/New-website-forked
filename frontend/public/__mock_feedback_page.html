@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Feedback Landing Mock</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+* { box-sizing: border-box; }
+body { margin:0; font-family: Inter, -apple-system, sans-serif; background: linear-gradient(180deg,#fafbff 0%,#f1f5f9 100%); min-height: 100vh; color:#0f172a; }
+.container { max-width: 540px; margin: 0 auto; padding: 48px 24px; }
+.logo { text-align: center; margin-bottom: 28px; font-size: 22px; font-weight: 800; color: #0f172a; letter-spacing: -0.02em; }
+.card { background: #fff; border: 1px solid #e2e8f0; border-radius: 18px; padding: 32px; box-shadow: 0 20px 50px rgba(15,23,42,0.05); }
+h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; }
+.sub { color: #64748b; font-size: 13px; margin: 0 0 24px; }
+.order-line { background: #f8fafc; border: 1px solid #f1f5f9; border-radius: 10px; padding: 12px 14px; display:flex; gap:12px; align-items:center; margin-bottom: 24px; }
+.thumb { width: 48px; height: 48px; border-radius: 8px; background: linear-gradient(135deg,#1e3a8a 0%,#0f172a 100%); flex-shrink:0; }
+.order-meta { font-size: 13px; }
+.order-meta strong { display:block; color:#0f172a; }
+.order-meta span { color:#94a3b8; font-size:12px; }
+.stars-row { display:flex; gap:10px; justify-content:center; margin: 18px 0 8px; }
+.star { font-size: 44px; color: #e2e8f0; cursor: pointer; transition: transform 0.15s, color 0.2s; line-height:1; }
+.star.active { color: #fbbf24; transform: scale(1.06); }
+.star:hover { transform: scale(1.12); }
+.rating-label { text-align: center; font-size: 13px; color: #64748b; margin-bottom: 18px; font-weight:500; }
+label { display:block; font-size: 12px; font-weight: 600; color: #475569; margin: 14px 0 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+textarea { width: 100%; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; font-size: 14px; font-family: inherit; resize: none; min-height: 90px; outline: none; transition: border-color 0.15s; }
+textarea:focus { border-color: #fbbf24; box-shadow: 0 0 0 3px rgba(251,191,36,0.15); }
+button { width: 100%; background: linear-gradient(135deg,#f59e0b 0%,#d97706 100%); color: #fff; font-weight: 600; padding: 12px; border: none; border-radius: 10px; font-size: 14px; cursor: pointer; margin-top: 18px; }
+button:hover { box-shadow: 0 8px 20px rgba(217,119,6,0.25); }
+.footnote { text-align:center; color:#94a3b8; font-size: 11px; margin-top: 18px; }
+.success-card { display:none; text-align:center; }
+.checkmark { width: 64px; height: 64px; margin: 0 auto 16px; background:#dcfce7; border-radius: 50%; display:flex; align-items:center; justify-content:center; }
+.checkmark svg { width: 32px; height: 32px; color: #16a34a; }
+</style></head>
+<body>
+<div class="container">
+  <div class="logo">Locofast</div>
+  <div class="card" id="form-card">
+    <h1>How was your order?</h1>
+    <p class="sub">Your honest feedback helps us serve you better.</p>
+
+    <div class="order-line">
+      <div class="thumb"></div>
+      <div class="order-meta">
+        <strong>Order LF/ORD/049</strong>
+        <span>Delivered yesterday · Cotton Denim 3/1 RHT + 1 more · ₹2,042</span>
+      </div>
+    </div>
+
+    <div class="stars-row" id="stars">
+      <span class="star active" data-v="1">★</span>
+      <span class="star active" data-v="2">★</span>
+      <span class="star active" data-v="3">★</span>
+      <span class="star active" data-v="4">★</span>
+      <span class="star active" data-v="5">★</span>
+    </div>
+    <div class="rating-label" id="rl">★★★★★ — Excellent · 5/5</div>
+
+    <label>Anything you'd like to share? <span style="font-weight:400;color:#94a3b8;text-transform:none;letter-spacing:0;">(optional)</span></label>
+    <textarea placeholder="Loved the quality, hand-feel was great. Delivery was on time. Would order again."></textarea>
+
+    <button onclick="document.getElementById('form-card').style.display='none';document.getElementById('done-card').style.display='block';">Submit feedback</button>
+
+    <p class="footnote">By submitting, you confirm this feedback is honest and unincentivised.</p>
+  </div>
+
+  <!-- THANK YOU STATE -->
+  <div class="card success-card" id="done-card" style="display:none;">
+    <div class="checkmark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </div>
+    <h1 style="text-align:center;">Thank you!</h1>
+    <p class="sub" style="text-align:center;">Your feedback is in. We've shared it with our team to keep improving Locofast.</p>
+    <div style="text-align:center;margin-top:20px;"><a href="https://locofast.com/fabrics" style="display:inline-block;background:#0f172a;color:#fff;padding:10px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;">Continue browsing</a></div>
+  </div>
+</div>
+
+<script>
+const labels = ['','Poor · 1/5','Could be better · 2/5','Decent · 3/5','Great · 4/5','Excellent · 5/5'];
+const stars = document.querySelectorAll('.star');
+let value = 5;
+stars.forEach(s => {
+  s.addEventListener('click', () => {
+    value = parseInt(s.dataset.v);
+    stars.forEach((x,i) => x.classList.toggle('active', i < value));
+    document.getElementById('rl').textContent = '★'.repeat(value) + '☆'.repeat(5-value) + ' — ' + labels[value];
+  });
+});
+</script>
+</body></html>

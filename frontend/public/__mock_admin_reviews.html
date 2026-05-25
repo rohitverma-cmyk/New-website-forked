@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Admin Reviews Mock</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+* { box-sizing: border-box; }
+body { margin:0; font-family: Inter, -apple-system, sans-serif; background:#f8fafc; color:#0f172a; }
+.layout { display:flex; min-height:100vh; }
+.sidebar { width:230px; background:#0f172a; color:#cbd5e1; padding:24px 16px; }
+.sidebar .brand { font-weight:800; font-size:18px; color:#fff; margin-bottom:24px; }
+.sidebar a { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:8px; color:#cbd5e1; text-decoration:none; font-size:13px; margin-bottom:2px; }
+.sidebar a.active { background:#1e293b; color:#fbbf24; }
+.sidebar a:hover { background:#1e293b; }
+.main { flex:1; padding:32px 40px; max-width: 1400px; }
+.title { font-size:24px; font-weight:700; margin:0 0 6px; }
+.subtitle { color:#64748b; font-size:14px; margin:0 0 24px; }
+.stats { display:grid; grid-template-columns: repeat(5, 1fr); gap:14px; margin-bottom:28px; }
+.stat { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:16px; }
+.stat .lbl { font-size:11px; font-weight:600; color:#94a3b8; letter-spacing:0.05em; text-transform:uppercase; margin-bottom:6px; }
+.stat .val { font-size:24px; font-weight:700; color:#0f172a; }
+.stat .sub { font-size:11px; color:#64748b; margin-top:3px; }
+.avg-stat .val { color:#f59e0b; }
+.filters { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:14px; margin-bottom:14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.filter-pill { background:#f1f5f9; color:#475569; padding:6px 14px; border-radius:999px; border:1px solid transparent; font-size:12px; font-weight:500; cursor:pointer; display:inline-flex; align-items:center; gap:5px; }
+.filter-pill.active { background:#fef3c7; color:#92400e; border-color:#fde68a; }
+.filter-pill .star { color:#f59e0b; }
+.search { flex:1; min-width: 200px; padding:7px 12px; border:1px solid #e2e8f0; border-radius:8px; font-size:13px; outline:none; }
+.download-btn { background:#0f172a; color:#fff; padding:8px 16px; border-radius:8px; border:none; font-size:13px; font-weight:500; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+.table-wrap { background:#fff; border:1px solid #e2e8f0; border-radius:12px; overflow:hidden; }
+table { width:100%; border-collapse:collapse; }
+th { text-align:left; padding:12px 16px; background:#f8fafc; font-size:11px; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid #e2e8f0; }
+td { padding:14px 16px; font-size:13px; color:#334155; border-bottom:1px solid #f1f5f9; vertical-align:top; }
+tr:hover td { background:#fafbff; }
+.order-link { color:#2563EB; font-weight:600; text-decoration:none; }
+.rating-cell { display:inline-flex; gap:2px; }
+.rating-cell .s { color:#f59e0b; font-size:14px; }
+.rating-cell .s.off { color:#e2e8f0; }
+.fb-cell { color:#64748b; font-size:12px; max-width:280px; }
+.tag { padding:2px 8px; border-radius:999px; font-size:10px; font-weight:600; display:inline-block; }
+.tag-5 { background:#dcfce7; color:#15803d; }
+.tag-4 { background:#dbeafe; color:#1d4ed8; }
+.tag-3 { background:#fef3c7; color:#92400e; }
+.tag-2 { background:#ffedd5; color:#9a3412; }
+.tag-1 { background:#fee2e2; color:#b91c1c; }
+</style></head>
+<body>
+<div class="layout">
+  <div class="sidebar">
+    <div class="brand">Locofast Admin</div>
+    <a>📊 Dashboard</a>
+    <a>📦 Orders</a>
+    <a>🧵 Fabrics</a>
+    <a>👥 Sellers</a>
+    <a>🤝 Brands</a>
+    <a>💳 Payments</a>
+    <a class="active">⭐ Reviews</a>
+    <a>📈 Reports</a>
+    <a>⚙️ Settings</a>
+  </div>
+
+  <div class="main">
+    <h1 class="title">Customer Reviews</h1>
+    <p class="subtitle">All ratings &amp; feedback submitted by customers after their order was delivered.</p>
+
+    <!-- Stats strip -->
+    <div class="stats">
+      <div class="stat avg-stat">
+        <div class="lbl">Average rating</div>
+        <div class="val">4.3 <span style="font-size:14px;color:#94a3b8;">/ 5</span></div>
+        <div class="sub">★★★★☆ across 87 reviews</div>
+      </div>
+      <div class="stat">
+        <div class="lbl">5 stars</div>
+        <div class="val">52</div>
+        <div class="sub">60% · ★★★★★</div>
+      </div>
+      <div class="stat">
+        <div class="lbl">4 stars</div>
+        <div class="val">22</div>
+        <div class="sub">25% · ★★★★☆</div>
+      </div>
+      <div class="stat">
+        <div class="lbl">3 stars</div>
+        <div class="val">9</div>
+        <div class="sub">10% · ★★★☆☆</div>
+      </div>
+      <div class="stat">
+        <div class="lbl">≤ 2 stars</div>
+        <div class="val" style="color:#dc2626;">4</div>
+        <div class="sub">5% · attention needed</div>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters">
+      <span class="filter-pill active">All</span>
+      <span class="filter-pill"><span class="star">★★★★★</span> 5</span>
+      <span class="filter-pill"><span class="star">★★★★</span>☆ 4</span>
+      <span class="filter-pill"><span class="star">★★★</span>☆☆ 3</span>
+      <span class="filter-pill"><span class="star">★★</span>☆☆☆ 2</span>
+      <span class="filter-pill"><span class="star">★</span>☆☆☆☆ 1</span>
+      <input class="search" placeholder="Search order # or customer name…">
+      <button class="download-btn">⤓ Download CSV</button>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Order ID</th>
+          <th>Customer</th>
+          <th>Date</th>
+          <th>Rating</th>
+          <th>Feedback</th>
+          <th></th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td><a class="order-link" href="#">LF/ORD/049</a></td>
+            <td><strong>Deepak Wadhwa</strong><br><span style="color:#94a3b8;font-size:11px;">deepak.wadhwa@…</span></td>
+            <td>23 May 2026</td>
+            <td>
+              <div class="rating-cell"><span class="s">★</span><span class="s">★</span><span class="s">★</span><span class="s">★</span><span class="s">★</span></div>
+              <span class="tag tag-5" style="margin-left:6px;">5/5</span>
+            </td>
+            <td class="fb-cell">"Loved the hand-feel. Delivery was on time. Would order again."</td>
+            <td><button class="filter-pill">View</button></td>
+          </tr>
+          <tr>
+            <td><a class="order-link" href="#">LF/ORD/047</a></td>
+            <td><strong>Priya Sharma</strong><br><span style="color:#94a3b8;font-size:11px;">priya@brand.co</span></td>
+            <td>22 May 2026</td>
+            <td>
+              <div class="rating-cell"><span class="s">★</span><span class="s">★</span><span class="s">★</span><span class="s">★</span><span class="s off">★</span></div>
+              <span class="tag tag-4" style="margin-left:6px;">4/5</span>
+            </td>
+            <td class="fb-cell">"Quality matched the sample. Slight color variance on the navy — flagged with support."</td>
+            <td><button class="filter-pill">View</button></td>
+          </tr>
+          <tr>
+            <td><a class="order-link" href="#">LF/ORD/044</a></td>
+            <td><strong>Raj Patel</strong><br><span style="color:#94a3b8;font-size:11px;">raj@kingdenim.in</span></td>
+            <td>20 May 2026</td>
+            <td>
+              <div class="rating-cell"><span class="s">★</span><span class="s">★</span><span class="s">★</span><span class="s off">★</span><span class="s off">★</span></div>
+              <span class="tag tag-3" style="margin-left:6px;">3/5</span>
+            </td>
+            <td class="fb-cell">"Good fabric, but packaging could be tighter. Inner rolls dented slightly."</td>
+            <td><button class="filter-pill">View</button></td>
+          </tr>
+          <tr>
+            <td><a class="order-link" href="#">LF/ORD/041</a></td>
+            <td><strong>Mehul Jain</strong><br><span style="color:#94a3b8;font-size:11px;">mehul@studiojain.com</span></td>
+            <td>18 May 2026</td>
+            <td>
+              <div class="rating-cell"><span class="s">★</span><span class="s">★</span><span class="s off">★</span><span class="s off">★</span><span class="s off">★</span></div>
+              <span class="tag tag-2" style="margin-left:6px;">2/5</span>
+            </td>
+            <td class="fb-cell">"GSM was off by 8%. Reaching out to ops for replacement."</td>
+            <td><button class="filter-pill">View</button></td>
+          </tr>
+          <tr>
+            <td><a class="order-link" href="#">LF/ORD/038</a></td>
+            <td><strong>Ananya Roy</strong><br><span style="color:#94a3b8;font-size:11px;">ananya@brand.co</span></td>
+            <td>16 May 2026</td>
+            <td>
+              <div class="rating-cell"><span class="s">★</span><span class="s">★</span><span class="s">★</span><span class="s">★</span><span class="s">★</span></div>
+              <span class="tag tag-5" style="margin-left:6px;">5/5</span>
+            </td>
+            <td class="fb-cell">"Spot on. Beautiful drape on the chambray."</td>
+            <td><button class="filter-pill">View</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="text-align:center;color:#94a3b8;font-size:12px;margin-top:14px;">Showing 5 of 87 · <a style="color:#2563EB;text-decoration:none;">Load more</a></p>
+  </div>
+</div>
+</body></html>
