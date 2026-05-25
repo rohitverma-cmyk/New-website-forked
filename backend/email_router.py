@@ -217,10 +217,13 @@ def get_order_confirmation_email(order: dict, child_orders: Optional[list] = Non
                         <td style="padding: 5px 0; color: #64748b;">Subtotal</td>
                         <td style="padding: 5px 0; text-align: right;">₹{order.get('subtotal', 0):,.2f}</td>
                     </tr>
+                    {f'<tr><td style="padding: 5px 0; color: #64748b;">Packaging</td><td style="padding: 5px 0; text-align: right;">₹{order.get("packaging_charge", 0):,.2f}</td></tr>' if (order.get('packaging_charge') or 0) > 0 else ''}
+                    {f'<tr><td style="padding: 5px 0; color: #64748b;">Logistics</td><td style="padding: 5px 0; text-align: right;">₹{(order.get("logistics_only_charge") or order.get("logistics_charge") or 0):,.2f}</td></tr>' if ((order.get('logistics_only_charge') or order.get('logistics_charge') or 0) > 0) else ''}
                     <tr>
                         <td style="padding: 5px 0; color: #64748b;">GST (5%)</td>
                         <td style="padding: 5px 0; text-align: right;">₹{order.get('tax', 0):,.2f}</td>
                     </tr>
+                    {f'<tr><td style="padding: 5px 0; color: #64748b;">Discount</td><td style="padding: 5px 0; text-align: right; color: #dc2626;">-₹{order.get("discount", 0):,.2f}</td></tr>' if (order.get('discount') or 0) > 0 else ''}
                     <tr style="font-size: 18px; font-weight: 600;">
                         <td style="padding: 15px 0 5px 0; border-top: 1px solid #e2e8f0;">Total Paid</td>
                         <td style="padding: 15px 0 5px 0; text-align: right; color: #059669; border-top: 1px solid #e2e8f0;">₹{order.get('total', 0):,.2f}</td>
@@ -451,6 +454,8 @@ def get_order_received_admin_email(order: dict) -> str:
             <div style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #e2e8f0;">
                 <table style="width: 100%; font-size: 14px;">
                     <tr><td style="text-align: right; color: #64748b;">Subtotal:</td><td style="text-align: right; width: 100px;">₹{order.get('subtotal', 0):,.2f}</td></tr>
+                    {f'<tr><td style="text-align: right; color: #64748b;">Packaging:</td><td style="text-align: right;">₹{order.get("packaging_charge", 0):,.2f}</td></tr>' if (order.get('packaging_charge') or 0) > 0 else ''}
+                    {f'<tr><td style="text-align: right; color: #64748b;">Logistics:</td><td style="text-align: right;">₹{(order.get("logistics_only_charge") or order.get("logistics_charge") or 0):,.2f}</td></tr>' if ((order.get('logistics_only_charge') or order.get('logistics_charge') or 0) > 0) else ''}
                     <tr><td style="text-align: right; color: #64748b;">GST (5%):</td><td style="text-align: right;">₹{order.get('tax', 0):,.2f}</td></tr>
                     {f'<tr><td style="text-align: right; color: #64748b;">Discount:</td><td style="text-align: right; color: #dc2626;">-₹{order.get("discount", 0):,.2f}</td></tr>' if order.get('discount', 0) > 0 else ''}
                     <tr style="font-size: 18px; font-weight: 700;"><td style="text-align: right; padding-top: 10px; border-top: 1px solid #e2e8f0;">Total:</td><td style="text-align: right; padding-top: 10px; border-top: 1px solid #e2e8f0; color: #059669;">₹{order.get('total', 0):,.2f}</td></tr>

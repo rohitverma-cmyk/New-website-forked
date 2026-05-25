@@ -1938,11 +1938,20 @@ def _order_email_html(order, audience_line, cta_html="", for_seller: bool = Fals
             f"{f'<div><strong>Ship to:</strong> {addr}</div>' if addr else ''}"
             f"</div>"
         )
+        # Pre-compute optional rows so the totals f-string stays readable.
+        _pack_amt = order.get("packaging_charge") or 0
+        _logi_amt = order.get("logistics_only_charge") or order.get("logistics_charge") or 0
+        _disc_amt = order.get("discount") or 0
+        _pack_row = (f'<tr><td>Packaging</td><td style="text-align:right;">₹{_pack_amt:,.2f}</td></tr>' if _pack_amt > 0 else "")
+        _logi_row = (f'<tr><td>Logistics</td><td style="text-align:right;">₹{_logi_amt:,.2f}</td></tr>' if _logi_amt > 0 else "")
+        _disc_row = (f'<tr><td>Discount</td><td style="text-align:right;color:#dc2626;">-₹{_disc_amt:,.2f}</td></tr>' if _disc_amt > 0 else "")
         totals_block = (
             f'<table style="width:100%;font-size:13px;color:#475569;">'
             f'<tr><td>Subtotal</td><td style="text-align:right;">₹{order.get("subtotal", 0):,.2f}</td></tr>'
+            f'{_pack_row}'
+            f'{_logi_row}'
             f'<tr><td>Tax (5%)</td><td style="text-align:right;">₹{order.get("tax", 0):,.2f}</td></tr>'
-            f'<tr><td>Logistics</td><td style="text-align:right;">₹{order.get("logistics_charge", 0):,.2f}</td></tr>'
+            f'{_disc_row}'
             f'<tr><td style="padding-top:10px;font-weight:700;color:#0f172a;">Total</td><td style="padding-top:10px;text-align:right;font-weight:700;color:#059669;">₹{order.get("total", 0):,.2f}</td></tr>'
             f'</table>'
         )
