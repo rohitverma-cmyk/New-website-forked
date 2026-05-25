@@ -21,7 +21,7 @@ import { toast } from "sonner";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const TRIGGER_AFTER_SECONDS = 35;
+const IDLE_TRIGGER_SECONDS = 30;
 const SESSION_FLAG = "stillConfusedShown";
 
 // Routes that shouldn't trigger the popup (internal portals + payment
@@ -59,26 +59,51 @@ const StillConfusedPopup = () => {
     }
   }, [customer]);
 
-  // Schedule the popup. Reset on every route change so we always
-  // count from when the user lands on a *new* page (not cumulative
-  // across navigations — feels more natural to buyers).
+  // Inactivity trigger. The popup fires only after the user has been
+  // idle for IDLE_TRIGGER_SECONDS — i.e. no mouse move, scroll, keyboard,
+  // click, or touch in that window. Active buyers (scrolling specs,
+  // clicking variants, comparing fabrics) never see it. Reset state
+  // is per-route so navigation doesn't carry a stale "almost-fired"
+  // timer onto the next page.
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (sessionStorage.getItem(SESSION_FLAG)) return;
     if (isExcludedPath(location.pathname)) return;
 
     startedAtRef.current = Date.now();
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      // Re-check the flag right before firing — covers the case where
-      // the user submitted on a previous page.
-      if (!sessionStorage.getItem(SESSION_FLAG)) {
-        setOpen(true);
-      }
-    }, TRIGGER_AFTER_SECONDS * 1000);
+    let lastReset = Date.now();
+    const scheduleFire = () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        if (!sessionStorage.getItem(SESSION_FLAG)) setOpen(true);
+      }, IDLE_TRIGGER_SECONDS * 1000);
+    };
+
+    // Throttle mousemove/scroll resets to ~once per 500ms so we're not
+    // firing setTimeout thousands of times during natural movement.
+    const onActivity = () => {
+      const now = Date.now();
+      if (now - lastReset < 500) return;
+      lastReset = now;
+      startedAtRef.current = now;
+      scheduleFire();
+    };
+
+    scheduleFire();
+    const opts = { passive: true };
+    window.addEventListener("mousemove", onActivity, opts);
+    window.addEventListener("scroll", onActivity, opts);
+    window.addEventListener("touchstart", onActivity, opts);
+    window.addEventListener("keydown", onActivity);
+    window.addEventListener("click", onActivity);
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
+      window.removeEventListener("mousemove", onActivity);
+      window.removeEventListener("scroll", onActivity);
+      window.removeEventListener("touchstart", onActivity);
+      window.removeEventListener("keydown", onActivity);
+      window.removeEventListener("click", onActivity);
     };
   }, [location.pathname]);
 
@@ -107,7 +132,7 @@ const StillConfusedPopup = () => {
     try {
       const timeOn = startedAtRef.current
         ? Math.round((Date.now() - startedAtRef.current) / 1000)
-        : TRIGGER_AFTER_SECONDS;
+        : IDLE_TRIGGER_SECONDS;
       await axios.post(`${API}/agent-assistance/request`, {
         name: form.name,
         email: form.email,
