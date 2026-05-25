@@ -1890,10 +1890,18 @@ def _order_email_html(order, audience_line, cta_html=""):
             <tr><td>Logistics</td><td style="text-align:right;">₹{order.get("logistics_charge", 0):,.2f}</td></tr>
             <tr><td style="padding-top:10px;font-weight:700;color:#0f172a;">Total</td><td style="padding-top:10px;text-align:right;font-weight:700;color:#059669;">₹{order.get("total", 0):,.2f}</td></tr>
           </table>
-          <p style="font-size:12px;color:#94a3b8;margin:18px 0 0 0;">Payment method: {order.get("payment_method", "")}. Any questions? Reply to this email or write to {SUPPORT_EMAIL}.</p>
-          <div style="background:#fff7ed;border-left:3px solid #fb923c;border-radius:6px;padding:10px 14px;margin-top:14px;font-size:12px;color:#9a3412;line-height:1.55;">
-            <strong>Dispatch commitments</strong><br>
-            {"• Samples dispatched in 24–48 hours" if order.get("order_type") == "sample" else "• Bulk: 24–48 hours for packaging &amp; dispatch (in-stock items)<br>• Manufactured-to-order items typically dispatch within ~30 days of confirmation"}
+          <p style="font-size:12px;color:#94a3b8;margin:18px 0 0 0;">Payment method: {order.get("payment_method", "")}.</p>
+          <!-- Order Confirmation Terms (parity with the customer-facing email
+               so brand portal buyers see the same 5-point promise on confirm) -->
+          <div style="background:#ecfdf5;border:1px solid #d1fae5;border-radius:8px;padding:14px 16px;margin-top:14px;font-size:12.5px;color:#047857;line-height:1.65;">
+            <strong style="color:#065f46;display:block;margin-bottom:8px;">Order Confirmation Terms</strong>
+            <ol style="margin:0;padding-left:18px;">
+              <li style="margin-bottom:6px;">Your order has been shared with our vendor partner, who will begin packaging and dispatch shortly.</li>
+              <li style="margin-bottom:6px;">Shipment will be dispatched within <strong>2–3 business days</strong> (Sat/Sun &amp; public holidays excluded).</li>
+              <li style="margin-bottom:6px;">All tracking details &amp; dispatch updates will be shared via SMS/Email.</li>
+              <li style="margin-bottom:6px;">In the rare event of stock unavailability, your order will be cancelled and a <strong>full refund</strong> will be initiated promptly.</li>
+              <li>Queries? WhatsApp <a href="https://wa.me/918920392418" style="color:#047857;font-weight:600;">+91-8920392418</a> or email <a href="mailto:mail@locofast.com" style="color:#047857;font-weight:600;">mail@locofast.com</a>.</li>
+            </ol>
           </div>
           {invoice_cta}
           {cta_html}

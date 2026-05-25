@@ -200,14 +200,15 @@ def get_order_confirmation_email(order: dict) -> str:
             <p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">A GST-compliant invoice has been generated for this order.</p>
         </div>
 
-        <!-- Next Steps -->
-        <div style="background: #ecfdf5; padding: 20px; border: 1px solid #d1fae5; border-radius: 0 0 12px 12px;">
-            <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #065f46;">What's Next?</h3>
-            <ol style="margin: 0; padding-left: 20px; color: #047857;">
-                <li style="margin-bottom: 8px;">Our team will verify your order and stock availability</li>
-                <li style="margin-bottom: 8px;">You'll receive a confirmation call within 24 hours</li>
-                <li style="margin-bottom: 8px;"><strong>Samples dispatched in 24–48 hours</strong> and <strong>bulk dispatched in 24–48 hours for packaging &amp; dispatch</strong> (for in-stock items). Manufactured-to-order bulk typically dispatches within ~30 days of confirmation.</li>
-                <li>Tracking details will be shared via SMS/Email</li>
+        <!-- Order Terms -->
+        <div style="background: #ecfdf5; padding: 22px; border: 1px solid #d1fae5; border-radius: 0 0 12px 12px;">
+            <h3 style="margin: 0 0 12px 0; font-size: 14px; color: #065f46; font-weight: 700;">Order Confirmation Terms</h3>
+            <ol style="margin: 0; padding-left: 20px; color: #047857; font-size: 13px; line-height: 1.65;">
+                <li style="margin-bottom: 9px;">Your order has been shared with our vendor partner, who will begin packaging and dispatch shortly.</li>
+                <li style="margin-bottom: 9px;">Shipment will be dispatched within <strong>2–3 business days</strong> (Saturdays, Sundays &amp; public holidays excluded).</li>
+                <li style="margin-bottom: 9px;">All tracking details and dispatch updates will be shared with you via SMS/Email from time to time.</li>
+                <li style="margin-bottom: 9px;">In the rare event of stock unavailability, your order will be cancelled and a <strong>full refund</strong> will be initiated promptly.</li>
+                <li>For any queries or support, reach us on WhatsApp at <a href="https://wa.me/918920392418" style="color:#047857;text-decoration:underline;font-weight:600;">+91-8920392418</a> or email us at <a href="mailto:mail@locofast.com" style="color:#047857;text-decoration:underline;font-weight:600;">mail@locofast.com</a> — we're happy to help!</li>
             </ol>
         </div>
         
@@ -215,11 +216,11 @@ def get_order_confirmation_email(order: dict) -> str:
         <div style="text-align: center; padding: 30px 0; color: #64748b; font-size: 13px;">
             <p style="margin: 0 0 10px 0;">Questions about your order?</p>
             <p style="margin: 0;">
-                <a href="mailto:support@locofast.com" style="color: #2563EB; text-decoration: none;">support@locofast.com</a> | 
-                <a href="tel:+919876543210" style="color: #2563EB; text-decoration: none;">+91 98765 43210</a>
+                <a href="mailto:mail@locofast.com" style="color: #2563EB; text-decoration: none;">mail@locofast.com</a> | 
+                <a href="https://wa.me/918920392418" style="color: #2563EB; text-decoration: none;">WhatsApp +91-8920392418</a>
             </p>
             <p style="margin: 20px 0 0 0; color: #94a3b8;">
-                Locofast - Reliable Fabric Sourcing for Brands & Manufacturers
+                Locofast - Reliable Fabric Sourcing for Brands &amp; Manufacturers
             </p>
         </div>
         
