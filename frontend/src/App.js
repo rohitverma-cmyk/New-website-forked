@@ -162,6 +162,8 @@ const PayoutsPage = lazy(() => import("./pages/admin/PayoutsPage"));
 const AdminRFQ = lazy(() => import("./pages/admin/AdminRFQ"));
 const AdminCoupons = lazy(() => import("./pages/admin/AdminCoupons"));
 const AdminReviews = lazy(() => import("./pages/admin/AdminReviews"));
+const AdminOrderReviews = lazy(() => import("./pages/admin/AdminOrderReviews"));
+const FeedbackPage = lazy(() => import("./pages/FeedbackPage"));
 const AdminFabricSEO = lazy(() => import("./pages/admin/AdminFabricSEO"));
 const AdminBlog = lazy(() => import("./pages/admin/AdminBlog"));
 const AdminSellerDetail = lazy(() => import("./pages/admin/AdminSellerDetail"));
@@ -360,6 +362,8 @@ function App() {
           <Route path="/admin/rfq" element={<ProtectedRoute><AdminRFQ /></ProtectedRoute>} />
           <Route path="/admin/coupons" element={<ProtectedRoute><AdminCoupons /></ProtectedRoute>} />
           <Route path="/admin/reviews" element={<ProtectedRoute><AdminReviews /></ProtectedRoute>} />
+          <Route path="/admin/order-reviews" element={<ProtectedRoute><AdminOrderReviews /></ProtectedRoute>} />
+          <Route path="/feedback/:orderId" element={<FeedbackPage />} />
           <Route path="/admin/seo" element={<ProtectedRoute><AdminFabricSEO /></ProtectedRoute>} />
           <Route path="/admin/blog" element={<ProtectedRoute><AdminBlog /></ProtectedRoute>} />
           <Route path="/admin/credit" element={<ProtectedRoute><AdminCreditApplications /></ProtectedRoute>} />

@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee, ShieldCheck } from "lucide-react";
+import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee, ShieldCheck, Star } from "lucide-react";
 import NotificationBell from "../NotificationBell";
 import { useAuth } from "../../context/AuthContext";
 
@@ -36,7 +36,8 @@ const AdminLayout = ({ children }) => {
     { path: "/admin/supplier-managers", label: "Supplier Managers", icon: Users },
     { path: "/admin/brands", label: "Enterprises", icon: Briefcase },
     { path: "/admin/account-managers", label: "Acc. Managers", icon: Users },
-    { path: "/admin/reviews", label: "Reviews", icon: MessageSquare },
+    { path: "/admin/reviews", label: "Seller Reviews", icon: MessageSquare },
+    { path: "/admin/order-reviews", label: "Customer Reviews", icon: Star },
     { path: "/admin/collections", label: "Collections", icon: Package },
     { path: "/admin/coupons", label: "Coupons", icon: Tag },
     { path: "/admin/enquiries", label: "Enquiries", icon: MessageSquare },

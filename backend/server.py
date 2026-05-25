@@ -620,6 +620,10 @@ import agent_assistance_router
 agent_assistance_router.init(db)
 app.include_router(agent_assistance_router.router)
 
+import order_reviews_router
+order_reviews_router.init(db)
+app.include_router(order_reviews_router.router)
+
 import agent_router
 agent_router.set_db(db)
 app.include_router(agent_router.router)

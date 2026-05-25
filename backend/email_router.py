@@ -1812,32 +1812,90 @@ def get_order_shipped_email(order: dict) -> str:
 
 
 def get_order_delivered_email(order: dict) -> str:
-    """HTML email for order delivered notification"""
+    """HTML email for order delivered notification.
+    Format: hero header → "What you ordered" with thumbnails → 5-star
+    rating widget linking to the feedback landing page → CTA →
+    quality-inspection footnote at the bottom."""
     customer = order.get('customer', {})
+    items = order.get('items', []) or []
+    order_id = order.get('id', '') or (order.get('order_number') or '').replace('/', '-')
+
+    def _item_row(it):
+        imgs = it.get('images') or it.get('image_urls') or []
+        img = ''
+        if isinstance(imgs, list) and imgs:
+            first = imgs[0]
+            img = first.get('url', '') if isinstance(first, dict) else first
+        elif it.get('image_url'):
+            img = it.get('image_url')
+        thumb_html = (
+            f'<img src="{img}" alt="" width="60" height="60" style="border-radius:8px;object-fit:cover;display:block;border:1px solid #e5e7eb;">'
+            if img else
+            '<div style="width:60px;height:60px;border-radius:8px;background:linear-gradient(135deg,#475569 0%,#0f172a 100%);"></div>'
+        )
+        name = it.get('fabric_name') or 'Fabric'
+        code = it.get('fabric_code') or it.get('code') or ''
+        cat = it.get('category_name') or it.get('category') or ''
+        meta = ' · '.join(p for p in [code, cat] if p) or '—'
+        qty = float(it.get('quantity') or 0)
+        rate = float(it.get('price_per_meter') or it.get('price') or 0)
+        return f"""
+          <tr style="border-bottom:1px solid #f1f5f9;">
+            <td style="padding:14px;width:80px;">{thumb_html}</td>
+            <td style="padding:14px 14px 14px 0;">
+              <p style="font-weight:600;color:#0f172a;margin:0 0 2px;font-size:13px;">{name}</p>
+              <p style="color:#64748b;font-size:11px;margin:0;">{meta}</p>
+            </td>
+            <td style="padding:14px;text-align:right;color:#475569;white-space:nowrap;font-size:12px;">
+              <strong style="color:#0f172a;">{qty:g}m</strong><br>
+              <span style="color:#94a3b8;font-size:10px;">Rs {rate:,.0f}/m</span>
+            </td>
+          </tr>
+        """
+
+    items_html = ''.join(_item_row(it) for it in items[:5]) or (
+        '<tr><td colspan="3" style="padding:14px;color:#94a3b8;font-size:12px;text-align:center;">Order items unavailable</td></tr>'
+    )
+
+    star_links = ''.join(
+        f'<td><a href="{SITE_URL}/feedback/{order_id}?r={n}" '
+        'style="text-decoration:none;display:inline-block;font-size:34px;line-height:1;color:#fbbf24;padding:0 4px;">★</a></td>'
+        for n in range(1, 6)
+    )
+
     return f"""
     <div style="font-family:Inter,-apple-system,sans-serif;max-width:600px;margin:0 auto;background:#fff;">
-        <div style="background:#059669;padding:32px;text-align:center;">
-            <h1 style="color:#fff;font-size:24px;margin:0;">Your Order Has Been Delivered!</h1>
-            <p style="color:rgba(255,255,255,0.8);font-size:14px;margin:8px 0 0;">Order {order.get('order_number','')}</p>
+        <div style="background:#059669;padding:28px 32px;text-align:center;">
+            <h1 style="color:#fff;font-size:22px;margin:0;font-weight:700;">Your Order Has Been Delivered!</h1>
+            <p style="color:rgba(255,255,255,0.85);font-size:13px;margin:6px 0 0;">Order {order.get('order_number','')} · Rs {order.get('total',0):,.0f}</p>
         </div>
-        <div style="padding:32px;">
-            <p style="font-size:16px;color:#1a1a1a;">Hi {customer.get('name','')},</p>
-            <p style="color:#64748b;line-height:1.6;">Your order has been successfully delivered. We hope you're happy with your purchase!</p>
-            <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:24px;margin:24px 0;text-align:center;">
-                <p style="font-size:48px;margin:0 0 8px;">&#10003;</p>
-                <p style="font-size:18px;font-weight:700;color:#166534;margin:0;">Delivered</p>
-                <p style="color:#64748b;font-size:14px;margin:8px 0 0;">Order {order.get('order_number','')} | Rs {order.get('total',0):,.0f}</p>
+        <div style="padding:28px 32px;">
+            <p style="font-size:15px;color:#0f172a;margin:0 0 4px;">Hi {customer.get('name','')},</p>
+            <p style="color:#475569;line-height:1.55;font-size:13px;margin:8px 0 20px;">Your order has been successfully delivered. We'd love to hear how it went.</p>
+
+            <h3 style="font-size:11px;font-weight:600;color:#64748b;margin:0 0 10px;letter-spacing:0.05em;text-transform:uppercase;">What you ordered</h3>
+            <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:24px;">
+                <table style="width:100%;border-collapse:collapse;font-size:13px;">{items_html}</table>
             </div>
-            <p style="color:#64748b;line-height:1.6;">Please inspect the goods upon receipt. If you find any issues, please write to us within 24 hours at <a href="mailto:mail@locofast.com" style="color:#2563EB;">mail@locofast.com</a>.</p>
-            <div style="background:#f8fafc;border-radius:12px;padding:20px;margin:24px 0;">
-                <p style="font-size:14px;font-weight:600;color:#1a1a1a;margin:0 0 8px;">Need more fabric?</p>
-                <p style="color:#64748b;font-size:13px;margin:0 0 12px;">Browse our catalog and place your next order.</p>
-                <a href="https://locofast.com/fabrics" style="display:inline-block;background:#2563EB;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Browse Fabrics</a>
+
+            <div style="background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%);border:1px solid #fde68a;border-radius:12px;padding:22px;text-align:center;margin-bottom:16px;">
+                <h3 style="font-size:14px;font-weight:600;color:#78350f;margin:0 0 4px;">How was your experience?</h3>
+                <p style="color:#92400e;font-size:12px;margin:0 0 14px;">Tap a star to rate this order</p>
+                <table style="margin:0 auto;border-spacing:0;"><tr>{star_links}</tr></table>
             </div>
-            <p style="color:#64748b;font-size:13px;">Thank you for choosing Locofast!</p>
+
+            <div style="background:#f8fafc;border-radius:10px;padding:18px;margin:18px 0;text-align:center;">
+                <p style="font-size:13px;font-weight:600;color:#0f172a;margin:0 0 4px;">Need more fabric?</p>
+                <p style="color:#64748b;font-size:12px;margin:0 0 10px;">Browse our catalog and place your next order.</p>
+                <a href="{SITE_URL}/fabrics" style="display:inline-block;background:#2563EB;color:#fff;padding:10px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;">Browse Fabrics</a>
+            </div>
+
+            <p style="color:#94a3b8;font-size:10px;line-height:1.5;margin:18px 0 0;text-align:center;">
+                Please inspect the goods upon receipt. If you find any issues, write to us within 24 hours at <a href="mailto:mail@locofast.com" style="color:#94a3b8;">mail@locofast.com</a>.
+            </p>
         </div>
-        <div style="background:#f8fafc;padding:20px;text-align:center;border-top:1px solid #e5e7eb;">
-            <p style="color:#94a3b8;font-size:12px;margin:0;">Locofast Online Services Pvt Ltd | www.locofast.com</p>
+        <div style="background:#f1f5f9;padding:14px;text-align:center;border-top:1px solid #e5e7eb;">
+            <p style="color:#94a3b8;font-size:11px;margin:0;">Locofast Online Services Pvt Ltd · <a href="{SITE_URL}" style="color:#64748b;">www.locofast.com</a></p>
         </div>
     </div>"""
 
