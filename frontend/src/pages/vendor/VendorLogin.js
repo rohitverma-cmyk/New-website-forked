@@ -19,7 +19,19 @@ const VendorLogin = () => {
 
     try {
       const res = await vendorLogin({ email, password });
-      login(res.data.token, res.data.vendor);
+      const data = res.data;
+      // Unified login: vendor OR supplier-manager
+      if (data.role === "supplier_manager") {
+        // Stash SM token & vendor list for the picker page
+        localStorage.setItem("lf_sm_token", data.token);
+        localStorage.setItem("lf_sm", JSON.stringify(data.supplier_manager || {}));
+        localStorage.setItem("lf_sm_vendors", JSON.stringify(data.vendors || []));
+        toast.success(`Welcome, ${data.supplier_manager?.name || "Supplier Manager"}`);
+        navigate("/supplier-manager/vendors");
+        return;
+      }
+      // Regular vendor login
+      login(data.token, data.vendor);
       toast.success("Welcome back!");
       navigate("/vendor");
     } catch (err) {
@@ -38,7 +50,7 @@ const VendorLogin = () => {
               <Package className="w-8 h-8 text-emerald-600" />
             </div>
             <h1 className="text-2xl font-semibold text-gray-900">Vendor Portal</h1>
-            <p className="text-gray-500 mt-1">Manage your inventory</p>
+            <p className="text-gray-500 mt-1">For vendors and supplier managers</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-5">

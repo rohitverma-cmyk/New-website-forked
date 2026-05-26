@@ -641,3 +641,235 @@ async def brand_financials():
 
 # We attach the actual implementation in server.py because the brand auth
 # dependency lives in brand_router.
+
+
+# ════════════════════════════════════════════════════════════════════
+# ACCOUNTS — UNIFIED ALL-INVOICES VIEW
+# ════════════════════════════════════════════════════════════════════
+# Combines three independent ledger sources into one searchable feed:
+#   1. Customer GST invoices   — generated for every paid order
+#      (parent of multi-vendor splits is skipped — only sub-orders have
+#       invoices, per the sequential numbering policy).
+#   2. Vendor payout invoices  — uploaded by vendors against payouts.
+#   3. Brand financial invoices — manually-entered B2B invoices on the
+#      brand's credit ledger.
+# Filters: type, date range, search (number / customer / vendor),
+#          payment method, vendor (seller_id). Returns a flat list.
+
+def _iso_date(s):
+    if not s:
+        return ""
+    try:
+        return str(s)[:10]
+    except Exception:
+        return ""
+
+
+@router.get("/admin/accounts/invoices")
+async def admin_accounts_invoices_all(
+    invoice_type: Optional[str] = None,  # "customer" | "vendor" | "brand" | None (all)
+    start_date: Optional[str] = None,    # "YYYY-MM-DD" inclusive
+    end_date: Optional[str] = None,      # "YYYY-MM-DD" inclusive
+    search: Optional[str] = None,        # invoice number OR customer/brand company
+    payment_method: Optional[str] = None,
+    seller_id: Optional[str] = None,
+    limit: int = 2000,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Unified invoice feed for the Accounts dashboard. Returns at most
+    `limit` rows across all three sources, newest first."""
+    s = (search or "").strip().lower()
+    pm = (payment_method or "").strip().lower()
+    sid_filter = (seller_id or "").strip()
+    type_filter = (invoice_type or "").strip().lower()
+    if type_filter not in ("", "customer", "vendor", "brand"):
+        raise HTTPException(status_code=400, detail="invoice_type must be one of: customer, vendor, brand")
+
+    # Date window (apply to whichever field is most relevant per source)
+    sd = (start_date or "").strip()[:10]
+    ed = (end_date or "").strip()[:10]
+
+    rows: list = []
+
+    # ── 1) Customer GST invoices (paid orders, exclude parent-of-split)
+    if type_filter in ("", "customer"):
+        q = {
+            "payment_status": "paid",
+            "$or": [
+                {"is_parent_order": {"$ne": True}},
+                {"$and": [{"is_parent_order": True}, {"child_order_ids": {"$in": [None, []]}}]},
+            ],
+        }
+        if pm:
+            q["payment_method"] = pm
+        if sid_filter:
+            q["items.seller_id"] = sid_filter
+        proj = {
+            "_id": 0, "id": 1, "order_number": 1, "paid_at": 1, "created_at": 1,
+            "customer": 1, "subtotal": 1, "tax": 1, "total": 1,
+            "logistics_charge": 1, "packaging_charge": 1, "logistics_only_charge": 1,
+            "payment_method": 1, "payment_status": 1, "parent_order_number": 1,
+            "seller_id": 1, "seller_company": 1, "items": 1, "currency": 1,
+            "order_type": 1, "is_parent_order": 1,
+        }
+        async for o in db.orders.find(q, proj).sort("paid_at", -1).limit(limit):
+            inv_date = _iso_date(o.get("paid_at") or o.get("created_at"))
+            if sd and inv_date and inv_date < sd:
+                continue
+            if ed and inv_date and inv_date > ed:
+                continue
+            cust = o.get("customer") or {}
+            cust_name = (cust.get("company") or cust.get("name") or "").strip()
+            # Determine vendor display — children carry seller info directly;
+            # standalone single-seller orders pull from item[0].
+            vendor_name = (o.get("seller_company") or "").strip()
+            if not vendor_name:
+                items = o.get("items") or []
+                if items:
+                    vendor_name = items[0].get("seller_company", "") or ""
+            inv_no = o.get("order_number", "")
+            # Search match
+            if s and s not in inv_no.lower() and s not in cust_name.lower():
+                continue
+            rows.append({
+                "type": "customer",
+                "invoice_number": inv_no,
+                "invoice_date": inv_date,
+                "party": cust_name or "—",
+                "vendor": vendor_name or "—",
+                "amount": float(o.get("total") or 0),
+                "tax": float(o.get("tax") or 0),
+                "subtotal": float(o.get("subtotal") or 0),
+                "currency": o.get("currency") or "INR",
+                "payment_method": o.get("payment_method") or "",
+                "payment_status": o.get("payment_status") or "",
+                "order_id": o.get("id"),
+                "order_number": o.get("order_number"),
+                "parent_order_number": o.get("parent_order_number") or "",
+                "pdf_url": f"/api/orders/{o.get('id')}/invoice",
+                "source_collection": "orders",
+            })
+
+    # ── 2) Vendor payout invoices (uploaded by vendor against a payout)
+    if type_filter in ("", "vendor"):
+        q = {"vendor_invoice_url": {"$exists": True, "$nin": [None, ""]}}
+        if sid_filter:
+            q["seller_id"] = sid_filter
+        proj = {
+            "_id": 0, "id": 1, "order_id": 1, "order_number": 1,
+            "seller_id": 1, "seller_company": 1, "seller_email": 1,
+            "vendor_invoice_url": 1, "vendor_invoice_number": 1, "vendor_invoice_date": 1,
+            "vendor_invoice_amount": 1, "vendor_invoice_status": 1, "vendor_invoice_uploaded_at": 1,
+            "supplier_invoice_value": 1, "net_payable": 1, "gst_on_goods": 1, "status": 1,
+            "paid_via": 1, "utr": 1,
+        }
+        async for p in db.vendor_payouts.find(q, proj).sort("vendor_invoice_uploaded_at", -1).limit(limit):
+            inv_date = _iso_date(p.get("vendor_invoice_date") or p.get("vendor_invoice_uploaded_at"))
+            if sd and inv_date and inv_date < sd:
+                continue
+            if ed and inv_date and inv_date > ed:
+                continue
+            inv_no = p.get("vendor_invoice_number") or f"PAYOUT-{(p.get('order_number') or p.get('id') or '')[:24]}"
+            vendor_name = (p.get("seller_company") or "").strip()
+            if s and s not in inv_no.lower() and s not in vendor_name.lower():
+                continue
+            if pm and pm != (p.get("paid_via") or "").lower():
+                continue
+            rows.append({
+                "type": "vendor",
+                "invoice_number": inv_no,
+                "invoice_date": inv_date,
+                "party": vendor_name or "—",
+                "vendor": vendor_name or "—",
+                "amount": float(p.get("vendor_invoice_amount") or p.get("supplier_invoice_value") or p.get("net_payable") or 0),
+                "tax": float(p.get("gst_on_goods") or 0),
+                "subtotal": float(p.get("supplier_invoice_value") or 0) - float(p.get("gst_on_goods") or 0),
+                "currency": "INR",
+                "payment_method": p.get("paid_via") or "",
+                "payment_status": p.get("status") or p.get("vendor_invoice_status") or "",
+                "order_id": p.get("order_id") or "",
+                "order_number": p.get("order_number") or "",
+                "pdf_url": p.get("vendor_invoice_url") or "",
+                "source_collection": "vendor_payouts",
+            })
+
+    # ── 3) Brand financial invoices (manually entered on credit ledger)
+    if type_filter in ("", "brand"):
+        q = {}
+        proj = {
+            "_id": 0, "id": 1, "brand_id": 1, "invoice_number": 1, "invoice_date": 1,
+            "due_date": 1, "subtotal": 1, "gst": 1, "amount": 1, "amount_paid": 1,
+            "file_url": 1, "status": 1, "created_at": 1, "order_id": 1,
+        }
+        # Pull brand names in one shot to avoid N+1
+        brand_ids = set()
+        async for inv in db.brand_invoices.find(q, proj).sort("invoice_date", -1).limit(limit):
+            inv_date = _iso_date(inv.get("invoice_date") or inv.get("created_at"))
+            if sd and inv_date and inv_date < sd:
+                continue
+            if ed and inv_date and inv_date > ed:
+                continue
+            inv_no = inv.get("invoice_number") or ""
+            if s and s not in inv_no.lower():
+                # company filter happens after brand resolution
+                pass
+            inv["_inv_date_norm"] = inv_date
+            brand_ids.add(inv.get("brand_id"))
+            rows.append({
+                "type": "brand",
+                "invoice_number": inv_no,
+                "invoice_date": inv_date,
+                "party": "",  # filled in after brand lookup
+                "vendor": "—",
+                "amount": float(inv.get("amount") or 0),
+                "tax": float(inv.get("gst") or 0),
+                "subtotal": float(inv.get("subtotal") or 0),
+                "currency": "INR",
+                "payment_method": "credit",
+                "payment_status": inv.get("status") or "",
+                "order_id": inv.get("order_id") or "",
+                "order_number": "",
+                "pdf_url": inv.get("file_url") or "",
+                "source_collection": "brand_invoices",
+                "_brand_id": inv.get("brand_id"),
+            })
+        # Resolve brand names
+        if brand_ids:
+            id_to_name = {}
+            async for b in db.brands.find(
+                {"id": {"$in": list(brand_ids)}},
+                {"_id": 0, "id": 1, "company_name": 1, "name": 1},
+            ):
+                id_to_name[b["id"]] = b.get("company_name") or b.get("name") or ""
+            for r in rows:
+                if r.get("type") == "brand":
+                    bid = r.pop("_brand_id", None)
+                    r["party"] = id_to_name.get(bid, "") or "—"
+            # Apply search filter that needed brand name
+            if s:
+                rows = [
+                    r for r in rows
+                    if r.get("type") != "brand"
+                    or s in (r.get("invoice_number") or "").lower()
+                    or s in (r.get("party") or "").lower()
+                ]
+
+    # Sort all combined by date descending (string ISO date sorts well)
+    rows.sort(key=lambda r: r.get("invoice_date") or "", reverse=True)
+    rows = rows[:limit]
+
+    # Aggregate tiles
+    counts = {"customer": 0, "vendor": 0, "brand": 0, "total": len(rows)}
+    amounts = {"customer": 0.0, "vendor": 0.0, "brand": 0.0, "total": 0.0}
+    for r in rows:
+        t = r.get("type")
+        counts[t] = counts.get(t, 0) + 1
+        amt = float(r.get("amount") or 0)
+        amounts[t] = amounts.get(t, 0.0) + amt
+        amounts["total"] += amt
+
+    return {
+        "rows": rows,
+        "counts": counts,
+        "amounts": {k: round(v, 2) for k, v in amounts.items()},
+    }

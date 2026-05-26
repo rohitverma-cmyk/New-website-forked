@@ -1,5 +1,6 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee } from "lucide-react";
+import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee, ShieldCheck, Star, Database } from "lucide-react";
+import NotificationBell from "../NotificationBell";
 import { useAuth } from "../../context/AuthContext";
 
 const AdminLayout = ({ children }) => {
@@ -8,13 +9,18 @@ const AdminLayout = ({ children }) => {
   const { admin, logout } = useAuth();
 
   const isAccountsRole = admin?.role === "accounts";
+  const SUPER_ADMIN_EMAIL = "admin@locofast.com";
+  const isSuperAdmin = (admin?.email || "").toLowerCase() === SUPER_ADMIN_EMAIL;
 
-  // Accounts users get a focused nav surface — only Payouts + read-only
-  // Sellers + Orders, nothing else. Everything is gated server-side too;
-  // hiding the items here just keeps the UI clean.
+  // Accounts users get a focused nav surface — only Payouts + Credit
+  // Ledger + read-only Sellers + Orders, nothing else. Everything is
+  // gated server-side too; hiding the items here just keeps the UI clean.
   const accountsNav = [
-    { path: "/admin/payouts", label: "Payouts", icon: IndianRupee },
-    { path: "/admin/orders", label: "Orders (read)", icon: ShoppingCart },
+    { path: "/admin/payouts", label: "Vendor Payouts", icon: IndianRupee },
+    { path: "/admin/accounts/invoices", label: "All Invoices", icon: FileText },
+    { path: "/admin/credit-adjustments", label: "Credit Adjustments", icon: Wallet },
+    { path: "/admin/credit", label: "Credit Limits", icon: Wallet },
+    { path: "/admin/orders", label: "Orders", icon: ShoppingCart },
     { path: "/admin/sellers", label: "Vendors", icon: Building2 },
   ];
 
@@ -22,15 +28,18 @@ const AdminLayout = ({ children }) => {
     { path: "/admin", label: "Dashboard", icon: LayoutDashboard },
     { path: "/admin/orders", label: "Orders", icon: ShoppingCart },
     { path: "/admin/payouts", label: "Payouts", icon: IndianRupee },
+    { path: "/admin/accounts/invoices", label: "All Invoices", icon: FileText },
     { path: "/admin/customers", label: "Customers", icon: Users },
     { path: "/admin/rfq", label: "RFQ", icon: ClipboardList },
     { path: "/admin/fabrics", label: "Fabrics", icon: Layers },
     { path: "/admin/articles", label: "Articles", icon: Palette },
     { path: "/admin/categories", label: "Categories", icon: FolderOpen },
     { path: "/admin/sellers", label: "Sellers", icon: Building2 },
+    { path: "/admin/supplier-managers", label: "Supplier Managers", icon: Users },
     { path: "/admin/brands", label: "Enterprises", icon: Briefcase },
     { path: "/admin/account-managers", label: "Acc. Managers", icon: Users },
-    { path: "/admin/reviews", label: "Reviews", icon: MessageSquare },
+    { path: "/admin/reviews", label: "Seller Reviews", icon: MessageSquare },
+    { path: "/admin/order-reviews", label: "Customer Reviews", icon: Star },
     { path: "/admin/collections", label: "Collections", icon: Package },
     { path: "/admin/coupons", label: "Coupons", icon: Tag },
     { path: "/admin/enquiries", label: "Enquiries", icon: MessageSquare },
@@ -42,6 +51,14 @@ const AdminLayout = ({ children }) => {
   ];
 
   const navItems = isAccountsRole ? accountsNav : fullNav;
+  // Append super-admin-only items (Admin Users + Database Backup)
+  const finalNav = isSuperAdmin && !isAccountsRole
+    ? [
+        ...navItems,
+        { path: "/admin/users", label: "Admin Users", icon: ShieldCheck },
+        { path: "/admin/database-backup", label: "Database Backup", icon: Database },
+      ]
+    : navItems;
 
   const handleLogout = () => {
     logout();
@@ -68,7 +85,7 @@ const AdminLayout = ({ children }) => {
         </div>
 
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto" data-testid="admin-nav-scroll">
-          {navItems.map((item) => (
+          {finalNav.map((item) => (
             <Link
               key={item.path}
               to={item.path}
@@ -103,6 +120,9 @@ const AdminLayout = ({ children }) => {
 
       {/* Main Content */}
       <main className="flex-1 ml-64 p-8" data-testid="admin-content">
+        <div className="flex justify-end mb-3">
+          <NotificationBell audience="admin" />
+        </div>
         {children}
       </main>
     </div>

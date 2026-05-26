@@ -1,5 +1,6 @@
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Store, Package } from "lucide-react";
+import WishlistHeartButton from "../../components/WishlistHeartButton";
 import {
   formatCompositionShort,
   formatWeight,
@@ -13,7 +14,6 @@ import {
 } from "../lib/format";
 
 export default function FabricCard({ fabric, variant = "rail" }) {
-  const navigate = useNavigate();
   if (!fabric) return null;
 
   const img = getPrimaryImage(fabric);
@@ -24,21 +24,32 @@ export default function FabricCard({ fabric, variant = "rail" }) {
   const url = getFabricUrl(fabric);
 
   // "rail" variant: 78% viewport width, horizontal scroll. "grid" variant: full width, vertical list.
-  const widthStyle = variant === "rail" ? { width: "78vw", maxWidth: 320 } : { width: "100%" };
+  const widthStyle = variant === "rail" ? { width: "min(78vw, 280px)", maxWidth: 320 } : { width: "100%" };
 
+  // Use a real <Link> (anchor tag) rather than a <button onClick={navigate()}>.
+  // Anchors give us native iOS click handling, long-press → "Open in new
+  // tab" affordance, and they survive accidental enclosing-form contexts
+  // (the catalog page mounts cards under filter UI that historically
+  // wrapped a <form>, which made <button>-cards submit that form instead
+  // of navigating on real devices — Playwright didn't catch this).
   return (
-    <button
-      onClick={() => navigate(url)}
+    <Link
+      to={url}
       className="m-card"
       style={{
         ...widthStyle,
         textAlign: "left", padding: 0, overflow: "hidden",
         display: "flex", flexDirection: "column", border: "1px solid var(--m-border)",
         background: "var(--m-surface)", cursor: "pointer",
+        textDecoration: "none", color: "inherit",
+        // Hint iOS to use native tap highlight + skip the 300ms delay.
+        WebkitTapHighlightColor: "rgba(0,0,0,0.05)",
+        touchAction: "manipulation",
       }}
+      data-testid={`m-fabric-card-${fabric.slug || fabric.id}`}
     >
       <div style={{
-        height: variant === "rail" ? 160 : 200,
+        height: variant === "rail" ? 160 : 220,
         background: img
           ? `linear-gradient(180deg, rgba(15,27,45,0) 0%, rgba(15,27,45,0.15) 100%), url(${img}) center/cover no-repeat`
           : "linear-gradient(135deg, #FFF1E6, #FFE3CE)",
@@ -65,6 +76,14 @@ export default function FabricCard({ fabric, variant = "rail" }) {
               boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
             }}>⚡ BOOK NOW</span>
           )}
+        </div>
+        {/* Wishlist heart — absolute-positioned over the image. Stops link
+            propagation so tapping the heart doesn't navigate the card. */}
+        <div
+          style={{ position: "absolute", top: 8, right: 8 }}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        >
+          <WishlistHeartButton fabricId={fabric.id} variant="overlay" size={16} />
         </div>
       </div>
       <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -101,12 +120,12 @@ export default function FabricCard({ fabric, variant = "rail" }) {
           ) : null}
         </div>
       </div>
-    </button>
+    </Link>
   );
 }
 
 export function FabricCardSkeleton({ variant = "rail" }) {
-  const w = variant === "rail" ? "78vw" : "100%";
+  const w = variant === "rail" ? "min(78vw, 280px)" : "100%";
   return (
     <div className="m-card" style={{ width: w, maxWidth: 320, overflow: "hidden" }}>
       <div className="m-skeleton" style={{ height: variant === "rail" ? 160 : 200, borderRadius: 0 }} />

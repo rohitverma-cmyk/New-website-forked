@@ -3,7 +3,7 @@ import { Plus, Pencil, Trash2, X, Search, Package, Loader2, Upload, Video, Check
 import VendorLayout from "../../components/vendor/VendorLayout";
 import CommissionHelpModal from "../../components/vendor/CommissionHelpModal";
 import ErrorBoundary from "../../components/ErrorBoundary";
-import api, { getVendorFabrics, createVendorFabric, updateVendorFabric, deleteVendorFabric, getVendorCategories, getArticles, uploadToCloudinary, uploadVideoToCloudinary } from "../../lib/api";
+import api, { getVendorFabrics, createVendorFabric, updateVendorFabric, deleteVendorFabric, getVendorCategories, getArticles, getVendorProfile, uploadToCloudinary, uploadVideoToCloudinary } from "../../lib/api";
 import useCompositionOptions from "../../hooks/useCompositionOptions";
 import { getDispatchOptions } from "../../lib/dispatchOptions";
 import { toast } from "sonner";
@@ -46,7 +46,7 @@ const knitTypeOptions = [
   "Micro PP", "Jacquard Zombie", "Taiwan Lycra", "Football Knit", "Nirmal Knit",
   "Reebok Knit", "Adidas Knit", "Super Malai", "Micro Crepe", "Bubble Crepe",
 ];
-const STRETCH_FIBRES = ['spandex', 'elastane', 'lycra', 'stretch'];
+const STRETCH_FIBRES = ['spandex', 'elastane', 'lycra', 'flex', 'stretch'];
 const isStretchFibre = (m) => STRETCH_FIBRES.some((f) => (m || '').toLowerCase().includes(f));
 const stretchPercentOptions = Array.from({ length: 40 }, (_, i) => (i + 1) * 0.5);
 const colorOptions = [
@@ -109,6 +109,7 @@ const emptyForm = {
   ],
   seller_sku: "", article_id: "",
   has_multiple_colors: false, color_variants: [],
+  pickup_address_id: "",
 };
 
 const VendorInventoryInner = () => {
@@ -116,6 +117,7 @@ const VendorInventoryInner = () => {
   const [fabrics, setFabrics] = useState([]);
   const [categories, setCategories] = useState([]);
   const [articles, setArticles] = useState([]);
+  const [pickupAddresses, setPickupAddresses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
@@ -143,12 +145,14 @@ const VendorInventoryInner = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [fabRes, catRes, artRes] = await Promise.all([
-        getVendorFabrics(), getVendorCategories(), getArticles().catch(() => ({ data: [] }))
+      const [fabRes, catRes, artRes, profRes] = await Promise.all([
+        getVendorFabrics(), getVendorCategories(), getArticles().catch(() => ({ data: [] })),
+        getVendorProfile().catch(() => ({ data: {} })),
       ]);
       setFabrics(fabRes.data);
       setCategories(catRes.data);
       setArticles(artRes.data || []);
+      setPickupAddresses(profRes.data?.pickup_addresses || []);
       fetchCommissions(fabRes.data);
     } catch { toast.error("Failed to load inventory"); }
     setLoading(false);
@@ -374,6 +378,7 @@ const VendorInventoryInner = () => {
       seller_sku: fabric.seller_sku || "", article_id: fabric.article_id || "",
       has_multiple_colors: !!fabric.has_multiple_colors,
       color_variants: fabric.color_variants || [],
+      pickup_address_id: fabric.pickup_address_id || "",
     });
     setShowModal(true);
   };
@@ -427,6 +432,7 @@ const VendorInventoryInner = () => {
         seller_sku: form.seller_sku, article_id: form.article_id,
         has_multiple_colors: !!form.has_multiple_colors,
         color_variants: form.has_multiple_colors ? (form.color_variants || []) : [],
+        pickup_address_id: form.pickup_address_id || "",
       };
 
       if (editingFabric) {
@@ -1062,6 +1068,33 @@ const VendorInventoryInner = () => {
                       <input type="text" value={form.moq} onChange={e => setForm({ ...form, moq: e.target.value })}
                         className="w-full px-4 py-2.5 border border-gray-200 rounded-lg" placeholder={`500 ${unitLabel}`} />
                     </div>
+                  </div>
+
+                  {/* Pickup Location (Inventory) */}
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Pickup Location <span className="text-gray-400 text-xs">(where this SKU is stocked)</span>
+                    </label>
+                    {pickupAddresses.length === 0 ? (
+                      <div className="px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                        No pickup addresses on file. Locofast Accounts can add pickup locations on your vendor profile.
+                      </div>
+                    ) : (
+                      <select
+                        value={form.pickup_address_id || ""}
+                        onChange={e => setForm({ ...form, pickup_address_id: e.target.value })}
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg bg-white"
+                        data-testid="pickup-address-select"
+                      >
+                        <option value="">Use default (primary) pickup address</option>
+                        {pickupAddresses.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.nickname || "—"} · {a.city || ""}{a.state ? `, ${a.state}` : ""} {a.is_primary ? "(Primary)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <p className="text-[11px] text-gray-500 mt-1">Orders for this SKU will dispatch from the selected location. Stock is per SKU — a single SKU cannot be split across locations.</p>
                   </div>
 
                   {/* Live platform commission */}

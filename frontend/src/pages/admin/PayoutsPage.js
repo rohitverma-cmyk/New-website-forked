@@ -81,6 +81,25 @@ const PayoutsPage = () => {
     }
   };
 
+  const handleBackfillCommission = async () => {
+    if (!window.confirm("Resync commission on all PENDING payouts using current rules?\n\nThis recomputes commission + net payable from the order stamp (or live rules if missing). Paid payouts are skipped.")) return;
+    const t = toast.loading("Resyncing commission on pending payouts…");
+    try {
+      const res = await authedFetch("/api/payouts/backfill-commission", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed");
+      const changed = data.updated || 0;
+      if (changed === 0) {
+        toast.success(`No changes · ${data.unchanged} already correct, ${data.skipped_paid} paid (skipped)`, { id: t });
+      } else {
+        toast.success(`${changed} payout${changed !== 1 ? "s" : ""} updated · ${data.unchanged} unchanged, ${data.skipped_paid} paid (skipped)`, { id: t });
+      }
+      fetchDashboard();
+    } catch (e) {
+      toast.error(e.message || "Failed", { id: t });
+    }
+  };
+
   const tilesUI = [
     { id: "pending", label: "Pending", color: "amber", icon: Clock, ...tiles.pending },
     { id: "processing", label: "Processing", color: "blue", icon: RotateCw, ...tiles.processing },
@@ -97,14 +116,24 @@ const PayoutsPage = () => {
               Calculate and settle dues to sellers. {viewerRole === "accounts" && <span className="inline-flex items-center gap-1 px-2 py-0.5 ml-2 bg-blue-50 text-blue-700 rounded-full text-[11px] font-medium">Accounts mode</span>}
             </p>
           </div>
-          <button
-            onClick={handleMaterialize}
-            className="flex items-center gap-2 px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
-            data-testid="payouts-rescan-btn"
-            title="Re-scan all paid orders for missing payouts"
-          >
-            <RotateCw size={14} /> Re-scan orders
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleBackfillCommission}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100"
+              data-testid="payouts-resync-commission-btn"
+              title="Recompute commission on all pending payouts using current rules"
+            >
+              <RotateCw size={14} /> Resync Commission
+            </button>
+            <button
+              onClick={handleMaterialize}
+              className="flex items-center gap-2 px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+              data-testid="payouts-rescan-btn"
+              title="Re-scan all paid orders for missing payouts"
+            >
+              <RotateCw size={14} /> Re-scan orders
+            </button>
+          </div>
         </div>
 
         {/* Tiles */}
@@ -165,8 +194,9 @@ const PayoutsPage = () => {
                 <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                   <th className="px-4 py-3">Order</th>
                   <th className="px-4 py-3">Vendor</th>
-                  <th className="px-4 py-3 text-right">Gross</th>
+                  <th className="px-4 py-3 text-right">Invoice Value<br/><span className="text-[9px] text-gray-400 normal-case">(Gross + GST)</span></th>
                   <th className="px-4 py-3 text-right">Commission</th>
+                  <th className="px-4 py-3 text-right">GST on Comm</th>
                   <th className="px-4 py-3 text-right">Advances</th>
                   <th className="px-4 py-3 text-right">Net Payable</th>
                   <th className="px-4 py-3">Invoice</th>
@@ -185,8 +215,16 @@ const PayoutsPage = () => {
                       <p className="font-medium text-gray-800">{p.seller_company || "—"}</p>
                       <p className="text-[11px] text-gray-500">{p.payment_terms_snapshot || "No terms set"}</p>
                     </td>
-                    <td className="px-4 py-3 text-right">{fmtINR(p.gross_subtotal)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <span title={`Gross ₹${Number(p.gross_subtotal||0).toLocaleString('en-IN')} + ${p.goods_gst_pct ?? 5}% GST`}>
+                        {fmtINR(p.supplier_invoice_value ?? p.gross_subtotal)}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 text-right text-red-600">−{fmtINR(p.commission_total)}</td>
+                    <td className="px-4 py-3 text-right text-red-600">
+                      {(p.gst_on_commission || 0) > 0 ? `−${fmtINR(p.gst_on_commission)}` : "—"}
+                      <p className="text-[9px] text-gray-400">@{p.commission_gst_pct ?? 18}%</p>
+                    </td>
                     <td className="px-4 py-3 text-right text-red-600">{p.advances_applied > 0 ? `−${fmtINR(p.advances_applied)}` : "—"}</td>
                     <td className="px-4 py-3 text-right font-semibold text-emerald-700">{fmtINR(p.net_payable)}</td>
                     <td className="px-4 py-3">
@@ -291,9 +329,12 @@ const PayoutDetailModal = ({ payout, token, viewerRole, onClose, onPaid, onRecal
           {/* Totals */}
           <div className="bg-blue-50 rounded-lg p-4 space-y-1.5 text-sm">
             <div className="flex justify-between"><span>Gross subtotal</span><span>{fmtINR(payout.gross_subtotal)}</span></div>
-            <div className="flex justify-between text-red-700"><span>Commission</span><span>−{fmtINR(payout.commission_total)}</span></div>
+            <div className="flex justify-between"><span>(+) GST on goods @ {payout.goods_gst_pct ?? 5}%</span><span>+{fmtINR(payout.gst_on_goods || 0)}</span></div>
+            <div className="flex justify-between font-medium border-t border-blue-200 pt-1.5"><span>Supplier invoice value</span><span data-testid="payouts-detail-invoice-value">{fmtINR(payout.supplier_invoice_value ?? payout.gross_subtotal)}</span></div>
+            <div className="flex justify-between text-red-700"><span>(−) Locofast commission</span><span>−{fmtINR(payout.commission_total)}</span></div>
+            <div className="flex justify-between text-red-700"><span>(−) GST on commission @ {payout.commission_gst_pct ?? 18}%</span><span>−{fmtINR(payout.gst_on_commission || 0)}</span></div>
             {payout.advances_applied > 0 && (
-              <div className="flex justify-between text-red-700"><span>Advances ({payout.advance_ids?.length || 0})</span><span>−{fmtINR(payout.advances_applied)}</span></div>
+              <div className="flex justify-between text-red-700"><span>(−) Advances ({payout.advance_ids?.length || 0})</span><span>−{fmtINR(payout.advances_applied)}</span></div>
             )}
             <div className="flex justify-between font-bold text-base border-t border-blue-200 pt-2 mt-2"><span>Net payable</span><span className="text-emerald-700" data-testid="payouts-detail-net">{fmtINR(payout.net_payable)}</span></div>
           </div>

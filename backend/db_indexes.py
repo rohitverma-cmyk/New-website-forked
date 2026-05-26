@@ -73,6 +73,12 @@ async def ensure_indexes(db):
         "brand_credit_ledger": [[("brand_id", ASCENDING), ("created_at", DESCENDING)]],
         "credit_wallets":      [[("email", ASCENDING)]],
         "credit_applications": [[("email", ASCENDING)], [("status", ASCENDING)]],
+        # --- unified credit ledger (Feb 2026+) ---
+        "credit_lender_lines": [[("gst_number", ASCENDING), ("lender", ASCENDING)]],
+        "credit_disbursements": [[("invoice_no", ASCENDING)], [("gst_number", ASCENDING), ("disbursement_date", DESCENDING)]],
+        "credit_payments":     [[("utr", ASCENDING)], [("gst_number", ASCENDING), ("payment_date", DESCENDING)], [("against_invoice_no", ASCENDING)]],
+        "credit_adjustments":  [[("reference_no", ASCENDING)], [("gst_number", ASCENDING), ("created_at", DESCENDING)], [("against_invoice_no", ASCENDING)]],
+        "credit_adjustment_otps": [[("email", ASCENDING), ("created_at", DESCENDING)]],
 
         # --- factory handoffs (new feature) ---
         "factory_handoffs": [

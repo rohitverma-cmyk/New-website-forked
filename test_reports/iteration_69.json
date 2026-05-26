@@ -1,0 +1,65 @@
+{
+  "summary": "Tested Provisional Bulk Orders Invoice & Payout Extensions - All 10 backend tests pass. Vendor invoice required for mark-goods-ready, admin override works, actual_quantity used for payout calculation, vendor_invoice_* fields auto-stamped on payout.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_provisional_invoice_payout.py",
+    "/app/test_reports/pytest/pytest_provisional_invoice_v69.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/tests/test_provisional_invoice_payout.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed)",
+    "frontend": "N/A (backend only testing)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123",
+    "vendor": "denimseller@locofast.com / denim@123"
+  },
+  "seed_data_creation": "Created provisional test orders via MongoDB for testing (cleaned up after tests)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Provisional Bulk Orders Invoice & Payout Extensions verified. Key features: (1) vendor_invoice payload required for vendor caller on mark-goods-ready (url, invoice_number, invoice_date mandatory), (2) admin can skip invoice (override path), (3) vendor_invoices array persisted on order keyed by seller_id, (4) materialize_payouts uses actual_quantity for gross/commission calculation, (5) payout doc carries vendor_invoice_* fields (url, number, date, amount, status='uploaded', source='mark_goods_ready'), (6) non-provisional orders fall back to ordered quantity, (7) legacy upload via /api/vendor/payouts/{id}/upload-invoice still functional.",
+  "features_verified": {
+    "backend": {
+      "POST /api/orders/{order_id}/mark-goods-ready - vendor_invoice required": {
+        "status": "PASS",
+        "details": "Vendor caller must provide vendor_invoice with url, invoice_number, invoice_date. Missing any → 400 with clear error."
+      },
+      "POST /api/orders/{order_id}/mark-goods-ready - admin override": {
+        "status": "PASS",
+        "details": "Admin caller can submit without vendor_invoice (override path for manual handling)."
+      },
+      "vendor_invoices array persistence": {
+        "status": "PASS",
+        "details": "order.vendor_invoices = [{seller_id, url, filename, invoice_number, invoice_date, amount, uploaded_at}] keyed by seller_id."
+      },
+      "materialize_payouts uses actual_quantity": {
+        "status": "PASS",
+        "details": "Payout gross = actual_quantity × rate (not ordered quantity). Tested with ordered=100, actual=92 → gross=92×150=13800."
+      },
+      "payout carries vendor_invoice_* fields": {
+        "status": "PASS",
+        "details": "When order has vendor_invoices entry for seller, payout doc has vendor_invoice_url, vendor_invoice_number, vendor_invoice_date, vendor_invoice_amount, vendor_invoice_status='uploaded', vendor_invoice_source='mark_goods_ready'."
+      },
+      "non-provisional fallback": {
+        "status": "PASS",
+        "details": "Non-provisional orders (no actual_quantity) use ordered quantity for payout calculation."
+      },
+      "legacy invoice upload": {
+        "status": "PASS",
+        "details": "/api/vendor/payouts/{id}/upload-invoice still functional for vendors who didn't upload at mark-goods-ready time."
+      }
+    }
+  }
+}

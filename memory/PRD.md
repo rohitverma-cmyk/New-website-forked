@@ -38,6 +38,13 @@ Build a CMS-driven B2B fabric sourcing platform ("locofast.com v 2.0"). Core req
 
 ## Completed Features
 
+### Invoice Branding & Trade Name (Feb 2026)
+- Replaced legacy "LOCOFAST" text wordmark with embedded SVG brand logo on the top-left header of both Tax Invoice (`GET /api/orders/{id}/invoice`) and Proforma Invoice (`GET /api/orders/{id}/proforma-invoice`).
+- Logo asset: `/app/backend/assets/locofast-logo.svg` (rendered via svglib `svg2rlg` at PDF build time).
+- `_hydrate_customer_trade_name()` re-fetches the canonical customer record by email at invoice-generation time so the "Bill To" block prints the GST-registered trade name (`customer.company`) even on legacy orders whose snapshot stored an empty company. Contact name appears as `Attn:` below.
+- New backend deps: `svglib==1.6.0`, `lxml==6.1.1`, `cssselect2==0.9.0`, `tinycss2==1.5.1`, `webencodings==0.5.1`.
+- Tested: paid order `ORD-BGFIJQ` (`220475e5-fa34-40c5-ae1d-8738781996b1`) → invoice shows logo image + trade name "Locofast" with "Attn: Deepak wadhwa".
+
 ### Phase 1-7: Core Platform, Checkout, Lead Gen, Emails, SEO, Supplier Storefront, Reviews (All Complete)
 
 ### Phase 8: Unified Admin Seller Detail + Comprehensive Vendor Form (Complete - Feb 2026)
@@ -514,6 +521,50 @@ Full admin order-edit capability + Shiprocket pickup now sourced from the assign
 - **Frontend — `EditOrderModal.js`**: Full 5-tab modal (Items / Customer / Shipping / Vendor / History) opened via "Edit Order" button on the admin order detail. Live total recomputation preview, vendor search with pickup-warning badge, audit history viewer with collapsible diff JSON, optional "cancel & re-push SR" checkbox.
 - **Frontend — Admin Seller Detail Finance tab**: Adds a "Pickup address (Ship-From)" card with 7 fields + Save button so admin can register each vendor's warehouse for Shiprocket pickup.
 
+### Phase 63: Frictionless Checkout (Complete - Feb 15, 2026)
+**Goal**: Order flow needed to mirror the unified RFQ flow — gate guests behind WhatsApp OTP, auto-fill everything for logged-in customers, surface past saved addresses as one-tap chips.
+
+- **Backend**: `GET /api/customer/saved-addresses` — derives unique past shipping addresses from `db.orders` (looks up by email OR phone, dedupes on address+pincode, limits to 6). Zero schema change — addresses come from each order's snapshotted `customer{}` block.
+- **Frontend** — `SavedAddressPicker` component: horizontal scrollable chip list, only renders when API returns non-empty. Each chip fills form fields on tap (name, phone, address, city, state, pincode, GSTIN).
+- **Wrappers**: `CheckoutPage` (desktop) and `MCheckout` (mobile) now default-export gated variants using the same `RFQAuthGate`. Logged-in users pass through transparently.
+- **Verified** (iteration_66.json): 100% pass (11/11 backend + 10/10 frontend). Picker dedupe correct, gate shows for guests, complete-profile customers auto-fill cleanly.
+
+### Phase 62: Unified RFQ Flow (Complete - Feb 15, 2026)
+**Goal**: Single RFQ structure across desktop + mobile, with smart skipping for logged-in users and inline registration for guests.
+
+- **3-stage auth gate** (`RFQAuthGate.js`): phone → WhatsApp OTP → (if new) inline registration (name + email + GSTIN with server-side GST verify via Sandbox API). Reuses existing Gupshup integration + `PUT /customer/profile` endpoint.
+- **Use-case logic**:
+  - Logged-in + PDP context → collapsed "Specs locked from {fabric}" card with Edit toggle, skip personal-info step
+  - Logged-in + header → fabric picker grid, skip personal-info step
+  - Guest → auth gate, then route into one of the above
+- **Mobile (`MRFQ.js`)**: full refactor — 2 steps for logged-in (specs+qty → notes), no contact step. Fabric pre-fills from `?fabric=` param via `/api/fabrics/{slug}`. Composition rendering normalises array/string forms.
+- **Desktop (`RFQPage.js`)**: wrapped in `RFQAuthGate` (last 15 lines) without touching the existing 1000+ line form below.
+- **Verified** (iteration_65.json): 100% pass (10/10 frontend + 9/9 backend). 1 LOW-priority composition display bug found and fixed.
+
+### Phase 61: Unified Credit & Ledger (Complete - Feb 14, 2026)
+**Goal**: Bring B2C/standard buyers to parity with enterprise — every buyer with a GSTIN now sees a single Credit & Ledger view (limits per lender, full disbursement history, payments stream, manual adjustments).
+
+- **Backend** — new router `/api/credit-ledger/*` (`credit_ledger_router.py`):
+  - 4 new MongoDB collections: `credit_lender_lines`, `credit_disbursements`, `credit_payments`, `credit_adjustments` (+ `credit_adjustment_otps`). Indexed in `db_indexes.py`.
+  - `POST /admin/disbursements/upload-csv` & `POST /admin/payments/upload-csv` — tolerant CSV parser (handles `#REF!`, comma-thousands, `DD-Mon-YY`/ISO dates). Idempotent on `invoice_no` / `utr`.
+  - OTP-gated manual adjustments: `send-otp` → `verify-otp` (4h JWT scoped `credit_adjustment`) → `post`. Restricted to `CREDIT_ADJUSTMENT_ADMIN_EMAIL` (default `sandeep.kumar@locofast.com`). Adjustments are immutable (409 on duplicate ref).
+  - Razorpay auto-record hook fires from `orders_router.verify_payment` → credit_payments with `utr='razorpay:<id>'`, `source='razorpay-webhook'`.
+  - `GET /by-gstin/{gstin}` unified read returns `{ totals, lenders, disbursements, payments, adjustments }`. Falls back to legacy `credit_wallets` row when new tables are empty (so existing buyers see something immediately).
+  - Google Sheets poller scaffolded (env: `SHEETS_SERVICE_ACCOUNT_JSON`, `SHEET_DISBURSEMENTS_ID`, `SHEET_PAYMENTS_ID`, `SHEETS_POLL_INTERVAL_SEC=900`). No-op until creds supplied.
+
+- **Frontend** — shared `<CreditLedgerView/>` presentation component (top stat cards, lender utilisation bars, disbursement table with status pills, payments stream with auto/manual badges, adjustments table). Used by:
+  - Desktop `/account?tab=ledger` — new "Credit & Ledger" tab (testid `tab-credit-ledger`).
+  - Mobile `/m/ledger` — new route + tile on `/m/account`.
+  - `/admin/credit-adjustments` — 3-stage OTP form (email → 6-digit OTP → adjustment form). JWT cached in localStorage `credit_adj_jwt`.
+  - Static design preview at `/dev/ledger-preview` (kept for stakeholder reference).
+
+- **Verified** (iteration_64.json): 14/14 backend + 100% frontend. Real CSV (35 rows) ingested cleanly; idempotency, OTP rate-limit, JWT scope, Razorpay hook, legacy wallet fallback all PASS.
+
+### Phase 60: RFQ → Order Packaging & Logistics Parity (Complete - Feb 14, 2026)
+Bug fix — orders created from a vendor quote (RFQ flow) were missing `packaging_charge` and `logistics_only_charge` because `place_order_from_quote` built an `OrderCreate` without these fields, defaulting them to ₹0. This caused revenue leakage on RFQ-converted orders.
+- **Backend (`customer_queries_router.py`)** — `place_order_from_quote` (lines 199-244) now computes bulk pricing inline (`total_logistics = max(3% of subtotal, ₹3000)`, `packaging = qty × ₹1`, `logistics_only = total_logistics - packaging`) — mirroring `CheckoutPage.calculatePricing`. Passes both fields into `OrderCreate` so downstream `calculate_totals` produces correct taxable value & total. Tested 6/6 backend cases (iteration_63.json).
+- Both Desktop (`CustomerQueryDetail.js`) and Mobile (`MRfqDetail.js`) RFQ-place-order paths benefit (shared endpoint).
+
 ### Phase 59: 5% GST on Packaging + Logistics (Complete - Feb 2026)
 Compliance fix — per Schedule II of the CGST Act, packaging and logistics charged by the supplier are part of the value of supply and are taxable at the same rate as the principal goods. Earlier orders didn't tax these charges; new orders do. Tested 9/9 backend + frontend (iteration_62.json).
 - **Backend (`orders_router.py`)**: `calculate_totals` rewritten — `taxable_value = goods_subtotal + packaging + logistics`, `tax = 5% × taxable_value`, `total = taxable_value + tax`. Result also exposes a `tax_on_charges_v2: True` flag so the PDF renderer can branch correctly.
@@ -546,10 +597,184 @@ Compliance fix — per Schedule II of the CGST Act, packaging and logistics char
 - MAccount now has parity with desktop `/account`: Orders + Queries + RFQ stat cards, Company auto-fill, phone-only nudge, inline edit-sheet validation, Email field.
 - Architectural rules in `/app/frontend/src/mobile/README.md` — never touch `src/pages/` for mobile work.
 
+### Mobile Checkout Funnel Hardening (Feb 18, 2026)
+- **Sticky CTA z-index lifted 50→100** on MFabricDetail and MCheckout so the PWA install banner (z90) can no longer hijack taps. Was the root cause of "Buy sample / Book Bulk does nothing" on production.
+- **CTA bar flush with viewport bottom**: removed the unused 64px tab-bar reservation on fabric detail (tabs are already hidden) — `bottom: 0; padding-bottom: env(safe-area-inset-bottom, 0px)`.
+- **PWA InstallPrompt suppressed** on `/m/fabric/*`, `/m/checkout`, `/m/rfq/*`, `/m/order*` to avoid any overlay-on-CTA race condition.
+- **Mobile checkout auto-fills from saved addresses**: when the customer profile doc has empty `address/city/state/pincode` (common for users who only filled address per-order on desktop), MCheckout now falls back to `/api/customer/saved-addresses[0]` for the prefill — no more re-asking for shipping details already captured on desktop.
+- Fixed-bar centering uses `left:50%; transform:translateX(-50%); width:100%; max-width:480px` so the bar matches the mobile frame on wider viewports.
+
+### GST Trade Name Migration (Feb 18, 2026)
+- **Forward-fix:** Flipped GST auto-fill priority from `legal_name → trade_name` so all new GSTIN verifications save the Trade Name as the customer's company name (which is what the tax invoice prints). Touched `customer_router.py`, `CustomerAccountPage.js`, `AdminCustomers.js`. Desktop CheckoutPage/AdminSellers/SellOnLocofast already preferred trade name.
+- **Backfill tool:** new admin endpoint `POST /api/admin/customers/{id}/resync-gst` + "Resync" button next to GSTIN in `/admin/customers` detail dialog. Re-hits the GST registry, prefers trade_name for `company`, refreshes `city/state/pincode`, stamps `gst_status` + `gst_last_synced_at`. If the GSTIN comes back cancelled/inactive (`sts != "Active"`), we flag `gst_verified=false` and persist the status — but **never wipe** the existing company name (per ops directive).
+
+### Provisional Bulk Orders — Vendor & Admin UIs (Feb 19, 2026) ✅
+Full E2E flow for the 10% advance bulk order workflow shipped. Customer pays 10% advance → Vendor marks goods ready with exact dispatched quantity (with per-roll breakdown) → balance invoice auto-emailed → Customer pays balance OR Admin marks paid offline → Shiprocket push.
+- **Vendor UI** (`/app/frontend/src/pages/vendor/VendorOrders.js`)
+  - `ProvisionalBanner` component renders contextual banners for each payment_status (`pending_advance` / `advance_paid` / `balance_pending` / `paid`).
+  - `MarkGoodsReadyModal`: per-item rolls breakdown (count × length rows), auto-summed total, ±10% variance warning, optional dispatch_note per item. Vendor sees only items where `seller_id` matches their own.
+  - "Mark Goods Ready" CTA visible only when `payment_status === 'advance_paid'`. Submitting calls `POST /api/orders/{id}/mark-goods-ready` and refreshes the modal.
+- **Admin UI** (`/app/frontend/src/pages/admin/AdminOrders.js`)
+  - Top-of-modal `admin-provisional-banner` with Advance / Balance / Stage tiles for any provisional order.
+  - "Mark Balance Paid (₹X)" button in the action footer, visible only when `is_provisional && payment_status === 'balance_pending'`. Confirms then `POST /api/orders/{id}/mark-balance-paid` — flips order to `paid+confirmed`, deducts inventory, materializes payouts, pushes to Shiprocket.
+  - New status configs for `provisional`, `goods_ready`, and payment statuses `pending_advance`, `advance_paid`, `balance_pending`.
+- **Backend** (`/app/backend/orders_router.py`)
+  - `POST /api/orders/{order_id}/mark-goods-ready` extended to accept `rolls: [{count, length}]` and `dispatch_note` per item; auto-derives `actual_quantity` from rolls when omitted.
+  - Replaced async-dependency call with manual JWT parsing inside the endpoint to support both vendor and admin/accounts callers (testing-agent fix).
+  - On `all_ready=true` we recompute actual_total proportional to original packaging/logistics/tax, stamp `balance_amount`, transition payment_status → `balance_pending`, status → `goods_ready`, and fire `send_balance_payment_due_email` to the customer (best-effort).
+- **API helpers** (`/app/frontend/src/lib/api.js`): `vendorMarkGoodsReady(orderId, items)`, `adminMarkBalancePaid(orderId)`. Axios interceptor now forwards the vendor JWT for `mark-goods-ready` calls.
+- **Tests**: `/app/backend/tests/test_provisional_orders.py` — 10/10 pass (state machine, variance band, rolls payload, balance recompute, admin override, full E2E).
+
+### Provisional Bulk Orders — Vendor Invoice + Payout from Actual Qty (Feb 19, 2026) ✅
+Refined the goods-ready step so vendor payouts use real dispatched quantities and the tax invoice is captured upfront.
+- **Vendor invoice required at goods-ready**: `POST /api/orders/{id}/mark-goods-ready` now requires `vendor_invoice: {url, filename, invoice_number, invoice_date, amount?}` when caller is a vendor. Admin override (caller_role=admin) still allowed without invoice. Order stores `vendor_invoices: [{seller_id, url, filename, invoice_number, invoice_date, amount, uploaded_at}]` keyed by seller_id (multi-supplier safe).
+- **Payouts use actual_quantity**: `payouts_router.materialize_payouts_for_order` now reads `item.actual_quantity` (fallback to `item.quantity`) when computing `line_gross`, so vendor commission/payout matches dispatched volume — not the customer's original order. Non-provisional orders are unchanged.
+- **Auto-stamped payout invoice**: When materializing a payout we copy the order's `vendor_invoices` entry onto the payout doc (`vendor_invoice_url`, `vendor_invoice_number`, `vendor_invoice_date`, `vendor_invoice_amount`, `vendor_invoice_status='uploaded'`, `vendor_invoice_source='mark_goods_ready'`). Vendor doesn't need to re-upload from My Payouts; legacy `/api/vendor/payouts/{id}/upload-invoice` is still available for non-provisional flows.
+- **UI** (`/app/frontend/src/pages/vendor/VendorOrders.js`): Mark Goods Ready modal now has a "Tax Invoice for Payout" block (invoice number + invoice date + amount + Cloudinary file upload). Submit blocked until all required fields are filled.
+- **Tests**: `/app/backend/tests/test_provisional_invoice_payout.py` — 10/10 pass (required-for-vendor, optional-for-admin, vendor_invoices persistence, actual_quantity payout, invoice auto-stamping, non-provisional fallback, legacy upload still works).
+
+### Provisional Bulk Orders — Complete Flow + 24h Vendor SLA + Internal Mail Chain (Feb 19, 2026) ✅
+Final end-to-end workflow shipped. 13/13 tests pass (`/app/backend/tests/test_vendor_accept_cancel_v70.py`).
+- **Agent qty_type toggle** (`AgentDashboardPage.js`): cart-level `Quantity Confirmation` toggle (Actual / Provisional) + per-item override on each cart row. Drives `order.is_provisional` at checkout — ANY item with `qty_type='provisional'` triggers the 10% advance flow. Samples are always `actual`. Backend: `SharedCartItem.qty_type`, `CreateSharedCartRequest.default_qty_type`, `OrderItem.qty_type`.
+- **Vendor 24h Accept/Cancel window** (`VendorOrders.js` + `orders_router.py`): On successful advance/full payment we stamp `vendor_acceptance_status='pending'` + `vendor_action_deadline = now + 24h`. New banner (testid `vendor-acceptance-banner`) with live h/m countdown shows Confirm Order / Cancel Order. Multi-vendor: each vendor accepts independently; any cancel cancels the whole order (single-payment constraint). 
+- **Auto-cancel on SLA miss** (`order_autocancel.py`): `cancel_stale_vendor_orders` sweep fires every hour. Orders past `vendor_action_deadline` → `status=cancelled`, `cancellation_reason=vendor_sla_missed`, customer email + internal `VENDOR_AUTO_CANCELLED` event. Configurable via `VENDOR_ACCEPT_SLA_HOURS` (default 24).
+- **Customer cancellation email** (`email_router.send_order_cancellation_email`): Hand-crafted template explaining reason + advance refund window. Logged to `email_logs`. Internal stakeholders are **never** CC'd.
+- **Shareable balance-pay link** (`orders_router.py`): Agent/admin can mint `POST /api/orders/{id}/balance-share-link` returning `{token, url}` (signed against `BALANCE_LINK_SECRET`). Public `GET /api/orders/balance-share/{order_id}/{token}` returns order summary; `POST .../pay` mints a Razorpay order for the balance — customer doesn't need to log in. Agent dashboard now has "Share Balance Link" button (testid `agent-balance-link-{order_number}`) on every `balance_pending` provisional order.
+- **Internal mail chain** (`internal_events.py`, **new module**): Separate event-driven pipeline. `OrderEvent` enum + `fire_internal_event()` helper sends single email per event to a fixed 4-address list (Deepak@locofast.com, ankush.mehandiratta@locofast.com, accounts@locofast.com, animesh.sharma@locofast.com — overridable via `INTERNAL_ORDER_CC` env). Hooks wired into: `verify-payment` (ADVANCE_PAID / PAYMENT_CAPTURED / ORDER_CONFIRMED based on stage), `mark-goods-ready` all_ready (GOODS_READY), `mark-balance-paid` (ORDER_CONFIRMED + PAYMENT_CAPTURED), Shiprocket success (ORDER_DISPATCHED), `vendor-accept` (VENDOR_ACCEPTED), `vendor-cancel` (VENDOR_REJECTED + ORDER_CANCELLED), `cancel_stale_vendor_orders` (VENDOR_AUTO_CANCELLED), `payouts/{id}/mark-paid` (VENDOR_PAYOUT_PAID). All emails logged to `db.email_logs` with `kind=internal_<event>`. **Never sent to or CC'd on customer emails.**
+- **New endpoints**: `POST /api/orders/{id}/vendor-accept`, `POST /api/orders/{id}/vendor-cancel`, `POST /api/orders/{id}/balance-share-link`, `GET /api/orders/balance-share/{order_id}/{token}`, `POST /api/orders/balance-share/{order_id}/{token}/pay`.
+- **Tests**: 13/13 pass — vendor accept/cancel, multi-vendor 403 isolation, SLA auto-cancel, balance share mint/resolve/pay, internal events firing & logging, qty_type propagation, customer-vs-internal email separation.
+
+### Admin Cancel-with-Reason + Order Status Tabs (Feb 19, 2026) ✅
+Audit-driven hardening of the admin order panel. 7/7 backend tests + all UI checks pass.
+- **Status tabs** (`/admin/orders`): Replaced the status dropdown with 9 one-tap tabs (All / Payment Pending / Provisional / Goods Ready / Confirmed / Processing / Shipped / Delivered / Cancelled). Each tab carries a live count badge. Switched from server-side `?status=` requery → fetch all (limit 1000) once + client-side filter for instant tab switches and accurate counts.
+- **Cancel button in detail modal** (`AdminOrders.js`): Previously only available as a Ban icon in the list row. Now `admin-cancel-order-modal-btn` lives in the order detail modal footer (hidden for `cancelled`/`delivered` orders), so admins don't need to close the modal to cancel.
+- **Free-text cancellation note** (`AdminOrders.js`): Added `admin-cancel-notes` textarea to the cancel modal. **Required** when reason="Other"; the note is appended to the human-readable reason in the customer email and internal mail chain.
+- **Customer email + internal mail chain on admin cancel** (`orders_router.py`): `PUT /api/orders/{id}/cancel` now fires `send_order_cancellation_email` (customer-facing) AND `fire_internal_event(ORDER_CANCELLED)` (separate internal stakeholders' chain). Order doc now stores `cancellation_notes` + `cancelled_by='admin'`. Backend stays lenient on empty notes for "other" (frontend enforces); credit-refund path unchanged.
+- **API helper**: `cancelOrder(id, reason, notes='')` — backward compatible.
+
+### Mark Goods Ready for Non-Provisional Orders + Vendor Status Tabs (Feb 19, 2026) ✅
+Bug-fix + UX from user audit. 9/9 endpoint tests pass.
+- **Bug**: Supplier couldn't see Mark Goods Ready CTA on confirmed (non-provisional) orders — endpoint was gated on `is_provisional=True`, frontend banner only rendered for provisional.
+- **Backend** (`orders_router.py`): `POST /api/orders/{id}/mark-goods-ready` now branches on `is_provisional`. Provisional gating unchanged. Non-provisional now accepts `status ∈ (confirmed, processing, goods_ready)` (the last one enables edits/re-uploads). For non-provisional we only stamp rolls + invoice on items, set `status='goods_ready'`, `goods_ready_at`, `goods_ready_by`. No total/balance recomputation (customer already paid 100%). No balance-due customer email. **Internal GOODS_READY event fires for both paths.**
+- **Frontend Vendor** (`VendorOrders.js`):
+  - New `MarkReadyBanner` (testid `vendor-mark-ready-banner`) renders inside order detail modal when order is non-provisional and status ∈ {confirmed, processing}. Reuses the existing `MarkGoodsReadyModal` (rolls + invoice).
+  - Stamped state (testid `vendor-banner-goods-ready-stamped`) with Edit link for already-marked orders.
+  - **Status tabs** (testid `vendor-order-status-tabs`): 9 tabs (All / Payment Pending / Advance Paid / Confirmed / Goods Ready / Processing / Shipped / Delivered / Cancelled) with live count badges scoped to the current Source filter (Inventory/RFQ).
+
+### Packing Slip PDF (Feb 19, 2026) ✅
+- **New module** `/app/backend/packing_slip.py` — reportlab-based generator that flattens `dispatch_rolls` into ONE ROW PER ROLL (e.g., `3 rolls × 50m` → 3 rows of `Roll 1/3 · 50m`, `Roll 2/3 · 50m`, …). Falls back to ordered/actual quantity if rolls weren't captured. Header shows order #, goods-ready timestamp; address panel with FROM (supplier) → SHIP TO (customer). Footer carries total rolls + total meters + per-item dispatch notes.
+- **New endpoint** `GET /api/orders/{order_id}/packing-slip` — vendor or admin JWT. Vendors get only their own seller_id's items; admins get every supplier on the order. Returns `application/pdf`. 400 if no quantity data captured yet, 403 if vendor has no items on this order.
+- **Frontend** (`VendorOrders.js`): New `PackingSlipButton` component (testid `vendor-packing-slip-btn`) on the goods-ready stamped banner. Downloads via axios blob, surfaces backend error detail (decoding blob → JSON for nicer toasts). Visible for both non-provisional goods_ready orders AND provisional orders in balance_pending / paid (since rolls + invoice are already captured at that point).
+
+### Per-Category Variance Configuration (Feb 19, 2026) ✅
+Default ±variance band tightened from 10% → 3%. Admins can now configure variance per category (e.g., greige rolls 5–8%, knits 3–5%). 18/19 tests pass; 1 bug caught by testing agent (POST /categories was dropping new fields) fixed in-flight.
+- **Backend** `provisional_orders.py`: `VARIANCE_PCT` env-default lowered to `3`. `within_variance(ordered, actual, pct=None)` now takes an explicit `pct` kwarg. New `resolve_category_variance(db, category_id) -> float` reads `categories.variance_pct` if set & positive, else returns the platform default.
+- **Backend** `orders_router.py` (mark-goods-ready): resolves `cat_by_fabric` in a single fabric lookup (since order items don't carry `category_id`), then applies the per-category band per item. Error message surfaces each line's exact band: `"Cotton Twill (±5.0%), Linen 220 (±3.0%)"`.
+- **Backend** `category_router.py`: `CategoryCreate` / `CategoryUpdate` / `Category` now include optional `variance_pct: float`. POST `/api/categories` and PUT `/api/categories/{id}` accept it; GET returns it. (Bug-fix: POST was previously dropping `variance_pct` + other newer fields — now mirrors full schema.)
+- **Frontend** `AdminCategories.js`: New "Goods-Ready Variance %" input (testid `category-variance-input`) on the category modal — 0–100 range, blank → platform default. Help text spells out typical ranges (knits 3–5%, greige 5–8%).
+
+### Multi-Vendor Shiprocket Duplicate Prevention (Feb 19, 2026) ✅
+Bug: Duplicate Shiprocket shipments being created for the same vendor (Locofast Online Services) on multi-supplier orders. Verified 9/11 backend tests + frontend rendering invariant.
+- **Root cause #1 (backend)**: Auto-push during `verify-payment` splits a multi-vendor order into child orders and pushes each child's Shiprocket independently. The PARENT order's `shiprocket_shipments[]` array was never populated. When admin clicked "Push to Shiprocket" on the parent later, `admin_push_to_shiprocket`'s idempotency check saw an empty array and re-pushed every supplier → duplicate SR# on Shiprocket.
+- **Fix #1** (`orders_router.py` verify-payment auto-push, lines 893-984): After each child push (success OR failure), aggregate the result into a `parent_shipments[]` list with seller_id, seller_company, success, order_id, shipment_id, awb_code, child_order_id, error. After all children, persist that list onto the parent's `shiprocket_shipments` array along with `shiprocket_pushed=True` + first-success mirror on legacy single-shipment fields. Subsequent admin pushes correctly short-circuit with `already_pushed=true`.
+- **Root cause #2 (frontend)**: AdminOrders.js name-based fallback could match the same shipment row under multiple supplier groups, displaying identical SR# under different vendors.
+- **Fix #2** (`AdminOrders.js`): `srMap` only indexes shipments WITH a `seller_id`; `srByName` only indexes shipments WITHOUT one. A `claimed: Set` ensures each shipment can attach to AT MOST ONE supplier group across the render loop.
+- **Tests**: 9 backend tests pass (admin idempotency, force re-push, seller_ids filter, single-vendor regression, provisional advance-leg no-push, failed-push structure preserved). 2 skipped due to no existing multi-vendor test data — code review confirms logic is correct.
+
+### Agent Cart — Unit-aware Display (kg vs m) (Feb 19, 2026) ✅
+Bug: Agent panel always showed `/m` regardless of the fabric's actual sales unit. Polyester knits (configured by vendor as `kg`) were being shown in metres, mismatching the customer-facing PDP.
+- **Shared helper** `/app/frontend/src/lib/fabricUnit.js`: `getFabricUnit(fabric)` returns `kg` when `fabric_type === 'knitted'` AND not in the denim category, else `m`. Mirrors the existing logic in VendorInventory + AdminFabrics, so all three surfaces now derive the unit identically.
+- **Frontend agent** (`AgentDashboardPage.js`): Catalog tile price (`/m` → `/{unit}`), cart row price (`₹X/{item.unit}`), quantity controls, stepper tooltips, aria-labels — all reflect the per-item unit. `addToCart` stamps `unit` + `fabric_type` + `category_id` so it persists through cart, share, checkout and order.
+- **Frontend customer** (`SharedCartPage.js`): item qty + price now show `item.unit` instead of hardcoded `m`.
+- **Backend** (`agent_router.py`): `SharedCartItem` accepts `unit` + `fabric_type` + `category_id`. `orders_router.OrderItem` accepts `unit` so it survives checkout → DB → invoice rendering.
+- **Frontend checkout** (`CheckoutPage.js`): items payload to `/orders/create` now carries `unit` for both PDP single-item and shared-cart multi-item paths. PDP single-item infers `kg` from `fabric_type=knitted && category_id != cat-denim`.
+
+### Sample MOQ: 5m for Customer Orders, 1m for Agent (Feb 19, 2026) ✅
+- **Desktop PDP** (`FabricDetailPage.js`): default sample qty 1 → 5; dropdown options `1–5` → `5–25`; quick-chip options `[1,2,3,5]` → `[5,10,15,20]`.
+- **Mobile PDP** (`MFabricDetail.js`): default sample qty 1 → 5; stepper min 1m → 5m; cap 5m → 25m; quick chips `[1,2,3,5]` → `[5,10,15,20,25]`; modal title updated.
+- **Backend guard** (`orders_router.create_order`): customer-initiated orders (no `agent_id` AND no `shared_cart_token`) with any sample line < 5 m → 400 with message `Sample orders on the website require a minimum of 5 metres.` Agent-assisted carts bypass — verified with curl (`qty=2` → 400; `qty=2 + agent_id` → 201 success).
+
+### Customer Invoice Layout Match (Feb 19, 2026) ✅
+Rewrote `generate_invoice_pdf` to exactly match the customer invoice mockup. Verified with AI structure analysis at 95 % confidence.
+- **Header**: Logo + "B2B Fabric Sourcing Platform" tagline top-left; meta block top-right stacks Invoice Date / Invoice No / Payment with contextual ● PAID badge (green / amber). Removed the duplicate `Invoice Details` table.
+- **Items table**: Compact labels `# · Description · HSN · Qty · Rate (₹) · Delivery · Amount (₹)`. Each row's description renders bold fabric name + small grey subline `SKU · Color · Type`. Qty/rate use the per-item `unit` (kg for knitted, m otherwise).
+- **Totals**: All rows in brand blue (Order Value · Packaging · Logistics · Gross Value · GST · Total Invoice Value); last row bolder with underline.
+- **Authorised Signatory** (left) sits side-by-side with totals (right) to match the mockup. Includes "For LOCOFAST ONLINE SERVICES PRIVATE LIMITED" header above signature line.
+- **Amount in Words**: now boxed with a subtle blue border + light-blue background.
+
+### Finance Balance-Payment Controls in Admin Order Modal (Feb 19, 2026) ✅
+Surfaced both balance-payment controls inside the admin order detail modal so the Locofast Accounts/Finance team can act without leaving `/admin/orders`.
+- **Share Balance Link** button (testid `admin-share-balance-link-btn`) — copies a public `/pay-balance/{id}/{token}` URL to clipboard. Identical to the agent-side flow but available to admins + accounts role. Endpoint `POST /api/orders/{id}/balance-share-link` already accepted admin tokens (which includes accounts via `db.admins`).
+- **Mark Balance Paid** button stays — fires the existing endpoint, which auto-flips order to `paid+confirmed`, deducts inventory, materializes payouts, pushes to Shiprocket, fires `ORDER_CONFIRMED` + `PAYMENT_CAPTURED` internal events.
+- **AdminLayout**: relabeled the accounts nav entry from `Orders (read)` → `Orders` since accounts now have write capability on the balance-payment flow.
+- **No backend changes needed** — endpoints `mark-balance-paid` and `balance-share-link` already authorize via `get_current_admin`, which resolves both `role=admin` and `role=accounts`. Confirmed end-to-end with finance JWT.
 
 ### P3 (Low Priority)
 - [ ] Wishlist/Favorites for B2B buyers
 - [ ] Advanced Analytics Dashboard
 
+### Actual-Qty Balance Collection + Vendor Payout Auto-Resync (Feb 19, 2026) ✅
+Closed two intertwined gaps when vendors report a goods-ready qty that differs from the booked qty.
+
+**Backend (`orders_router.py`)**
+- `mark_goods_ready` now recomputes `actual_subtotal / packaging / logistics / tax / total` for **non-provisional** orders too (previously only provisional). Sets `balance_amount = max(actual_total − amount_paid, 0)` and `refund_amount = max(amount_paid − actual_total, 0)`. Flips `payment_status` to `balance_pending` whenever balance > 0; otherwise stays `paid`.
+- New endpoint `POST /api/orders/{id}/recompute-actuals` — retroactive fix for orders marked ready before this logic landed. Idempotent; only mutates if at least one item has `actual_quantity != quantity`.
+- Removed the `is_provisional` gate from `balance-share-link`, `mark-balance-paid`, `start_balance_payment`, and `start_balance_payment_via_share`. Balance flow is now driven entirely by `payment_status == 'balance_pending'`, so non-provisional orders with delta balance use the same buttons & token URL.
+
+**Backend (`payouts_router.py`)**
+- New helper `resync_payouts_for_actual_qty(order)` — automatically called from the tail of `mark_goods_ready`. Recomputes every PENDING `vendor_payouts` row using `actual_quantity`, stamps `actual_qty_resync_at`, leaves PAID rows untouched.
+- Fixed `resync_order_commission` and bulk `resync_commissions` and the preview path in `get_order_seller_commissions` — all three were silently using `it.get("quantity")` instead of `actual_quantity`, so the manual "Resync" button was a no-op on quantity drift.
+
+**Frontend (`AdminOrders.js`)**
+- New banner "Actual qty differs from ordered" on non-provisional orders with `goods_ready_at` set and a delta — shows Original vs Actual invoice value + Customer owes / Refund due, with contextual help.
+- Action-bar gate relaxed: **Share Balance Link** and **Mark Balance Paid** buttons now surface whenever `payment_status === 'balance_pending'` and `balance_amount > 0`, regardless of `is_provisional`. Same backend endpoints handle both paths.
+- New purple button "Recompute Actuals" surfaces for legacy orders (`goods_ready_at` set, `actual_total` null, and at least one item with diff) — one-click retroactive fix that also resyncs vendor payouts.
+
+**Verified end-to-end via curl on preview:**
+- Created a synthetic non-provisional order, 100m → 105m actual qty. `mark-goods-ready` → `actual_total=12012`, `balance_amount=1092`, `payment_status=balance_pending`. Vendor payout auto-resynced from gross ₹10,000 → **₹11,000** (110m × ₹100), with `actual_qty_resync_at` stamped.
+- `balance-share-link` minted a public URL for the non-provisional order (would previously 400).
+- `mark-balance-paid` flipped to `paid` (would previously 400 with "Not a provisional order").
+
+### Admin User Management (Feb 19, 2026) ✅
+Super-admin (default `admin@locofast.com`, configurable via `SUPER_ADMIN_EMAIL` env var) can now create/reset/deactivate other admin-panel users from a new page `/admin/users` — no more DB shell needed for password resets.
+- **Backend**: new `admin_users_router.py` exposing `GET/POST /api/admin/manage-users`, `POST /api/admin/manage-users/{id}/reset-password`, `PATCH /api/admin/manage-users/{id}` (rename / role / AM flag / active toggle), `DELETE` (soft-delete via `active=false`). Gated by `_require_super_admin` — non-super admins get 403.
+- **Login flow**: `/api/auth/login` now rejects accounts with `active=false` with a friendly 403 "Account is deactivated. Please contact your administrator." Super-admin row cannot be self-deactivated.
+- **Frontend**: new `AdminUserManagement.js` with create-user modal, inline reset-password modal, role dropdown (Admin / Accounts), AM toggle, active/inactive pill, and a footer link pointing Supplier-Manager creation to the dedicated `/admin/supplier-managers` page (those live in a separate collection). Nav link "Admin Users" appears in the sidebar only for the super-admin email.
+
+### Admin Orders Modal — Actual Quantity Display (Feb 19, 2026) ✅
+Closed the loop on the "show actual quantity once goods are ready" work — admin staff now see the same numbers customers and mobile users see (already shipped earlier in `OrderDetailPage.js` / `MOrderDetail.js`).
+- **Items**: each line in the supplier-grouped block uses `item.actual_quantity` when present (falls back to `item.quantity`). Line total = actualQty × price, unit-aware (`item.unit || "m"`). Subtle muted note appears beneath each row when actual ≠ ordered: "_Originally ordered Xm · vendor reported Ym at goods-ready_".
+- **Supplier subtotal** in the green section header recomputes off actual qty.
+- **Payment summary** (`bg-gray-50` block): when `selectedOrder.goods_ready_at` is set AND `actual_total` is populated (provisional path), the entire summary swaps to `actual_subtotal / actual_packaging_charge / actual_logistics_charge / actual_tax / actual_total` with a "Final · Goods Ready" badge in the heading. For non-provisional orders (where customer already paid 100% on original qty), the order-level totals stay unchanged — matching the customer-view contract exactly.
+- **Shiprocket push picker** subtotal also uses actual qty so multi-vendor pushes show the same figures as the modal.
+- Verified live on ORD-UOHM6W (sample, 1m → 1.02m actual): screenshot confirms item line + subtotal show ₹1.02, audit note visible, payment summary stays at ₹117.05 (correct — non-provisional).
+
 ## Credentials
 See `/app/memory/test_credentials.md`
+
+### 6-Tab Order Lifecycle Overhaul (Feb 21, 2026) ✅
+Unified the entire order pipeline behind 6 read-time stages — single source of truth (`/app/backend/order_pipeline.py · compute_pipeline_stage`) rendered identically on Admin, Vendor and Customer surfaces.
+
+**Pipeline stages (in order)**:
+1. `awaiting_confirm` — bulk order placed, vendor hasn't marked goods ready (samples auto-confirm)
+2. `cancelled` — terminal
+3. `confirmed_pending_dispatch` — goods marked ready, balance payment pending
+4. `prepare_dispatch` — balance paid; vendor must upload tax invoice → triggers Shiprocket push
+5. `dispatched` — courier has AWB / e-way bill uploaded / sample (eway skipped)
+6. `delivered` — Shiprocket marked delivered
+
+**Backend** (`/app/backend/orders_router.py`, `vendor_router.py`, `customer_router.py`)
+- New helper `_attach_pipeline(order)` injects `pipeline_stage` + `pipeline_label` at read time — no DB migration, soft-migrates legacy orders.
+- `GET /api/orders`, `GET /api/orders/{id}`, `GET /api/vendor/orders`, `GET /api/customer/orders`, `GET /api/customer/orders/{id}` all return `pipeline_stage`/`pipeline_label`. List endpoint accepts optional `?pipeline_stage=` filter.
+- `POST /api/orders/{id}/mark-goods-ready` — tax invoice is now OPTIONAL (was previously a hard requirement that 400'd vendors). Invoice collection moved to the Prepare Dispatch step.
+- NEW endpoint `POST /api/orders/{id}/vendor-upload-invoice` — vendor uploads tax invoice at the Prepare Dispatch stage. Persists `vendor_invoices` and fires Shiprocket push best-effort. Stage-gated (must be `prepare_dispatch` or `dispatched`).
+- Vendor orders now expose `customer.gst_number` (required on supplier tax invoices) while still hiding `phone`/`email`.
+
+**Frontend** (`AdminOrders.js`, `VendorOrders.js`)
+- Tab arrays replaced with the 6-stage pipeline (testids `admin-order-tab-*` and `vendor-order-tab-*`). Filtering switched from `status` to `pipeline_stage`.
+- Vendor `MarkGoodsReadyModal`: invoice upload block removed; replaced with a deferred-note indicator (testid `mark-ready-invoice-deferred-note`).
+- New `PrepareDispatchBanner` component (testid `vendor-prepare-dispatch-banner`) — shows Locofast Bill-To (GSTIN `07AADCL8794N1ZM`) + customer Ship-To with GSTIN, takes tax invoice file + number + date + amount, posts to `/vendor-upload-invoice` which atomically saves and pushes to Shiprocket.
+- Vendor order Ship-To section now renders `customer.gst_number` when present (testid `vendor-customer-gstin`).
+- Admin status badge in orders table now uses `pipeline_label` for consistency with the tab labels.
+
+**Verified via testing_agent_v3_fork (iteration 75)** — 100% backend (11/12 passed, 1 skipped for lack of live `prepare_dispatch` order), 100% frontend.

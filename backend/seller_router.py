@@ -66,6 +66,9 @@ class SellerUpdate(BaseModel):
     certifications: Optional[List[str]] = None
     export_markets: Optional[List[str]] = None
     gst_number: Optional[str] = None
+    gst_verified: Optional[bool] = None
+    gst_legal_name: Optional[str] = None
+    gst_trade_name: Optional[str] = None
     # Pickup (Ship-From) — used when creating Shiprocket shipments for this
     # vendor. `shiprocket_pickup_nickname` is the name as registered in the
     # Shiprocket dashboard's Pickup Locations. If empty, the auto-push helper
@@ -272,6 +275,16 @@ async def update_seller(seller_id: str, data: SellerUpdate, admin=Depends(auth_h
 
     if not update_data:
         raise HTTPException(status_code=400, detail='No data to update')
+
+    # Stamp gst_verified_at when an existing seller transitions false→true
+    # (matches the create-seller behaviour so audit reports stay consistent).
+    if update_data.get('gst_verified') is True:
+        existing = await db.sellers.find_one(
+            {'id': seller_id},
+            {'_id': 0, 'gst_verified': 1, 'gst_verified_at': 1},
+        )
+        if existing and not existing.get('gst_verified'):
+            update_data['gst_verified_at'] = datetime.now(timezone.utc).isoformat()
 
     result = await db.sellers.update_one({'id': seller_id}, {'$set': update_data})
     if result.matched_count == 0:

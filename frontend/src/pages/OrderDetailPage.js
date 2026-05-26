@@ -11,7 +11,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
-  ArrowLeft, Loader2, Package, CheckCircle, Truck, XCircle, Clock,
+  ArrowLeft, Loader2, Package, CheckCircle, CheckCircle2, Truck, XCircle, Clock,
   CreditCard, Download, ExternalLink, MapPin, Phone, Mail, FileText, Box, History
 } from "lucide-react";
 import Navbar from "../components/Navbar";
@@ -22,6 +22,34 @@ import { getCustomerOrder, getOrderPayContext, verifyPayment } from "../lib/api"
 import { toast } from "sonner";
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
+
+// Live countdown to a deadline. Highlights when the deadline is < 12h
+// out (urgent) or already past (expired). Re-ticks every minute.
+function BalanceCountdown({ dueAt }) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  const due = new Date(dueAt);
+  const diffMs = due - now;
+  const expired = diffMs <= 0;
+  const totalMin = Math.max(0, Math.floor(diffMs / 60_000));
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const urgent = !expired && diffMs < 12 * 3600_000;
+  return (
+    <div
+      className={`mt-2 inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium ${expired ? "bg-red-100 text-red-700" : urgent ? "bg-orange-100 text-orange-700" : "bg-amber-100 text-amber-700"}`}
+      data-testid="order-balance-countdown"
+    >
+      <Clock size={11} />
+      {expired
+        ? "Balance overdue — order may auto-cancel shortly"
+        : `Pay balance within ${h}h ${m}m or the order will auto-cancel`}
+    </div>
+  );
+}
 
 // Five canonical states surfaced to the buyer. Internal statuses
 // (confirmed, processing, shipped) collapse onto these stages as the order
@@ -190,6 +218,52 @@ const OrderDetailPage = () => {
     }
   };
 
+  const handleBalancePay = async () => {
+    setPaying(true);
+    try {
+      const ok = await loadRazorpayScript();
+      if (!ok) throw new Error("Failed to load payment gateway");
+      const res = await fetch(`${API_URL}/api/orders/${order.id}/balance-pay`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const ctx = await res.json();
+      if (!res.ok) throw new Error(ctx?.detail || "Could not start balance payment");
+      const rp = new window.Razorpay({
+        key: ctx.key_id,
+        amount: ctx.amount,
+        currency: ctx.currency,
+        name: "Locofast",
+        description: `Balance · ${ctx.order_number}`,
+        order_id: ctx.razorpay_order_id,
+        prefill: { name: order.customer?.name, email: order.customer?.email, contact: order.customer?.phone },
+        theme: { color: "#2563EB" },
+        modal: { ondismiss: () => { setPaying(false); toast.info("Payment cancelled"); } },
+        handler: async (r) => {
+          try {
+            const v = await verifyPayment({
+              razorpay_order_id: r.razorpay_order_id,
+              razorpay_payment_id: r.razorpay_payment_id,
+              razorpay_signature: r.razorpay_signature,
+            });
+            if (v.data.success) {
+              toast.success("Balance paid — dispatch unlocked");
+              fetchOrder();
+            }
+          } catch {
+            toast.error("Payment verification failed");
+          }
+        },
+      });
+      rp.on("payment.failed", () => toast.error("Payment failed"));
+      rp.open();
+    } catch (e) {
+      toast.error(e.message || "Could not start balance payment");
+    } finally {
+      setPaying(false);
+    }
+  };
+
   const handleDownloadInvoice = async () => {
     try {
       // Hit the public invoice endpoint — paid-only check is enforced server-side.
@@ -237,7 +311,12 @@ const OrderDetailPage = () => {
   }
 
   const isPaid = order.payment_status === "paid";
-  const isPending = order.payment_status !== "paid" && order.status !== "cancelled";
+  const isParentSplit = !!(order.is_parent_order && ((order.child_order_ids || []).length > 0 || (order.vendor_count || 0) > 1));
+  const isProvisional = !!order.is_provisional;
+  const isAdvancePending = order.payment_status === "pending_advance" || order.payment_status === "initiated";
+  const isAdvancePaid = order.payment_status === "advance_paid";
+  const isBalancePending = order.payment_status === "balance_pending";
+  const isPending = !isPaid && order.status !== "cancelled";
   const awb = order.awb_code;
   const trackingUrl = awb ? `https://shiprocket.co/tracking/${encodeURIComponent(awb)}` : null;
 
@@ -263,7 +342,7 @@ const OrderDetailPage = () => {
                 <p className="text-xs text-gray-500 mt-1">Placed on {formatDate(order.created_at)}</p>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                {isPending && (
+                {isAdvancePending && (
                   <button
                     onClick={handlePayNow}
                     disabled={paying}
@@ -271,10 +350,23 @@ const OrderDetailPage = () => {
                     data-testid="order-detail-pay-now"
                   >
                     {paying ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
-                    Pay now · {formatRupees(order.total)}
+                    {isProvisional
+                      ? `Pay ${order.advance_pct || 10}% advance · ${formatRupees(order.advance_amount || order.total)}`
+                      : `Pay now · ${formatRupees(order.total)}`}
                   </button>
                 )}
-                {isPaid && (
+                {isBalancePending && (
+                  <button
+                    onClick={handleBalancePay}
+                    disabled={paying}
+                    className="inline-flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-60"
+                    data-testid="order-detail-pay-balance"
+                  >
+                    {paying ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
+                    Pay balance · {formatRupees(order.balance_amount || 0)}
+                  </button>
+                )}
+                {isPaid && !isParentSplit && (
                   <button
                     onClick={handleDownloadInvoice}
                     className="inline-flex items-center gap-2 bg-white border border-gray-300 text-gray-800 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50"
@@ -282,6 +374,14 @@ const OrderDetailPage = () => {
                   >
                     <Download size={14} /> Download invoice
                   </button>
+                )}
+                {isPaid && isParentSplit && (
+                  <span
+                    className="inline-flex items-center gap-2 bg-blue-50 border border-blue-200 text-blue-700 px-3 py-2 rounded-lg text-xs font-medium"
+                    data-testid="order-detail-parent-invoice-note"
+                  >
+                    <FileText size={14} /> Invoices available on each sub-order below
+                  </span>
                 )}
                 {trackingUrl && (
                   <a
@@ -319,9 +419,30 @@ const OrderDetailPage = () => {
               </div>
             )}
 
-            {isPending && (
+            {isAdvancePending && !isProvisional && (
               <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-xs text-amber-800 flex items-center gap-2">
                 <Clock size={12} /> Payment pending — your order will be confirmed once payment is received.
+              </div>
+            )}
+            {isAdvancePending && isProvisional && (
+              <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-xs text-blue-800">
+                <div className="flex items-center gap-2 font-medium mb-1"><Clock size={12} /> Provisional booking · pay {order.advance_pct || 10}% advance</div>
+                <p className="text-blue-700">You only pay <strong>{formatRupees(order.advance_amount || 0)}</strong> now. Actual quantity shipped by the supplier may differ slightly; we'll send you the balance invoice ({formatRupees(order.balance_amount || 0)} estimated) once the goods are ready.</p>
+              </div>
+            )}
+            {isAdvancePaid && (
+              <div className="mt-4 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 text-xs text-emerald-800">
+                <div className="flex items-center gap-2 font-medium mb-1"><CheckCircle2 size={12} /> Advance received · waiting for supplier</div>
+                <p className="text-emerald-700">You paid <strong>{formatRupees(order.advance_amount || 0)}</strong> advance. The supplier is preparing your goods and will confirm the actual quantity shortly. We'll email you the balance payment link as soon as the order is ready.</p>
+              </div>
+            )}
+            {isBalancePending && (
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-800" data-testid="order-balance-pending-banner">
+                <div className="flex items-center gap-2 font-medium mb-1"><Clock size={12} /> Goods ready · pay balance to dispatch</div>
+                <p className="text-amber-700">Final invoice value: <strong>{formatRupees(order.actual_total || order.total)}</strong>. You've paid {formatRupees(order.advance_amount || 0)}; balance due is <strong>{formatRupees(order.balance_amount || 0)}</strong>. Once cleared, we hand the order to our logistics partner.</p>
+                {order.balance_due_at && (
+                  <BalanceCountdown dueAt={order.balance_due_at} />
+                )}
               </div>
             )}
           </div>
@@ -335,14 +456,25 @@ const OrderDetailPage = () => {
           <div className="bg-white border border-gray-200 rounded-xl p-6 mb-4">
             <h2 className="text-sm font-semibold text-gray-900 mb-3">Items</h2>
             <div className="divide-y divide-gray-100">
-              {(order.items || []).map((item, i) => (
+              {(order.items || []).map((item, i) => {
+                // Once goods are ready the line uses the supplier-reported
+                // actual quantity; before that we show the ordered qty.
+                const hasActual = item.actual_quantity != null && item.actual_quantity !== "";
+                const displayQty = hasActual ? item.actual_quantity : item.quantity;
+                const lineTotal = (Number(displayQty) || 0) * (Number(item.price_per_meter) || 0);
+                return (
                 <div key={i} className="flex gap-4 py-3" data-testid={`order-item-${i}`}>
                   {item.image_url && <img src={item.image_url} alt={item.fabric_name} className="w-16 h-16 rounded-lg object-cover flex-shrink-0" />}
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-gray-900 truncate">{item.fabric_name}</p>
                     <p className="text-xs text-gray-500 mt-0.5">
-                      {item.category_name || "Fabric"} · {item.quantity}{item.unit || "m"} × {formatRupees(item.price_per_meter)}/{item.unit || "m"}
+                      {item.category_name || "Fabric"} · {displayQty}{item.unit || "m"} × {formatRupees(item.price_per_meter)}/{item.unit || "m"}
                     </p>
+                    {hasActual && Number(item.actual_quantity) !== Number(item.quantity) && (
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        Originally ordered {item.quantity}{item.unit || "m"} · vendor reported {item.actual_quantity}{item.unit || "m"} at goods-ready
+                      </p>
+                    )}
                     <div className="flex items-center gap-2 mt-1">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${item.order_type === "sample" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
                         {item.order_type === "sample" ? "Sample" : "Bulk"}
@@ -359,39 +491,70 @@ const OrderDetailPage = () => {
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className="font-semibold text-gray-900">{formatRupees(item.quantity * item.price_per_meter)}</p>
+                    <p className="font-semibold text-gray-900">{formatRupees(lineTotal)}</p>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
           {/* Totals + customer */}
           <div className="grid md:grid-cols-2 gap-4">
+            {(() => {
+              // Once goods are ready, the supplier has reported the exact
+              // dispatched quantity. We swap the payment-summary numbers to
+              // the recomputed `actual_*` values so the customer sees the
+              // figure they'll be invoiced for — not the original estimate.
+              const useActual = !!order.goods_ready_at && order.actual_total != null;
+              const subtotal = useActual ? order.actual_subtotal : order.subtotal;
+              const packaging = useActual ? order.actual_packaging_charge : order.packaging_charge;
+              const logistics = useActual
+                ? (order.actual_logistics_charge ?? order.actual_logistics_only_charge)
+                : (order.logistics_only_charge || order.logistics_charge);
+              const tax = useActual ? order.actual_tax : order.tax;
+              const total = useActual ? order.actual_total : order.total;
+              return (
             <div className="bg-white border border-gray-200 rounded-xl p-6">
-              <h2 className="text-sm font-semibold text-gray-900 mb-3">Payment summary</h2>
+              <h2 className="text-sm font-semibold text-gray-900 mb-3">
+                Payment summary
+                {useActual && (
+                  <span className="ml-2 text-[10px] font-medium uppercase tracking-wide bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">
+                    Final · Goods Ready
+                  </span>
+                )}
+              </h2>
               <dl className="space-y-2 text-sm">
-                <div className="flex justify-between"><dt className="text-gray-600">Subtotal</dt><dd className="text-gray-900">{formatRupees(order.subtotal)}</dd></div>
+                <div className="flex justify-between"><dt className="text-gray-600">Order Value</dt><dd className="text-gray-900">{formatRupees(subtotal)}</dd></div>
+                {packaging > 0 && (
+                  <div className="flex justify-between"><dt className="text-gray-600">Packaging</dt><dd className="text-gray-900">{formatRupees(packaging)}</dd></div>
+                )}
+                {logistics > 0 && (
+                  <div className="flex justify-between"><dt className="text-gray-600">Logistics</dt><dd className="text-gray-900">{formatRupees(logistics)}</dd></div>
+                )}
+                <div className="flex justify-between text-xs text-gray-500 pt-1 border-t border-dashed border-gray-100"><dt>Gross Value</dt><dd>{formatRupees((subtotal || 0) + (packaging || 0) + (logistics || 0))}</dd></div>
+                <div className="flex justify-between"><dt className="text-gray-600">GST</dt><dd className="text-gray-900">{formatRupees(tax)}</dd></div>
                 {order.discount > 0 && (
                   <div className="flex justify-between"><dt className="text-gray-600">Discount{order.coupon?.code ? ` (${order.coupon.code})` : ""}</dt><dd className="text-emerald-700">− {formatRupees(order.discount)}</dd></div>
                 )}
-                {order.packaging_charge > 0 && (
-                  <div className="flex justify-between"><dt className="text-gray-600">Packaging</dt><dd className="text-gray-900">{formatRupees(order.packaging_charge)}</dd></div>
+                <div className="flex justify-between border-t border-gray-100 pt-2 mt-2 font-semibold"><dt className="text-gray-900">{useActual ? "Final Invoice Value" : "Total Invoice Value"}</dt><dd className="text-emerald-700">{formatRupees(total)}</dd></div>
+                {useActual && order.advance_amount > 0 && (
+                  <>
+                    <div className="flex justify-between text-xs text-gray-500"><dt>Advance paid</dt><dd>− {formatRupees(order.advance_amount)}</dd></div>
+                    <div className="flex justify-between text-sm font-semibold text-orange-700 border-t border-dashed border-orange-200 pt-1">
+                      <dt>Balance due</dt>
+                      <dd>{formatRupees(order.balance_amount || 0)}</dd>
+                    </div>
+                  </>
                 )}
-                {order.logistics_only_charge > 0 && (
-                  <div className="flex justify-between"><dt className="text-gray-600">Logistics</dt><dd className="text-gray-900">{formatRupees(order.logistics_only_charge)}</dd></div>
-                )}
-                {!order.packaging_charge && order.logistics_charge > 0 && (
-                  <div className="flex justify-between"><dt className="text-gray-600">Logistics</dt><dd className="text-gray-900">{formatRupees(order.logistics_charge)}</dd></div>
-                )}
-                <div className="flex justify-between"><dt className="text-gray-600">GST</dt><dd className="text-gray-900">{formatRupees(order.tax)}</dd></div>
-                <div className="flex justify-between border-t border-gray-100 pt-2 mt-2 font-semibold"><dt className="text-gray-900">Total</dt><dd className="text-emerald-700">{formatRupees(order.total)}</dd></div>
                 <div className="flex justify-between text-xs text-gray-500"><dt>Payment method</dt><dd>{order.payment_method === "credit" ? "Locofast Credit" : "Razorpay"}</dd></div>
                 {order.invoice_number && (
                   <div className="flex justify-between text-xs text-gray-500"><dt>Invoice no.</dt><dd className="font-mono">{order.invoice_number}</dd></div>
                 )}
               </dl>
             </div>
+              );
+            })()}
 
             <div className="bg-white border border-gray-200 rounded-xl p-6">
               <h2 className="text-sm font-semibold text-gray-900 mb-3">Shipping</h2>

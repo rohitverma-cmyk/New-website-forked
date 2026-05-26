@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import ExpandableText from "../components/ExpandableText";
+import WishlistHeartButton from "../components/WishlistHeartButton";
 import RFQModal from "../components/RFQModal";
 import InventoryShortfallModal from "../components/InventoryShortfallModal";
 import { getFabric, createEnquiry, getFabricSEO, getRelatedFabrics, getOtherSellers } from "../lib/api";
@@ -34,7 +35,9 @@ const FabricDetailPage = () => {
   const [orderModalType, setOrderModalType] = useState(null); // 'sample' | 'bulk' | null
   const [showBookModal, setShowBookModal] = useState(false);
   const [shortfallState, setShortfallState] = useState(null); // { qty, available, color }
-  const [sampleQty, setSampleQty] = useState(1);
+  // Customer-initiated samples on the website must be at least 5 m.
+  // (The agent-assisted flow allows 1 m for client previews.)
+  const [sampleQty, setSampleQty] = useState(5);
   const [bulkQty, setBulkQty] = useState("");
   // Buyer-side color selection for Sample / Bulk booking (null = none picked yet)
   const [bookingVariantIdx, setBookingVariantIdx] = useState(null);
@@ -953,17 +956,22 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                       data-testid="book-sample-btn"
                     >
                       <Package size={18} />
-                      Book Sample (1-5m)
+                      Book Sample
                     </button>
                   )}
                   <button
                     onClick={() => { trackRFQIntent(fabric.name, 'fabric_detail'); setShowRfqModal(true); }}
-                    className="w-full border border-gray-300 text-gray-700 px-6 py-3 rounded-lg font-medium hover:bg-gray-50 transition-colors inline-flex items-center justify-center gap-2"
+                    className={
+                      (actions.canBookSample || actions.canBookBulk)
+                        ? "w-full border border-gray-300 text-gray-700 px-6 py-3 rounded-lg font-medium hover:bg-gray-50 transition-colors inline-flex items-center justify-center gap-2"
+                        : "w-full bg-[#2563EB] text-white px-6 py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors inline-flex items-center justify-center gap-2"
+                    }
                     data-testid="enquiry-btn"
                   >
                     <MessageSquare size={18} />
                     Request a Quote
                   </button>
+                  <WishlistHeartButton fabricId={fabric.id} className="w-full" />
                   <DispatchStrip fabric={fabric} className="mt-2" />
                 </div>
               </div>
@@ -1170,7 +1178,13 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
             </div>
           )}
 
-          {/* Final CTA */}
+          {/* Final CTA — hide when out of stock to avoid showing two
+              "Request a Quote" buttons on the same page (the inline
+              button at the top is already promoted to primary in that
+              scenario). Keep it as a re-engagement section when the
+              user CAN book sample/bulk, so the RFQ option stays
+              discoverable below the fold. */}
+          {(actions.canBookSample || actions.canBookBulk) && (
           <div className="border-t border-gray-200 pt-12 mt-12 text-center" data-testid="final-cta">
             <h2 className="text-2xl font-semibold mb-4">Ready to Source This Fabric?</h2>
             <p className="text-gray-500 mb-6 max-w-xl mx-auto">
@@ -1185,6 +1199,7 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
               Request a Quote
             </button>
           </div>
+          )}
 
           {/* Internal Links */}
           <div className="border-t border-gray-200 pt-8 mt-12">
@@ -1263,7 +1278,7 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                       className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none"
                       data-testid="detail-sample-qty"
                     >
-                      {[1, 2, 3, 4, 5].map((qty) => (
+                      {[5, 10, 15, 20, 25].map((qty) => (
                         <option key={qty} value={qty}>{qty} {unit.singular}{qty > 1 && unit.singular !== 'kg' ? "s" : ""}</option>
                       ))}
                     </select>
@@ -1497,7 +1512,7 @@ GST Number: ${orderForm.gst_number || "Not provided"}`
                     Sample Quantity ({getUnit(fabric).plural})
                   </label>
                   <div className="flex gap-2">
-                    {[1, 2, 3, 5].map((q) => (
+                    {[5, 10, 15, 20].map((q) => (
                       <button
                         key={q}
                         type="button"

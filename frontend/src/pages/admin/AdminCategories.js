@@ -14,7 +14,7 @@ const AdminCategories = () => {
   const [editingCategory, setEditingCategory] = useState(null);
   const [uploading, setUploading] = useState(false);
 
-  const emptyForm = { name: "", description: "", image_url: "", seo_title: "", seo_meta_description: "", seo_intro: "", seo_applications: "" };
+  const emptyForm = { name: "", description: "", image_url: "", seo_title: "", seo_meta_description: "", seo_intro: "", seo_applications: "", variance_pct: "" };
   const [form, setForm] = useState(emptyForm);
 
   useEffect(() => {
@@ -72,6 +72,7 @@ const AdminCategories = () => {
       seo_meta_description: category.seo_meta_description || "",
       seo_intro: category.seo_intro || "",
       seo_applications: category.seo_applications || "",
+      variance_pct: category.variance_pct == null ? "" : String(category.variance_pct),
     });
     setShowModal(true);
   };
@@ -83,12 +84,26 @@ const AdminCategories = () => {
       return;
     }
 
+    // Coerce variance to number (or null). Blank → null → backend uses
+    // platform default (3%).
+    const payload = { ...form };
+    if (payload.variance_pct === "" || payload.variance_pct == null) {
+      payload.variance_pct = null;
+    } else {
+      const v = parseFloat(payload.variance_pct);
+      if (Number.isNaN(v) || v < 0 || v > 100) {
+        toast.error("Variance % must be between 0 and 100");
+        return;
+      }
+      payload.variance_pct = v;
+    }
+
     try {
       if (editingCategory) {
-        await updateCategory(editingCategory.id, form);
+        await updateCategory(editingCategory.id, payload);
         toast.success("Category updated");
       } else {
-        await createCategory(form);
+        await createCategory(payload);
         toast.success("Category created");
       }
       setShowModal(false);
@@ -313,6 +328,33 @@ const AdminCategories = () => {
                     placeholder="Brief description of this category"
                     data-testid="category-description-input"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2 flex items-center gap-2">
+                    Goods-Ready Variance %
+                    <span className="text-[10px] font-medium uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">Per-category</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.1"
+                      value={form.variance_pct}
+                      onChange={(e) => setForm({ ...form, variance_pct: e.target.value })}
+                      className="w-32 px-3 py-2 border border-gray-200 rounded text-sm"
+                      placeholder="3"
+                      data-testid="category-variance-input"
+                    />
+                    <span className="text-sm text-gray-500">%</span>
+                    <span className="text-xs text-gray-400 ml-2">
+                      ± band the supplier may dispatch outside the ordered quantity before admin override is required.
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    Leave blank to use the platform default (<strong>3%</strong>). Knits typically run 3–5%; greige rolls may need 5–8%.
+                  </p>
                 </div>
 
                 {/* SEO fields — rendered above/below the grid on /fabrics?category=X */}

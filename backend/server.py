@@ -230,6 +230,8 @@ async def login_admin(data: AdminLogin):
     admin = await db.admins.find_one({'email': data.email})
     if not admin or not verify_password(data.password, admin['password']):
         raise HTTPException(status_code=401, detail='Invalid credentials')
+    if admin.get('active') is False:
+        raise HTTPException(status_code=403, detail='Account is deactivated. Please contact your administrator.')
     
     token = create_token(admin['id'])
     return TokenResponse(
@@ -575,7 +577,15 @@ async def seed_data():
 
 # Initialize orders and email routers with database
 orders_router.set_db(db)
+import internal_events  # noqa: E402
+internal_events.set_db(db)
 orders_router.init_razorpay()
+
+# Auto-CC every outbound mail to mail@locofast.com (transparency for ops).
+# Must run before any router imports `resend` and caches `Emails.send`.
+import mail_cc_patch  # noqa: E402
+mail_cc_patch.install()
+
 email_router.set_db(db)
 cloudinary_router.set_db(db)
 cloudinary_router.init_cloudinary()
@@ -589,6 +599,8 @@ app.include_router(supplier_router)
 app.include_router(orders_router.router)
 app.include_router(email_router.router)
 app.include_router(vendor_router.router)
+from supplier_manager_router import router as supplier_manager_router
+app.include_router(supplier_manager_router)
 app.include_router(coupon_router.router, prefix="/api")
 app.include_router(cloudinary_router.router)
 app.include_router(rfq_router.router)
@@ -601,9 +613,33 @@ import customer_router
 customer_router.set_db(db)
 app.include_router(customer_router.router)
 
+import wishlist_router
+app.include_router(wishlist_router.router)
+
+import agent_assistance_router
+agent_assistance_router.init(db)
+app.include_router(agent_assistance_router.router)
+
+import order_reviews_router
+order_reviews_router.init(db)
+app.include_router(order_reviews_router.router)
+
 import agent_router
 agent_router.set_db(db)
 app.include_router(agent_router.router)
+
+import agent_ai_router
+agent_ai_router.set_db(db)
+app.include_router(agent_ai_router.router)
+
+import agent_catalogue_router
+agent_catalogue_router.set_db(db)
+app.include_router(agent_catalogue_router.router)
+
+# Admin DB export — one-shot full-DB snapshot endpoint
+import db_export_router
+db_export_router.set_db(db)
+app.include_router(db_export_router.router, prefix="/api")
 
 import brand_router
 brand_router.set_db(db)
@@ -613,9 +649,21 @@ import account_manager_router
 account_manager_router.set_db(db)
 app.include_router(account_manager_router.router, prefix="/api")
 
+import admin_users_router
+admin_users_router.set_db(db)
+app.include_router(admin_users_router.router, prefix="/api")
+
+import notifications_router
+notifications_router.set_db(db)
+app.include_router(notifications_router.router, prefix="/api")
+
 import commission_router
 commission_router.set_db(db)
 app.include_router(commission_router.router)
+
+import credit_ledger_router
+credit_ledger_router.set_db(db)
+app.include_router(credit_ledger_router.router)
 
 import payouts_router  # noqa: E402
 app.include_router(payouts_router.router, prefix="/api")
@@ -753,6 +801,29 @@ async def startup_create_default_admin():
         await ensure_indexes(db)
     except Exception as e:
         logger.error(f"Index bootstrap failed: {e}")
+
+    # Spin up the Google-Sheets credit-ledger poller (no-op if env unset)
+    try:
+        import credit_ledger_router as _clr
+        asyncio.create_task(_clr.start_sheets_poller())
+    except Exception as e:
+        logger.error(f"Credit-ledger sheets poller failed to start: {e}")
+
+    # Auto-cancel stale unpaid orders (72h Razorpay / 7d Credit by default).
+    try:
+        from order_autocancel import start_autocancel_poller
+        asyncio.create_task(start_autocancel_poller(db))
+    except Exception as e:
+        logger.error(f"Auto-cancel poller failed to start: {e}")
+
+    # Checkout drop-off notifier — emails Locofast agents whenever a
+    # customer reaches the address/payment step but doesn't pay within
+    # 15 min. See checkout_dropoff_notifier.py for the full spec.
+    try:
+        from checkout_dropoff_notifier import start_dropoff_poller
+        asyncio.create_task(start_dropoff_poller(db))
+    except Exception as e:
+        logger.error(f"Checkout drop-off poller failed to start: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

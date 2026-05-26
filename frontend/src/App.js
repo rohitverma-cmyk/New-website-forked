@@ -9,7 +9,7 @@ import { BrandAuthProvider } from "./context/BrandAuthContext";
 import { BrandCartProvider } from "./context/BrandCartContext";
 import { ConfirmProvider } from "./components/useConfirm";
 import WhatsAppChat from "./components/WhatsAppChat";
-import TryMobilePreview from "./components/TryMobilePreview";
+import StillConfusedPopup from "./components/StillConfusedPopup";
 import { useEffect, lazy, Suspense } from "react";
 import { isMobileDevice, shouldAutoRedirectToMobile, mapToMobilePath } from "./mobile/utils/mobileDetect";
 import { registerMobileSW } from "./mobile/utils/registerServiceWorker";
@@ -71,6 +71,7 @@ import Footer from "./components/Footer";
 // Public pages
 const FabricsPage = lazy(() => import("./pages/FabricsPage"));
 const FabricDetailPage = lazy(() => import("./pages/FabricDetailPage"));
+const PublicCataloguePage = lazy(() => import("./pages/PublicCataloguePage"));
 const CollectionsPage = lazy(() => import("./pages/CollectionsPage"));
 const CollectionDetailPage = lazy(() => import("./pages/CollectionDetailPage"));
 const AboutPage = lazy(() => import("./pages/AboutPage"));
@@ -96,7 +97,12 @@ const SupplierProfilePage = lazy(() => import("./pages/SupplierProfilePage"));
 const CustomerAccountPage = lazy(() => import("./pages/CustomerAccountPage"));
 const OrderDetailPage = lazy(() => import("./pages/OrderDetailPage"));
 const LoginPreview = lazy(() => import("./pages/LoginPreview"));
+const LedgerPreviewMock = lazy(() => import("./pages/LedgerPreviewMock"));
+const AdminCreditAdjustmentsPage = lazy(() => import("./pages/AdminCreditAdjustmentsPage"));
 const CustomerQueryDetail = lazy(() => import("./pages/CustomerQueryDetail"));
+const CustomerWishlistsPage = lazy(() => import("./pages/CustomerWishlistsPage"));
+const CustomerWishlistDetailPage = lazy(() => import("./pages/CustomerWishlistDetailPage"));
+const PublicWishlistPage = lazy(() => import("./pages/PublicWishlistPage"));
 const SharedCartPage = lazy(() => import("./pages/SharedCartPage"));
 
 // Agent pages
@@ -125,6 +131,8 @@ const VendorOrders = lazy(() => import("./pages/vendor/VendorOrders"));
 const VendorRfqs = lazy(() => import("./pages/vendor/VendorRfqs"));
 const VendorRfqDetail = lazy(() => import("./pages/vendor/VendorRfqDetail"));
 const VendorPayouts = lazy(() => import("./pages/vendor/VendorPayouts"));
+const SupplierManagerVendors = lazy(() => import("./pages/supplier_manager/SupplierManagerVendors"));
+const AdminSupplierManagers = lazy(() => import("./pages/admin/AdminSupplierManagers"));
 const VendorProtectedRoute = lazy(() => import("./components/VendorProtectedRoute"));
 
 // Tools pages
@@ -151,9 +159,13 @@ const AdminEnquiries = lazy(() => import("./pages/admin/AdminEnquiries"));
 const AdminCustomers = lazy(() => import("./pages/admin/AdminCustomers"));
 const AdminOrders = lazy(() => import("./pages/admin/AdminOrders"));
 const PayoutsPage = lazy(() => import("./pages/admin/PayoutsPage"));
+const AccountsAllInvoices = lazy(() => import("./pages/admin/AccountsAllInvoices"));
+const AdminDatabaseBackup = lazy(() => import("./pages/admin/AdminDatabaseBackup"));
 const AdminRFQ = lazy(() => import("./pages/admin/AdminRFQ"));
 const AdminCoupons = lazy(() => import("./pages/admin/AdminCoupons"));
 const AdminReviews = lazy(() => import("./pages/admin/AdminReviews"));
+const AdminOrderReviews = lazy(() => import("./pages/admin/AdminOrderReviews"));
+const FeedbackPage = lazy(() => import("./pages/FeedbackPage"));
 const AdminFabricSEO = lazy(() => import("./pages/admin/AdminFabricSEO"));
 const AdminBlog = lazy(() => import("./pages/admin/AdminBlog"));
 const AdminSellerDetail = lazy(() => import("./pages/admin/AdminSellerDetail"));
@@ -164,6 +176,7 @@ const AdminCommission = lazy(() => import("./pages/admin/AdminCommission"));
 const AdminBrands = lazy(() => import("./pages/admin/AdminBrands"));
 const AdminBrandFinancials = lazy(() => import("./pages/admin/AdminBrandFinancials"));
 const AdminAccountManagers = lazy(() => import("./pages/admin/AdminAccountManagers"));
+const AdminUserManagement = lazy(() => import("./pages/admin/AdminUserManagement"));
 const ProtectedRoute = lazy(() => import("./components/ProtectedRoute"));
 
 // SEO Landing Pages
@@ -213,9 +226,11 @@ function MobileRedirector() {
 }
 
 // Hide WhatsApp widget on /m/* routes (mobile app handles support itself)
+// and on /c/* shareable catalogue brochures (client-facing, no chrome).
 function ConditionalWhatsAppChat() {
   const { pathname } = useLocation();
   if (pathname.startsWith("/m")) return null;
+  if (pathname.startsWith("/c/")) return null;
   return <WhatsAppChat />;
 }
 
@@ -234,6 +249,7 @@ function App() {
           <ScrollToTop />
           <MobileRedirector />
           <CanonicalTag />
+          <StillConfusedPopup />
           <Suspense fallback={<PageLoader />}>
           <Routes>
           {/* Mobile PWA (buyer-facing) — owns all /m/* routes */}
@@ -242,6 +258,7 @@ function App() {
           <Route path="/" element={<><Navbar /><HomePage /><Footer /></>} />
           <Route path="/fabrics" element={<FabricsPage />} />
           <Route path="/fabrics/:id" element={<FabricDetailPage />} />
+          <Route path="/c/:slug" element={<PublicCataloguePage />} />
           <Route path="/collections" element={<CollectionsPage />} />
           <Route path="/inventory" element={<Navigate to="/fabrics" replace />} />
           <Route path="/collections/:id" element={<CollectionDetailPage />} />
@@ -265,8 +282,13 @@ function App() {
           {/* Customer Account */}
           <Route path="/account" element={<CustomerAccountPage />} />
           <Route path="/dev/login-preview" element={<Suspense fallback={<PageLoader />}><LoginPreview /></Suspense>} />
+          <Route path="/dev/ledger-preview" element={<Suspense fallback={<PageLoader />}><LedgerPreviewMock /></Suspense>} />
+          <Route path="/admin/credit-adjustments" element={<Suspense fallback={<PageLoader />}><AdminCreditAdjustmentsPage /></Suspense>} />
           <Route path="/account/queries/:rfqId" element={<Suspense fallback={<PageLoader />}><CustomerQueryDetail /></Suspense>} />
           <Route path="/account/orders/:orderId" element={<Suspense fallback={<PageLoader />}><OrderDetailPage /></Suspense>} />
+          <Route path="/account/wishlists" element={<Suspense fallback={<PageLoader />}><CustomerWishlistsPage /></Suspense>} />
+          <Route path="/account/wishlists/:id" element={<Suspense fallback={<PageLoader />}><CustomerWishlistDetailPage /></Suspense>} />
+          <Route path="/wishlist/:token" element={<Suspense fallback={<PageLoader />}><PublicWishlistPage /></Suspense>} />
           
           {/* Shared Cart (customer-facing) */}
           <Route path="/shared-cart/:token" element={<SharedCartPage />} />
@@ -339,9 +361,13 @@ function App() {
           <Route path="/admin/customers" element={<ProtectedRoute><AdminCustomers /></ProtectedRoute>} />
           <Route path="/admin/orders" element={<ProtectedRoute><AdminOrders /></ProtectedRoute>} />
           <Route path="/admin/payouts" element={<ProtectedRoute><PayoutsPage /></ProtectedRoute>} />
+          <Route path="/admin/accounts/invoices" element={<ProtectedRoute><AccountsAllInvoices /></ProtectedRoute>} />
+          <Route path="/admin/database-backup" element={<ProtectedRoute><AdminDatabaseBackup /></ProtectedRoute>} />
           <Route path="/admin/rfq" element={<ProtectedRoute><AdminRFQ /></ProtectedRoute>} />
           <Route path="/admin/coupons" element={<ProtectedRoute><AdminCoupons /></ProtectedRoute>} />
           <Route path="/admin/reviews" element={<ProtectedRoute><AdminReviews /></ProtectedRoute>} />
+          <Route path="/admin/order-reviews" element={<ProtectedRoute><AdminOrderReviews /></ProtectedRoute>} />
+          <Route path="/feedback/:orderId" element={<FeedbackPage />} />
           <Route path="/admin/seo" element={<ProtectedRoute><AdminFabricSEO /></ProtectedRoute>} />
           <Route path="/admin/blog" element={<ProtectedRoute><AdminBlog /></ProtectedRoute>} />
           <Route path="/admin/credit" element={<ProtectedRoute><AdminCreditApplications /></ProtectedRoute>} />
@@ -350,6 +376,7 @@ function App() {
           <Route path="/admin/brands" element={<ProtectedRoute><AdminBrands /></ProtectedRoute>} />
           <Route path="/admin/brands/:brandId/financials" element={<ProtectedRoute><AdminBrandFinancials /></ProtectedRoute>} />
           <Route path="/admin/account-managers" element={<ProtectedRoute><AdminAccountManagers /></ProtectedRoute>} />
+          <Route path="/admin/users" element={<ProtectedRoute><AdminUserManagement /></ProtectedRoute>} />
 
           {/* Enterprise Portal routes (Brands + Factories) — canonical /enterprise/*, with /brand/* kept as permanent redirects for backwards compat */}
           <Route path="/enterprise/login" element={<BrandLogin />} />
@@ -385,10 +412,11 @@ function App() {
           <Route path="/vendor/rfqs" element={<Suspense fallback={<PageLoader />}><VendorProtectedRoute><VendorRfqs /></VendorProtectedRoute></Suspense>} />
           <Route path="/vendor/rfqs/:rfqId" element={<Suspense fallback={<PageLoader />}><VendorProtectedRoute><VendorRfqDetail /></VendorProtectedRoute></Suspense>} />
           <Route path="/vendor/payouts" element={<Suspense fallback={<PageLoader />}><VendorProtectedRoute><VendorPayouts /></VendorProtectedRoute></Suspense>} />
+          <Route path="/supplier-manager/vendors" element={<Suspense fallback={<PageLoader />}><SupplierManagerVendors /></Suspense>} />
+          <Route path="/admin/supplier-managers" element={<Suspense fallback={<PageLoader />}><ProtectedRoute><AdminSupplierManagers /></ProtectedRoute></Suspense>} />
         </Routes>
         </Suspense>
         <ConditionalWhatsAppChat />
-        <TryMobilePreview />
       </BrowserRouter>
     </AuthProvider>
     </VendorAuthProvider>

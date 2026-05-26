@@ -28,6 +28,9 @@ class CategoryCreate(BaseModel):
     seo_meta_description: Optional[str] = ""
     seo_intro: Optional[str] = ""  # HTML allowed — shown above the fabric grid
     seo_applications: Optional[str] = ""  # HTML allowed
+    # Per-category ±variance % allowed when supplier marks goods ready.
+    # 0/null → fall back to platform default (3%).
+    variance_pct: Optional[float] = None
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
@@ -38,6 +41,7 @@ class CategoryUpdate(BaseModel):
     seo_meta_description: Optional[str] = None
     seo_intro: Optional[str] = None
     seo_applications: Optional[str] = None
+    variance_pct: Optional[float] = None
 
 class Category(BaseModel):
     model_config = ConfigDict(extra='allow')
@@ -50,6 +54,7 @@ class Category(BaseModel):
     seo_meta_description: str = ""
     seo_intro: str = ""
     seo_applications: str = ""
+    variance_pct: Optional[float] = None
     fabric_count: int = 0
 
 
@@ -58,8 +63,21 @@ class Category(BaseModel):
 @router.get("/categories", response_model=List[Category])
 async def get_categories():
     categories = await db.categories.find({}, {'_id': 0}).to_list(100)
-    # Compute live fabric counts in one aggregation, then merge
-    pipeline = [{"$group": {"_id": "$category_id", "n": {"$sum": 1}}}]
+    # Compute live fabric counts in one aggregation, then merge.
+    # IMPORTANT: only count APPROVED fabrics so the badge on the home /
+    # nav matches what the user sees on the listing page (which filters
+    # to status='approved' by default). Counting drafts/pending caused
+    # categories like Polyester (49 total → 1 approved) and Greige
+    # (62 → 0) to look broken from the buyer's perspective.
+    approved_filter = {'$or': [
+        {'status': 'approved'},
+        {'status': {'$exists': False}},
+        {'status': None},
+    ]}
+    pipeline = [
+        {"$match": approved_filter},
+        {"$group": {"_id": "$category_id", "n": {"$sum": 1}}},
+    ]
     counts = {row["_id"]: row["n"] async for row in db.fabrics.aggregate(pipeline)}
     for c in categories:
         c['fabric_count'] = counts.get(c['id'], 0)
@@ -80,8 +98,14 @@ async def create_category(data: CategoryCreate, admin=Depends(auth_helpers.get_c
     category_doc = {
         'id': category_id,
         'name': data.name,
+        'slug': data.slug or "",
         'description': data.description or "",
         'image_url': data.image_url or "",
+        'seo_title': data.seo_title or "",
+        'seo_meta_description': data.seo_meta_description or "",
+        'seo_intro': data.seo_intro or "",
+        'seo_applications': data.seo_applications or "",
+        'variance_pct': data.variance_pct,  # null → falls back to platform default
         'created_at': datetime.now(timezone.utc).isoformat()
     }
     await db.categories.insert_one(category_doc)

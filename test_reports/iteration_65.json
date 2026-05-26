@@ -1,0 +1,108 @@
+{
+  "summary": "Comprehensive testing of RFQ Auth Gate (WhatsApp OTP flow) per May 2026 spec. All 10 test scenarios pass. Backend endpoints working correctly. Frontend auth gate renders properly for guests on both mobile (/m/rfq) and desktop (/rfq). Logged-in users with complete profiles see the RFQ form directly. PDP-launched RFQs show locked specs card with Edit toggle. Incomplete profiles (phone-only signup) correctly land on registration stage.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "MRFQ.js - Specs locked card",
+        "issue": "Composition displays as '[object Object]' instead of formatted string (e.g., 'Cotton 100%')",
+        "selector": "[data-testid='mrfq-specs-locked']",
+        "priority": "LOW",
+        "line": "148",
+        "fix": "Change `fabric.composition` to `fabric.composition?.map(c => `${c.material} ${c.percentage}%`).join(', ')` or similar"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rfq_auth_gate_v65.py",
+    "/app/test_reports/pytest/pytest_rfq_auth_gate_v65.xml"
+  ],
+  "action_items": [
+    "Fix composition display in MRFQ.js line 148 - currently shows [object Object] instead of formatted composition string"
+  ],
+  "critical_code_review_comments": [
+    "RFQAuthGate.js correctly implements 3-stage flow (phone → otp → register)",
+    "Profile completeness check correctly identifies placeholder emails (@phone.locofast.local)",
+    "MRFQ.js correctly handles PDP context with fabric param and Edit toggle",
+    "Backend WhatsApp OTP endpoints working with proper rate limiting and validation",
+    "GST verification via Sandbox API working correctly on profile update"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_rfq_auth_gate_v65.py"
+  ],
+  "success_rate": {
+    "backend": "100% (9/9 passed after transient 502 retry)",
+    "frontend": "100% (all 10 test scenarios pass)"
+  },
+  "test_credentials": {
+    "test_phone_otp": "Any 10-digit phone, OTP from db.customer_otps (latest unused for that phone)",
+    "valid_gstin": "07AIKPY4565A1Z0 (E-Future, Delhi)"
+  },
+  "seed_data_creation": "Created test customers via WhatsApp OTP flow during testing. All test data uses unique phone numbers.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "RFQ Auth Gate fully tested. Key localStorage keys: 'lf_customer_token' (JWT), 'lf_customer' (customer object). Profile completeness requires: name truthy, email NOT ending in '@phone.locofast.local', gstin truthy. WhatsApp OTP rate limit: 3 per phone per 10 minutes.",
+  "features_verified": {
+    "guest_mobile_rfq_auth_gate": {
+      "status": "PASS",
+      "details": "/m/rfq shows auth gate with phone input and Send OTP button for guests"
+    },
+    "guest_desktop_rfq_auth_gate": {
+      "status": "PASS",
+      "details": "/rfq shows auth gate, RFQ page content hidden behind gate"
+    },
+    "send_whatsapp_otp_endpoint": {
+      "status": "PASS",
+      "details": "POST /api/customer/send-whatsapp-otp returns {message, phone_masked}"
+    },
+    "verify_whatsapp_otp_invalid": {
+      "status": "PASS",
+      "details": "POST /api/customer/verify-whatsapp-otp with wrong OTP returns 400 'Invalid or expired OTP'"
+    },
+    "full_otp_flow": {
+      "status": "PASS",
+      "details": "send-otp → read from db.customer_otps → verify-otp → returns {token, customer, is_new}"
+    },
+    "profile_update_with_gst": {
+      "status": "PASS",
+      "details": "PUT /api/customer/profile with valid GSTIN returns 200, gst_verified=true, company auto-filled"
+    },
+    "logged_in_header_launched_rfq": {
+      "status": "PASS",
+      "details": "/m/rfq with complete profile shows fabric picker grid, no locked specs card"
+    },
+    "logged_in_pdp_launched_rfq": {
+      "status": "PASS",
+      "details": "/m/rfq?fabric=<slug> shows locked specs card with Edit button"
+    },
+    "pdp_edit_toggle": {
+      "status": "PASS",
+      "details": "Clicking Edit shows fabric picker with 'Use specs from' revert button"
+    },
+    "incomplete_profile_register_stage": {
+      "status": "PASS",
+      "details": "Phone-only customer (placeholder email) lands on register stage, not OTP screen"
+    },
+    "account_ledger_tab_regression": {
+      "status": "PASS",
+      "details": "/account?tab=ledger renders Credit & Ledger tab correctly"
+    },
+    "mobile_account_regression": {
+      "status": "PASS",
+      "details": "/m/account renders with all sections"
+    },
+    "shared_cart_regression": {
+      "status": "PASS",
+      "details": "/shared-cart/<token> loads without crash (shows 'Cart Unavailable' for invalid token)"
+    }
+  },
+  "mocked_apis": {
+    "has_mocked_apis": false,
+    "mocked_apis_list": []
+  }
+}

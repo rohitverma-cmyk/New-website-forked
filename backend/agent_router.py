@@ -74,6 +74,7 @@ class SharedCartItem(BaseModel):
     fabric_name: str
     fabric_code: str = ""
     category_name: str = ""
+    category_id: str = ""
     seller_company: str = ""
     seller_id: str = ""
     quantity: int
@@ -81,6 +82,18 @@ class SharedCartItem(BaseModel):
     order_type: str = "bulk"
     image_url: str = ""
     hsn_code: str = ""
+    # Unit of sale ("m" or "kg") — derived per-fabric from fabric_type
+    # (knitted non-denim → kg). Persisted on the shared cart and order
+    # so UI doesn't have to recompute and customer sees what the
+    # vendor configured.
+    unit: str = ""
+    fabric_type: str = ""
+    # Provisional bulk-order toggle. "actual" = vendor will ship the
+    # ordered quantity (full payment upfront). "provisional" = quantity
+    # is indicative, customer pays 10% advance and vendor confirms
+    # actual qty later. Defaults to the cart-level value at materialize
+    # time when left empty.
+    qty_type: str = ""  # "" | "actual" | "provisional"
 
 class CreateSharedCartRequest(BaseModel):
     items: list[SharedCartItem]
@@ -88,6 +101,9 @@ class CreateSharedCartRequest(BaseModel):
     notes: str = ""
     payment_proof_url: str = ""  # RTGS/NEFT screenshot URL
     dispatch_country: str = "india"  # "india" or "bangladesh"
+    # Default qty_type applied to any bulk item that didn't pick one.
+    # "actual" → no advance; "provisional" → 10% advance flow.
+    default_qty_type: str = "actual"
 
 
 # ==================== AUTH HELPERS ====================
@@ -236,6 +252,19 @@ async def create_shared_cart(data: CreateSharedCartRequest, request: Request):
     cart_token = str(uuid.uuid4()).replace('-', '')[:12]
     now = datetime.now(timezone.utc)
 
+    # Normalize per-item qty_type. Samples are always "actual" (no
+    # provisional flow for swatches). Bulk items inherit the cart-level
+    # default when the agent didn't pick per-item.
+    default_qt = (data.default_qty_type or "actual").lower()
+    if default_qt not in ("actual", "provisional"):
+        default_qt = "actual"
+    for it in data.items:
+        if it.order_type == "sample":
+            it.qty_type = "actual"
+        else:
+            qt = (it.qty_type or "").lower()
+            it.qty_type = qt if qt in ("actual", "provisional") else default_qt
+
     # Calculate Bangladesh charges if applicable
     bangladesh_charges = None
     usd_rate = None
@@ -269,6 +298,7 @@ async def create_shared_cart(data: CreateSharedCartRequest, request: Request):
         'notes': data.notes,
         'payment_proof_url': data.payment_proof_url,
         'dispatch_country': data.dispatch_country,
+        'default_qty_type': default_qt,
         'bangladesh_charges': bangladesh_charges,
         'usd_rate': usd_rate,
         'status': 'pending',
@@ -283,6 +313,64 @@ async def create_shared_cart(data: CreateSharedCartRequest, request: Request):
         'token': cart_token,
         'status': 'pending',
         'bangladesh_charges': bangladesh_charges,
+    }
+
+
+@router.post("/shared-cart/{cart_id}/duplicate")
+async def duplicate_shared_cart(cart_id: str, request: Request):
+    """Clone a shared cart into a new DRAFT for a different customer.
+
+    Carries over: items, dispatch_country, bangladesh_charges, usd_rate.
+    Does NOT carry over: customer_phone/name/email, payment_proof_url,
+    notes — the agent is starting fresh for a new buyer.
+
+    The new cart gets a fresh token + id so the original link stays
+    valid for the first customer. Returns the new `{cart_id, token}` so
+    the frontend can refresh the list (and optionally jump to it).
+    """
+    payload = get_current_agent(request)
+
+    src = await db.shared_carts.find_one(
+        {"$or": [{"id": cart_id}, {"token": cart_id}], "agent_email": payload["email"]},
+        {"_id": 0},
+    )
+    if not src:
+        raise HTTPException(status_code=404, detail="Cart not found")
+
+    new_id = str(uuid.uuid4())
+    new_token = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc)
+
+    cart_doc = {
+        "id": new_id,
+        "token": new_token,
+        "agent_id": payload["agent_id"],
+        "agent_email": payload["email"],
+        "agent_name": payload.get("name", ""),
+        # Deep-copy items so any future edits don't bleed back to the
+        # original cart (Mongo gives us dicts by reference).
+        "items": [dict(it) for it in (src.get("items") or [])],
+        # Customer fields intentionally blank — agent will fill these
+        # when they hit "Share with Customer".
+        "customer_email": "",
+        "notes": "",
+        "payment_proof_url": "",
+        "dispatch_country": src.get("dispatch_country", "india"),
+        "bangladesh_charges": src.get("bangladesh_charges"),
+        "usd_rate": src.get("usd_rate"),
+        "status": "pending",
+        "duplicated_from": src["id"],
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=7)).isoformat(),
+    }
+
+    await db.shared_carts.insert_one(cart_doc)
+    return {
+        "cart_id": new_id,
+        "token": new_token,
+        "status": "pending",
+        "items_count": len(cart_doc["items"]),
+        "duplicated_from": src["id"],
     }
 
 
@@ -343,6 +431,254 @@ async def upload_payment_proof(file: UploadFile = File(...), request: Request = 
     # Return URL path
     url = f"/api/uploads/payment_proofs/{filename}"
     return {"url": url, "filename": filename}
+
+
+# ==================== CUSTOMER LOOKUP + SHARED-CART INVITE ====================
+
+class SendCartInviteRequest(BaseModel):
+    phone: str
+    email: EmailStr | None = None
+    customer_name: str | None = None  # Required only when phone is not on file
+
+
+@router.get("/customer-lookup")
+async def agent_customer_lookup(phone: str, request: Request):
+    """Agent helper: check if `phone` is a known Locofast customer. Returns
+    `{ exists: bool, name, email, company }` so the agent UI can autofill
+    the customer name when sending a curated cart invite."""
+    get_current_agent(request)
+    from gupshup_service import normalize_indian_phone
+    valid, e164 = normalize_indian_phone(phone or "")
+    if not valid:
+        return {"exists": False, "valid_phone": False}
+    cust = await db.customers.find_one({"phone": e164}, {"_id": 0, "id": 1, "name": 1, "email": 1, "company": 1, "phone": 1})
+    if not cust:
+        return {"exists": False, "valid_phone": True, "normalized_phone": e164}
+    # Synthetic phone-only emails — hide from the agent so they don't paste
+    # a `@phone.locofast.local` placeholder into the email field.
+    em = cust.get("email", "") or ""
+    if em.endswith("@phone.locofast.local"):
+        em = ""
+    return {
+        "exists": True,
+        "valid_phone": True,
+        "normalized_phone": e164,
+        "customer_id": cust.get("id"),
+        "name": cust.get("name") or "",
+        "email": em,
+        "company": cust.get("company") or "",
+    }
+
+
+@router.post("/shared-cart/{cart_id}/send-invite")
+async def send_shared_cart_invite(cart_id: str, data: SendCartInviteRequest, request: Request):
+    """Send the shared-cart link to the customer via WhatsApp + Email.
+
+    Resolves the customer by phone first:
+      - if the phone is already in `db.customers`, we use that record (and
+        ignore the `customer_name` field — the existing name wins).
+      - if not, the agent MUST pass `customer_name` so we can stamp it on
+        the cart and create a lightweight customer doc for future lookups.
+
+    Both WhatsApp + Email are best-effort: a partial send (e.g. email OK,
+    WhatsApp failed) still returns 200 with per-channel diagnostics so the
+    agent can decide whether to retry.
+    """
+    payload = get_current_agent(request)
+    from gupshup_service import normalize_indian_phone, send_whatsapp_text
+
+    cart = await db.shared_carts.find_one(
+        {"$or": [{"id": cart_id}, {"token": cart_id}], "agent_email": payload["email"]},
+        {"_id": 0},
+    )
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+    if cart.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Cart already converted to an order — invite not sent.")
+
+    valid, phone_e164 = normalize_indian_phone(data.phone or "")
+    if not valid:
+        raise HTTPException(status_code=400, detail="Enter a valid 10-digit Indian mobile number")
+
+    customer_email = (data.email or "").strip().lower() if data.email else ""
+
+    # Resolve / create customer
+    cust = await db.customers.find_one({"phone": phone_e164}, {"_id": 0})
+    was_existing = bool(cust)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if cust:
+        customer_name = cust.get("name") or (data.customer_name or "").strip()
+        if not cust.get("email") and customer_email:
+            # Backfill email if the existing record only had a placeholder
+            current = cust.get("email") or ""
+            if not current or current.endswith("@phone.locofast.local"):
+                await db.customers.update_one(
+                    {"id": cust["id"]},
+                    {"$set": {"email": customer_email, "updated_at": now_iso}},
+                )
+    else:
+        customer_name = (data.customer_name or "").strip()
+        if not customer_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Customer name is required (this number isn't on file yet)",
+            )
+        # Create lightweight customer so we can find them next time the
+        # agent looks up this phone.
+        new_id = str(uuid.uuid4())
+        placeholder_email = customer_email or f"phone+{phone_e164}@phone.locofast.local"
+        await db.customers.insert_one({
+            "id": new_id,
+            "email": placeholder_email,
+            "name": customer_name,
+            "phone": phone_e164,
+            "phone_verified": False,
+            "company": "",
+            "gstin": "",
+            "address": "", "city": "", "state": "", "pincode": "",
+            "created_via": "agent_shared_cart",
+            "created_by_agent_email": payload["email"],
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+        cust = {"id": new_id, "email": placeholder_email, "name": customer_name, "phone": phone_e164}
+
+    # Stamp the cart with the resolved customer (so the listing UI shows
+    # who it was sent to, and so a later "Resend" picks up the same data).
+    cart_update = {
+        "customer_phone": phone_e164,
+        "customer_name": customer_name,
+        "last_invited_at": now_iso,
+    }
+    if customer_email:
+        cart_update["customer_email"] = customer_email
+    await db.shared_carts.update_one({"id": cart["id"]}, {"$set": cart_update})
+
+    # Compose the share message — kept short, both channels share copy.
+    base_url = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") or "https://locofast.com"
+    share_url = f"{base_url}/shared-cart/{cart['token']}"
+    cart_items = cart.get("items") or []
+    item_count = len(cart_items)
+    subtotal = sum(
+        (float(i.get("quantity") or 0)) * (float(i.get("price_per_meter") or 0))
+        for i in cart_items
+    )
+    agent_name = cart.get("agent_name") or payload.get("name") or "your Locofast agent"
+
+    # Itemized breakdown — show every fabric with quantity + order type.
+    # WhatsApp gets a plain-text bullet list; email gets an HTML <ul>.
+    # Long carts (>8 items) get truncated with a "+N more" line so the
+    # message stays within reasonable WhatsApp render limits.
+    MAX_PREVIEW = 8
+    preview = cart_items[:MAX_PREVIEW]
+    overflow = item_count - len(preview)
+
+    def _fmt_qty(it):
+        q = it.get("quantity") or 0
+        try:
+            q_num = float(q)
+            q_str = f"{int(q_num)}" if q_num == int(q_num) else f"{q_num:g}"
+        except Exception:
+            q_str = str(q)
+        return f"{q_str}m"
+
+    wa_items_lines = []
+    for it in preview:
+        name = (it.get("fabric_name") or "Fabric").strip()
+        qty_str = _fmt_qty(it)
+        otype = (it.get("order_type") or "bulk").strip().lower()
+        tag = "Sample" if otype == "sample" else "Bulk"
+        wa_items_lines.append(f"• {name} — {qty_str} ({tag})")
+    if overflow > 0:
+        wa_items_lines.append(f"• +{overflow} more item{'s' if overflow != 1 else ''}")
+    wa_items_block = "\n".join(wa_items_lines)
+
+    # NOTE: WhatsApp send is temporarily disabled until the user's Gupshup
+    # WABA template is approved. The composed `wa_body` is kept in the
+    # response for QA preview and as the source-of-truth copy that will be
+    # mapped onto the template's variable slots once the template ships.
+    wa_body = (
+        f"Hi {customer_name or 'there'},\n\n"
+        f"I've curated a fabric cart for you on Locofast — {item_count} item{'s' if item_count != 1 else ''} ready to review.\n\n"
+        + (f"{wa_items_block}\n\n" if wa_items_block else "")
+        + (f"Indicative subtotal: Rs {subtotal:,.0f} (excl. GST, logistics & packaging).\n\n" if subtotal > 0 else "")
+        + f"Place the order here:\n{share_url}\n\n"
+        f"— {agent_name}\nLocofast Online Services"
+    )
+
+    wa_result = {
+        "success": False,
+        "skipped": True,
+        "reason": "whatsapp_template_pending",
+        "preview_body": wa_body,
+    }
+
+    # Email send (best-effort)
+    email_result = {"success": False, "skipped": True}
+    if customer_email and RESEND_API_KEY:
+        try:
+            email_items_html = "".join(
+                f'<li style="padding:6px 0;border-bottom:1px solid #eef2f7;color:#1e293b;">'
+                f'<strong>{(it.get("fabric_name") or "Fabric").strip()}</strong>'
+                f' — {_fmt_qty(it)} '
+                f'<span style="color:#64748b;font-size:12px;">'
+                f'({"Sample" if (it.get("order_type") or "bulk").strip().lower() == "sample" else "Bulk"})'
+                f'</span></li>'
+                for it in preview
+            )
+            if overflow > 0:
+                email_items_html += (
+                    f'<li style="padding:6px 0;color:#64748b;font-size:13px;">'
+                    f'+ {overflow} more item{"s" if overflow != 1 else ""}</li>'
+                )
+            # CC the agent who sent it so they have a paper-trail of every
+            # outbound invite (and can re-share the same email thread if
+            # the customer replies on email).
+            agent_email_cc = (cart.get("agent_email") or payload.get("email") or "").strip().lower()
+            params = {
+                "from": f"Locofast <{SENDER_EMAIL}>",
+                "to": [customer_email],
+                "subject": "Your curated fabric cart from Locofast",
+                "html": f"""
+                <div style="font-family: Inter, system-ui, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 24px;">
+                    <h2 style="font-size: 20px; font-weight: 600; margin: 0 0 12px;">Your curated fabric cart</h2>
+                    <p style="color: #475569; line-height: 1.5;">Hi {customer_name or 'there'},</p>
+                    <p style="color: #475569; line-height: 1.5;">{agent_name} has prepared a cart of <strong>{item_count} item{'s' if item_count != 1 else ''}</strong> for you on Locofast.</p>
+                    <ul style="list-style:none;padding:0;margin:16px 0;border-top:1px solid #eef2f7;">
+                        {email_items_html}
+                    </ul>
+                    {f'<p style="color:#475569;line-height:1.5;">Indicative subtotal: <strong>Rs {subtotal:,.0f}</strong> (excl. GST, logistics &amp; packaging).</p>' if subtotal > 0 else ''}
+                    <p style="margin: 24px 0;"><a href="{share_url}" style="display: inline-block; background: #2563EB; color: #fff; padding: 12px 22px; border-radius: 10px; text-decoration: none; font-weight: 600;">Review &amp; Place Order</a></p>
+                    <p style="color: #94a3b8; font-size: 12px;">The link is private to you and valid for 7 days. Reply to this email with any questions.</p>
+                </div>
+                """,
+            }
+            # Only set cc when it's a real, non-empty address and not the
+            # same as the recipient — Resend errors on dup recipients.
+            if agent_email_cc and agent_email_cc != customer_email:
+                params["cc"] = [agent_email_cc]
+            resend.Emails.send(params)
+            email_result = {"success": True, "skipped": False, "cc": params.get("cc") or []}
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Resend send-invite failed for {customer_email}: {e}")
+            email_result = {"success": False, "skipped": False, "error": str(e)}
+    elif not customer_email:
+        email_result = {"success": False, "skipped": True, "reason": "no_email_provided"}
+
+    return {
+        "success": bool(wa_result.get("success") or email_result.get("success")),
+        "customer": {
+            "id": cust.get("id"),
+            "phone": phone_e164,
+            "name": customer_name,
+            "email": customer_email or cust.get("email", ""),
+            "was_existing": was_existing,
+        },
+        "whatsapp": wa_result,
+        "email": email_result,
+        "share_url": share_url,
+    }
+
 
 
 

@@ -117,9 +117,93 @@ async def create_enquiry(data: EnquiryCreate):
 
 
 @router.get("/enquiries", response_model=List[Enquiry])
-async def get_enquiries(admin=Depends(auth_helpers.get_current_admin)):
-    enquiries = await db.enquiries.find({}, {'_id': 0}).sort('created_at', -1).to_list(500)
+async def get_enquiries(
+    source: Optional[str] = None,
+    enquiry_type: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    q: dict = {}
+    if source:
+        q["source"] = source
+    if enquiry_type:
+        q["enquiry_type"] = enquiry_type
+    if status:
+        q["status"] = status
+    if search and search.strip():
+        s = search.strip()
+        q["$or"] = [
+            {"name": {"$regex": s, "$options": "i"}},
+            {"email": {"$regex": s, "$options": "i"}},
+            {"company": {"$regex": s, "$options": "i"}},
+            {"message": {"$regex": s, "$options": "i"}},
+        ]
+    enquiries = await db.enquiries.find(q, {'_id': 0}).sort('created_at', -1).to_list(500)
     return enquiries
+
+
+@router.get("/enquiries/export.csv")
+async def export_enquiries_csv(
+    source: Optional[str] = None,
+    enquiry_type: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Admin CSV download — respects whichever filters are active so
+    you can grab a subset (e.g. "all RFQs not yet contacted") instead
+    of the full dump every time."""
+    import csv as _csv
+    import io as _io
+    from fastapi.responses import StreamingResponse
+    from datetime import datetime as _dt
+
+    q: dict = {}
+    if source:
+        q["source"] = source
+    if enquiry_type:
+        q["enquiry_type"] = enquiry_type
+    if status:
+        q["status"] = status
+    if search and search.strip():
+        s = search.strip()
+        q["$or"] = [
+            {"name": {"$regex": s, "$options": "i"}},
+            {"email": {"$regex": s, "$options": "i"}},
+            {"company": {"$regex": s, "$options": "i"}},
+            {"message": {"$regex": s, "$options": "i"}},
+        ]
+    rows = await db.enquiries.find(q, {'_id': 0}).sort('created_at', -1).to_list(5000)
+
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow([
+        "created_at", "source", "enquiry_type", "status",
+        "name", "email", "phone", "company",
+        "fabric_name", "fabric_code", "message",
+    ])
+    for r in rows:
+        w.writerow([
+            r.get("created_at", ""),
+            r.get("source", ""),
+            r.get("enquiry_type", ""),
+            r.get("status", ""),
+            r.get("name", ""),
+            r.get("email", ""),
+            r.get("phone", ""),
+            r.get("company", ""),
+            r.get("fabric_name", ""),
+            r.get("fabric_code", ""),
+            (r.get("message") or "").replace("\n", " "),
+        ])
+    buf.seek(0)
+    filename = f"locofast-enquiries-{_dt.now().strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.put("/enquiries/{enquiry_id}/status")

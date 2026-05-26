@@ -6,8 +6,12 @@ import { toast } from "sonner";
 import axios from "axios";
 import { getFabrics, getFabricsCount, getCategories, getFabricFilterOptions, getSellers } from "../../lib/api";
 import { getCheapestBulkPrice, formatQtyThreshold } from "../../lib/pricing";
+import { getFabricUnit, getFabricUnitLabel } from "../../lib/fabricUnit";
 import { thumbImage } from "../../lib/imageUrl";
+import { OrderSourceChip } from "../../components/OrderTypeChips";
 import Watermark from "../../components/Watermark";
+import AgentAISearchBar from "../../components/agent/AgentAISearchBar";
+import CreateCatalogueModal from "../../components/agent/CreateCatalogueModal";
 
 const API = process.env.REACT_APP_BACKEND_URL;
 
@@ -53,6 +57,8 @@ const AgentDashboardPage = () => {
 
   // Cart
   const [cart, setCart] = useState([]);
+  const [showCatalogueModal, setShowCatalogueModal] = useState(false);
+  const [catalogueFabricIds, setCatalogueFabricIds] = useState([]);
 
   // Shared carts
   const [sharedCarts, setSharedCarts] = useState([]);
@@ -66,6 +72,22 @@ const AgentDashboardPage = () => {
   const [sharing, setSharing] = useState(false);
   const [dispatchCountry, setDispatchCountry] = useState("india");
   const [usdRate, setUsdRate] = useState(null);
+  // Cart-level default qty_type for bulk items. Provisional → customer
+  // pays 10% advance, vendor confirms actual qty later. Actual → full
+  // payment upfront, vendor must ship exactly what was ordered.
+  const [defaultQtyType, setDefaultQtyType] = useState("actual");
+
+  // "Send invite to customer" modal — opens when an agent taps Share
+  // next to a shared cart. Asks for phone + email, autofills name from
+  // an existing customer record when the phone matches.
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteCart, setInviteCart] = useState(null);
+  const [inviteForm, setInviteForm] = useState({
+    phone: "", email: "", customer_name: "", customer_id: "", phone_normalized: "",
+  });
+  const [inviteLookup, setInviteLookup] = useState({ checking: false, exists: null, message: "" });
+  const [inviteSending, setInviteSending] = useState(false);
+
   // Inline credit-limit checker (India only). Lets the agent confirm
   // a buyer's GSTIN has an approved credit line before sharing the cart.
   const [creditCheck, setCreditCheck] = useState({ gst: "", loading: false, balance: null, company: "", error: "" });
@@ -194,30 +216,58 @@ const AgentDashboardPage = () => {
       fabric_name: fabric.name,
       fabric_code: fabric.fabric_code || "",
       category_name: fabric.category_name || "",
+      category_id: fabric.category_id || "",
       seller_company: fabric.seller_company || "",
       seller_id: fabric.seller_id || "",
-      quantity: isSample ? 1 : (parseInt(fabric.moq) || 100),
+      // Agent-assisted floor: bulk minimum is 30 m regardless of the
+      // vendor's public MOQ (vendor MOQs apply to direct-customer
+      // checkouts only). Samples remain 1 m.
+      quantity: isSample ? 1 : 30,
       price_per_meter: isSample ? (fabric.sample_price || fabric.rate_per_meter || 0) : (fabric.rate_per_meter || 0),
       order_type: orderType,
       image_url: fabric.images?.[0] || "",
       hsn_code: fabric.hsn_code || "",
+      // Stamp the per-fabric unit (kg / m) onto the cart so cart UI,
+      // checkout and order confirmation all show the same unit the
+      // vendor configured when adding the fabric.
+      unit: getFabricUnit(fabric),
+      fabric_type: fabric.fabric_type || "",
+      // Samples are always actual; bulk inherits cart-level default
+      qty_type: isSample ? "actual" : defaultQtyType,
     }]);
     toast.success(`${fabric.name} added as ${orderType}`);
   };
 
   const updateCartQty = (fabricId, delta) => {
-    setCart(cart.map((c) => c.fabric_id === fabricId ? { ...c, quantity: Math.max(1, c.quantity + delta) } : c));
+    setCart(cart.map((c) => {
+      if (c.fabric_id !== fabricId) return c;
+      const floor = c.order_type === "sample" ? 1 : 30; // 30 m bulk floor on agent path
+      return { ...c, quantity: Math.max(floor, c.quantity + delta) };
+    }));
   };
 
-  // Direct quantity setter — used by the typeable input. Coerces to a sensible
-  // minimum (1) and ignores non-numeric input gracefully.
+  // Direct quantity setter — used by the typeable input. Coerces to the
+  // agent-channel floor (30 m bulk · 1 m sample) and ignores non-numeric input.
   const setCartQty = (fabricId, value) => {
-    const next = Math.max(1, parseInt(value, 10) || 1);
-    setCart(cart.map((c) => c.fabric_id === fabricId ? { ...c, quantity: next } : c));
+    setCart(cart.map((c) => {
+      if (c.fabric_id !== fabricId) return c;
+      const floor = c.order_type === "sample" ? 1 : 30;
+      const next = Math.max(floor, parseInt(value, 10) || floor);
+      return { ...c, quantity: next };
+    }));
   };
 
   const removeFromCart = (fabricId) => {
     setCart(cart.filter((c) => c.fabric_id !== fabricId));
+  };
+
+  // Per-item qty_type override. Only meaningful for bulk lines. Samples
+  // stay as "actual" since the swatch flow doesn't have a provisional
+  // booking concept.
+  const setItemQtyType = (fabricId, qtyType) => {
+    setCart(cart.map((c) => c.fabric_id === fabricId && c.order_type === "bulk"
+      ? { ...c, qty_type: qtyType }
+      : c));
   };
 
   // ── Inline credit-limit lookup (India only) ──────────────────────────
@@ -258,7 +308,7 @@ const AgentDashboardPage = () => {
       // by browser extensions/interceptors, causing "body stream already read"
       const { data } = await axios.post(
         `${API}/api/agent/shared-cart`,
-        { items: cart, customer_email: "", notes: "", payment_proof_url: "", dispatch_country: dispatchCountry },
+        { items: cart, customer_email: "", notes: "", payment_proof_url: "", dispatch_country: dispatchCountry, default_qty_type: defaultQtyType },
         { headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` } }
       );
       const link = `${window.location.origin}/shared-cart/${data.token}`;
@@ -394,6 +444,142 @@ Locofast Online Services`,
     toast.success("Opening your email client…");
   };
 
+  // ── Server-side WhatsApp + Email invite flow ────────────────────────
+  // Agent enters customer's WhatsApp number → we look it up. If found,
+  // their name auto-fills; if not, the agent has to type the name.
+  // Backend pushes a WhatsApp text via Gupshup AND a Resend email with
+  // the cart link, then stamps the cart with customer info for audit.
+  // Duplicate a shared cart into a new draft (blank customer info).
+  // Backend keeps items intact but resets customer_phone/name/email so
+  // the agent can repurpose the same curated list for a different buyer.
+  const handleDuplicateSharedCart = async (sc) => {
+    if (!sc?.id && !sc?.token) return;
+    if (!window.confirm(`Duplicate this cart (${sc.items?.length || 0} item${(sc.items?.length || 0) !== 1 ? "s" : ""}) for a new customer?`)) return;
+    const t = toast.loading("Duplicating cart…");
+    try {
+      const res = await fetch(`${API}/api/agent/shared-cart/${sc.id || sc.token}/duplicate`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.detail || "Duplicate failed");
+      toast.success(`New draft cart created · ${data.items_count} item${data.items_count !== 1 ? "s" : ""}`, { id: t });
+      fetchSharedCarts();
+    } catch (err) {
+      toast.error(err.message || "Couldn't duplicate", { id: t });
+    }
+  };
+
+  const openInviteModal = (sc) => {
+    setInviteCart(sc);
+    const prefillEmail = sc.customer_email && !sc.customer_email.endsWith("@phone.locofast.local")
+      ? sc.customer_email : "";
+    setInviteForm({
+      phone: sc.customer_phone || "",
+      email: prefillEmail,
+      customer_name: sc.customer_name || "",
+      customer_id: "",
+      phone_normalized: "",
+    });
+    setInviteLookup({ checking: false, exists: null, message: "" });
+    setInviteOpen(true);
+  };
+
+  // Auto-lookup as the agent finishes typing the phone. We debounce on
+  // the 10-digit boundary so we don't spam the API on every keystroke.
+  const lookupCustomerByPhone = async (phone) => {
+    const cleaned = (phone || "").replace(/\D/g, "");
+    if (cleaned.length < 10) {
+      setInviteLookup({ checking: false, exists: null, message: "" });
+      return;
+    }
+    setInviteLookup({ checking: true, exists: null, message: "" });
+    try {
+      const res = await fetch(`${API}/api/agent/customer-lookup?phone=${encodeURIComponent(phone)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        setInviteLookup({ checking: false, exists: null, message: "Lookup failed" });
+        return;
+      }
+      const d = await res.json();
+      if (!d.valid_phone) {
+        setInviteLookup({ checking: false, exists: false, message: "Enter a valid 10-digit Indian mobile" });
+        return;
+      }
+      if (d.exists) {
+        setInviteForm((p) => ({
+          ...p,
+          customer_name: d.name || p.customer_name,
+          email: p.email || d.email || "",
+          customer_id: d.customer_id || "",
+          phone_normalized: d.normalized_phone || "",
+        }));
+        setInviteLookup({ checking: false, exists: true, message: `Customer on file: ${d.name || "(unnamed)"}` });
+      } else {
+        setInviteForm((p) => ({ ...p, customer_id: "", phone_normalized: d.normalized_phone || "" }));
+        setInviteLookup({ checking: false, exists: false, message: "New customer — please add their name" });
+      }
+    } catch (err) {
+      setInviteLookup({ checking: false, exists: null, message: "Lookup failed" });
+    }
+  };
+
+  const sendInviteToCustomer = async () => {
+    if (!inviteCart) return;
+    const phoneClean = (inviteForm.phone || "").replace(/\D/g, "");
+    if (phoneClean.length < 10) { toast.error("Enter a valid 10-digit mobile number"); return; }
+    if (inviteLookup.exists === false && !inviteForm.customer_name.trim()) {
+      toast.error("Customer name is required for new numbers");
+      return;
+    }
+    if (!inviteForm.email || !inviteForm.email.trim()) {
+      toast.error("Email is required (WhatsApp send is paused for now)");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inviteForm.email.trim())) {
+      toast.error("Enter a valid email");
+      return;
+    }
+    setInviteSending(true);
+    try {
+      const res = await fetch(`${API}/api/agent/shared-cart/${inviteCart.id || inviteCart.token}/send-invite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          phone: inviteForm.phone.trim(),
+          email: inviteForm.email.trim() || null,
+          customer_name: inviteForm.customer_name.trim() || null,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) {
+        toast.error(d?.detail || "Couldn't send invite");
+        setInviteSending(false);
+        return;
+      }
+      const waSkipped = d.whatsapp?.skipped && d.whatsapp?.reason === "whatsapp_template_pending";
+      const waOk = d.whatsapp?.success;
+      const emOk = d.email?.success;
+      const emSkipped = d.email?.skipped;
+      if (emOk && waSkipped) toast.success("Email sent · WhatsApp pending template approval");
+      else if (waOk && emOk) toast.success("Sent · WhatsApp + Email delivered");
+      else if (waOk && emSkipped) toast.success("Sent · WhatsApp delivered (no email provided)");
+      else if (waOk) toast.warning("WhatsApp sent · Email failed — link copied to clipboard");
+      else if (emOk) toast.success("Email sent · link copied to clipboard");
+      else if (waSkipped && emSkipped) toast.warning("No channel sent · please add an email or wait for WhatsApp template approval");
+      else toast.error(`Couldn't send · ${d.email?.error || d.whatsapp?.error || "delivery failed"}`);
+      try { navigator.clipboard.writeText(d.share_url); } catch {}
+      setInviteOpen(false);
+      fetchSharedCarts();
+    } catch (err) {
+      toast.error("Network error — please retry");
+    } finally {
+      setInviteSending(false);
+    }
+  };
+
+
   const handleDeleteSharedCart = async (cart) => {
     const label = `${cart.items?.length || 0} item${(cart.items?.length || 0) !== 1 ? "s" : ""}`;
     if (!window.confirm(`Delete this shared cart (${label})?\n\nThe customer's link will stop working. This cannot be undone.`)) return;
@@ -490,6 +676,27 @@ Locofast Online Services`,
           {/* ===== CATALOG TAB ===== */}
           {activeTab === "catalog" && (
             <div>
+              {/* AI Sourcing Assistant — natural-language search powered by Claude. */}
+              <AgentAISearchBar
+                fabrics={fabrics}
+                onApplyFilters={(f) => {
+                  // Map Claude's extracted filters → existing state setters.
+                  if (f.category) {
+                    const cat = categories.find((c) => c.name?.toLowerCase() === f.category.toLowerCase());
+                    if (cat) setSelectedCategory(cat.id);
+                  }
+                  if (f.gsm_min) setGsmRange({ min: f.gsm_min, max: "" });
+                  if (f.max_price) setPriceRange({ min: "", max: f.max_price });
+                  if (f.availability === "Bookable") setAvailabilityFilter("bulk");
+                }}
+                onSuggestToClient={(fabric) => {
+                  // Adds the suggested fabric to the agent's working cart so
+                  // they can build a shareable basket in one click.
+                  addToCart(fabric, "bulk");
+                  toast.success(`Added "${fabric.name}" to cart`);
+                }}
+              />
+
               {/* Count + Search + Filter Toggle */}
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <div>
@@ -498,14 +705,32 @@ Locofast Online Services`,
                     {activeFilterCount > 0 && <span className="ml-2 text-blue-600">· {activeFilterCount} filter{activeFilterCount !== 1 ? "s" : ""} applied</span>}
                   </p>
                 </div>
-                <button
-                  onClick={() => setShowFilters(!showFilters)}
-                  className={`flex items-center gap-2 px-4 py-2 border rounded-lg text-sm font-medium transition-colors ${showFilters || activeFilterCount > 0 ? "border-[#2563EB] bg-blue-50 text-[#2563EB]" : "border-gray-200 text-gray-700 hover:border-gray-300"}`}
-                  data-testid="agent-toggle-filters"
-                >
-                  <SlidersHorizontal size={15} />
-                  Filters{activeFilterCount > 0 && <span className="bg-[#2563EB] text-white text-xs px-1.5 py-0.5 rounded-full">{activeFilterCount}</span>}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const ids = (fabrics || []).map((f) => f.id).filter(Boolean);
+                      if (!ids.length) {
+                        toast.error("No fabrics in view to save as catalogue");
+                        return;
+                      }
+                      setCatalogueFabricIds(ids);
+                      setShowCatalogueModal(true);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 border border-indigo-200 bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-700 rounded-lg text-sm font-medium hover:from-indigo-100 hover:to-blue-100 transition-all"
+                    data-testid="agent-save-as-catalogue"
+                    title="Bundle the fabrics shown into a watermarked, shareable catalogue page"
+                  >
+                    <FileText size={15} />Save as Catalogue
+                  </button>
+                  <button
+                    onClick={() => setShowFilters(!showFilters)}
+                    className={`flex items-center gap-2 px-4 py-2 border rounded-lg text-sm font-medium transition-colors ${showFilters || activeFilterCount > 0 ? "border-[#2563EB] bg-blue-50 text-[#2563EB]" : "border-gray-200 text-gray-700 hover:border-gray-300"}`}
+                    data-testid="agent-toggle-filters"
+                  >
+                    <SlidersHorizontal size={15} />
+                    Filters{activeFilterCount > 0 && <span className="bg-[#2563EB] text-white text-xs px-1.5 py-0.5 rounded-full">{activeFilterCount}</span>}
+                  </button>
+                </div>
               </div>
 
               {/* Search bar */}
@@ -759,12 +984,13 @@ Locofast Online Services`,
                             <div className="flex items-center justify-between mt-3">
                               {(() => {
                                 const cheapest = getCheapestBulkPrice(f);
+                                const unit = getFabricUnit(f);
                                 if (!cheapest) return <span className="text-sm text-gray-400">Price on enquiry</span>;
                                 return (
                                   <div className="flex flex-col">
-                                    <span className="text-lg font-semibold text-[#2563EB]">₹{cheapest.price.toLocaleString()}<span className="text-xs font-normal text-gray-500">/m</span></span>
+                                    <span className="text-lg font-semibold text-[#2563EB]">₹{cheapest.price.toLocaleString()}<span className="text-xs font-normal text-gray-500">/{unit}</span></span>
                                     {cheapest.hasTier && cheapest.minQty && (
-                                      <span className="text-[10px] text-gray-500">from {formatQtyThreshold(cheapest.minQty, "m")}</span>
+                                      <span className="text-[10px] text-gray-500">from {formatQtyThreshold(cheapest.minQty, unit)}</span>
                                     )}
                                   </div>
                                 );
@@ -806,6 +1032,21 @@ Locofast Online Services`,
           {/* ===== CART TAB ===== */}
           {activeTab === "cart" && (
             <div>
+              {cart.length > 0 && (
+                <div className="mb-4 flex justify-end">
+                  <button
+                    onClick={() => {
+                      const ids = cart.map((c) => c.fabric_id).filter(Boolean);
+                      setCatalogueFabricIds(ids);
+                      setShowCatalogueModal(true);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 border border-indigo-200 bg-gradient-to-r from-indigo-50 to-blue-50 text-indigo-700 rounded-lg text-sm font-medium hover:from-indigo-100 hover:to-blue-100"
+                    data-testid="agent-cart-save-catalogue"
+                  >
+                    <FileText size={15} />Save cart as Catalogue
+                  </button>
+                </div>
+              )}
               {cart.length === 0 ? (
                 <div className="text-center py-16 text-gray-500">
                   <ShoppingCart size={48} className="mx-auto mb-3 text-gray-300" />
@@ -858,20 +1099,39 @@ Locofast Online Services`,
                             >
                               {item.order_type === "sample" ? "Sample" : "Bulk"}
                             </span>
-                            <span className="text-sm text-[#2563EB] font-semibold">₹{item.price_per_meter}/m</span>
+                            {item.order_type === "bulk" && (
+                              <div className="inline-flex items-center text-[10px] font-medium rounded-full border border-gray-200 overflow-hidden" data-testid={`cart-qty-type-${item.fabric_id}`}>
+                                {[
+                                  { val: "actual", label: "Actual" },
+                                  { val: "provisional", label: "Provisional" },
+                                ].map((q) => (
+                                  <button
+                                    key={q.val}
+                                    type="button"
+                                    onClick={() => setItemQtyType(item.fabric_id, q.val)}
+                                    className={`px-2 py-0.5 ${(item.qty_type || defaultQtyType) === q.val ? (q.val === "provisional" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700") : "bg-white text-gray-500 hover:bg-gray-50"}`}
+                                    data-testid={`cart-qty-type-${q.val}-${item.fabric_id}`}
+                                    title={q.val === "provisional" ? "Indicative qty · 10% advance, vendor confirms actual" : "Exact qty · full payment upfront"}
+                                  >
+                                    {q.label}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            <span className="text-sm text-[#2563EB] font-semibold">₹{item.price_per_meter}/{item.unit || "m"}</span>
                           </div>
                         </div>
                         <div className="flex flex-col items-end gap-2">
                           <button onClick={() => removeFromCart(item.fabric_id)} className="p-1 text-gray-400 hover:text-red-500"><Trash2 size={16} /></button>
                           {/* Quantity controls — typeable input + quick steppers.
-                               Big steppers do ±10m for bulk and ±1m for samples,
+                               Big steppers do ±10 for bulk and ±1 for samples,
                                so common adjustments are one click; for unusual
-                               quantities (e.g. 273m) the agent types directly. */}
+                               quantities (e.g. 273) the agent types directly. */}
                           <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? -1 : -100)}
                               className="px-1.5 py-1 bg-gray-100 text-gray-600 text-[10px] font-medium rounded hover:bg-gray-200"
-                              title={item.order_type === "sample" ? "-1m" : "-100m"}
+                              title={item.order_type === "sample" ? `-1${item.unit || "m"}` : `-100${item.unit || "m"}`}
                               data-testid={`cart-qty-decr-big-${item.fabric_id}`}
                             >
                               {item.order_type === "sample" ? "−1" : "−100"}
@@ -887,19 +1147,19 @@ Locofast Online Services`,
                                 onFocus={(e) => e.target.select()}
                                 className="w-16 text-center text-sm font-semibold bg-transparent border-x border-gray-200 py-1 focus:outline-none focus:bg-white"
                                 data-testid={`cart-qty-input-${item.fabric_id}`}
-                                aria-label="Quantity in meters"
+                                aria-label={`Quantity in ${item.unit === "kg" ? "kilograms" : "meters"}`}
                               />
                               <button onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? 1 : 10)} className="px-2 py-1.5 text-gray-500 hover:bg-gray-100"><Plus size={12} /></button>
                             </div>
                             <button
                               onClick={() => updateCartQty(item.fabric_id, item.order_type === "sample" ? 1 : 100)}
                               className="px-1.5 py-1 bg-gray-100 text-gray-600 text-[10px] font-medium rounded hover:bg-gray-200"
-                              title={item.order_type === "sample" ? "+1m" : "+100m"}
+                              title={item.order_type === "sample" ? `+1${item.unit || "m"}` : `+100${item.unit || "m"}`}
                               data-testid={`cart-qty-incr-big-${item.fabric_id}`}
                             >
                               {item.order_type === "sample" ? "+1" : "+100"}
                             </button>
-                            <span className="text-[11px] text-gray-500 ml-0.5">m</span>
+                            <span className="text-[11px] text-gray-500 ml-0.5">{item.unit || "m"}</span>
                           </div>
                           <span className="text-sm font-semibold">₹{(item.quantity * item.price_per_meter).toLocaleString()}</span>
                         </div>
@@ -925,6 +1185,36 @@ Locofast Online Services`,
                           </button>
                         ))}
                       </div>
+                    </div>
+
+                    {/* Quantity Type — cart-level default for BULK items.
+                        Per-item override is available on each cart row. */}
+                    <div className="mb-4" data-testid="cart-default-qty-type">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Quantity Confirmation</label>
+                      <div className="flex gap-2">
+                        {[
+                          { val: "actual", label: "Actual qty", help: "Vendor ships exactly this — full payment upfront" },
+                          { val: "provisional", label: "Provisional", help: "Indicative — 10% advance, vendor confirms actual" },
+                        ].map((q) => (
+                          <button
+                            key={q.val}
+                            type="button"
+                            onClick={() => {
+                              setDefaultQtyType(q.val);
+                              // Apply to all existing bulk items
+                              setCart((prev) => prev.map((c) => c.order_type === "bulk" ? { ...c, qty_type: q.val } : c));
+                            }}
+                            title={q.help}
+                            className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-all ${defaultQtyType === q.val ? (q.val === "provisional" ? "border-amber-300 bg-amber-50 text-amber-700" : "border-emerald-300 bg-emerald-50 text-emerald-700") : "border-gray-200 text-gray-600 hover:border-gray-300"}`}
+                            data-testid={`cart-default-qty-${q.val}`}
+                          >
+                            {q.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-gray-400 mt-1">
+                        {defaultQtyType === "provisional" ? "Customer pays 10% advance. Vendor confirms exact qty later." : "Customer pays full amount. Vendor must ship exact qty."}
+                      </p>
                     </div>
 
                     <div className="space-y-2 text-sm mb-3">
@@ -1097,22 +1387,22 @@ Locofast Online Services`,
                         </div>
                         <div className="flex gap-2 flex-wrap">
                           <button
-                            onClick={() => shareViaWhatsApp(sc)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50"
-                            data-testid={`agent-share-whatsapp-${sc.token}`}
-                            title="Share via WhatsApp"
+                            onClick={() => openInviteModal(sc)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#2563EB] rounded-lg hover:bg-blue-700"
+                            data-testid={`agent-share-invite-${sc.token}`}
+                            title="Send WhatsApp + Email to customer"
                           >
-                            <MessageCircle size={14} />WhatsApp
-                          </button>
-                          <button
-                            onClick={() => shareViaEmail(sc)}
-                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50"
-                            data-testid={`agent-share-email-${sc.token}`}
-                            title="Share via Email"
-                          >
-                            <Mail size={14} />Email
+                            <Send size={14} />Share with Customer
                           </button>
                           <button onClick={() => copyLink(sc.token)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#2563EB] border border-blue-200 rounded-lg hover:bg-blue-50"><Copy size={14} />Copy Link</button>
+                          <button
+                            onClick={() => handleDuplicateSharedCart(sc)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-50"
+                            data-testid={`agent-duplicate-cart-${sc.token}`}
+                            title="Create a new draft cart with these items for a different customer"
+                          >
+                            <Copy size={14} />Duplicate for new customer
+                          </button>
                           <a href={`/shared-cart/${sc.token}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50"><ExternalLink size={14} />Open</a>
                           {sc.status !== "completed" && (
                             <button
@@ -1179,33 +1469,78 @@ Locofast Online Services`,
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase" title="Final invoice value — goods + packaging + logistics + 5% GST">Invoice Value <span className="ml-1 text-[10px] font-normal normal-case text-gray-400">(all-incl.)</span></th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                        <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {orders.map((o) => {
                         const isSample = o.items?.[0]?.order_type === 'sample';
+                        // Pricing breakdown — same fields persisted by orders_router.
+                        // `packaging_charge` + `logistics_only_charge` is the modern
+                        // (Feb 2026+) split; older orders may carry only the legacy
+                        // `logistics_charge`. Either way, totals add up.
+                        const goods = Number(o.subtotal || 0);
+                        const pkg = Number(o.packaging_charge || 0);
+                        const log = Number(o.logistics_only_charge ?? o.logistics_charge ?? 0);
+                        const tax = Number(o.tax || 0);
+                        const grand = Number(o.total || (goods + pkg + log + tax));
                         return (
-                        <tr key={o.id} className="hover:bg-gray-50">
+                        <tr key={o.id} className="hover:bg-gray-50" data-testid={`agent-order-row-${o.order_number}`}>
                           <td className="px-4 py-4 font-medium text-[#2563EB]">{o.order_number}</td>
                           <td className="px-4 py-4">
                             <span className={`px-2 py-1 rounded-full text-xs font-bold ${isSample ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}>
                               {isSample ? 'SAMPLE' : 'BULK'}
                             </span>
+                            <span className="ml-1 inline-block align-middle"><OrderSourceChip order={o} /></span>
                           </td>
                           <td className="px-4 py-4">
                             <p className="text-sm font-medium">{o.customer?.name}</p>
                             <p className="text-xs text-gray-500">{o.customer?.email}</p>
                           </td>
-                          <td className="px-4 py-4 font-semibold text-emerald-600">₹{o.total?.toLocaleString()}</td>
+                          <td className="px-4 py-4 text-right" data-testid={`agent-order-invoice-${o.order_number}`}>
+                            <div className="font-semibold text-emerald-700 tabular-nums">₹{grand.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+                            <div className="mt-0.5 text-[11px] text-gray-500 tabular-nums leading-tight">
+                              Goods ₹{goods.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                              {pkg > 0 && <> · Pkg ₹{pkg.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</>}
+                              {log > 0 && <> · Logs ₹{log.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</>}
+                              {tax > 0 && <> · GST ₹{tax.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</>}
+                            </div>
+                          </td>
                           <td className="px-4 py-4">
                             <span className={`px-2 py-1 rounded-full text-xs font-medium ${o.status === "confirmed" || o.status === "delivered" ? "bg-emerald-100 text-emerald-700" : o.status === "shipped" ? "bg-purple-100 text-purple-700" : "bg-yellow-100 text-yellow-700"}`}>
                               {o.status}
                             </span>
                           </td>
                           <td className="px-4 py-4 text-sm text-gray-500">{formatDate(o.created_at)}</td>
+                          <td className="px-4 py-4 text-right">
+                            {o.is_provisional && o.payment_status === "balance_pending" && (
+                              <button
+                                type="button"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  try {
+                                    const { data } = await axios.post(
+                                      `${API}/api/orders/${o.id}/balance-share-link`,
+                                      {},
+                                      { headers: { Authorization: `Bearer ${token}` } }
+                                    );
+                                    await navigator.clipboard.writeText(data.url);
+                                    toast.success(`Balance pay link copied · ₹${Number(data.balance_amount).toLocaleString('en-IN')}`);
+                                  } catch (err) {
+                                    toast.error(err?.response?.data?.detail || "Failed to generate link");
+                                  }
+                                }}
+                                className="text-[11px] font-medium text-orange-700 bg-orange-50 hover:bg-orange-100 border border-orange-200 px-2 py-1 rounded"
+                                data-testid={`agent-balance-link-${o.order_number}`}
+                                title="Copy a public balance-pay link to send to the customer"
+                              >
+                                Share Balance Link
+                              </button>
+                            )}
+                          </td>
                         </tr>
                         );
                       })}
@@ -1299,6 +1634,102 @@ Locofast Online Services`,
         </div>
       )}
 
+      <CreateCatalogueModal
+        open={showCatalogueModal}
+        onClose={() => setShowCatalogueModal(false)}
+        fabricIds={catalogueFabricIds}
+      />
+
+      {/* Send-invite modal: WhatsApp + Email push to a customer */}
+      {inviteOpen && inviteCart && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !inviteSending && setInviteOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()} data-testid="agent-invite-modal">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Share cart with customer</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{inviteCart.items?.length || 0} item{(inviteCart.items?.length || 0) !== 1 ? "s" : ""} · sent via Email <span className="text-amber-600">(WhatsApp pending template approval)</span></p>
+              </div>
+              <button onClick={() => !inviteSending && setInviteOpen(false)} className="text-gray-400 hover:text-gray-600 disabled:opacity-50" disabled={inviteSending}><X size={20} /></button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Customer WhatsApp number <span className="text-red-500">*</span></label>
+                <div className="flex items-center gap-2">
+                  <span className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-600">+91</span>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    autoFocus
+                    value={inviteForm.phone}
+                    onChange={(e) => {
+                      const v = e.target.value.replace(/\D/g, "").slice(0, 10);
+                      setInviteForm({ ...inviteForm, phone: v });
+                      lookupCustomerByPhone(v);
+                    }}
+                    placeholder="98765 43210"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:outline-none"
+                    data-testid="invite-phone"
+                  />
+                </div>
+                {inviteLookup.checking && <p className="text-xs text-gray-400 mt-1">Looking up…</p>}
+                {!inviteLookup.checking && inviteLookup.message && (
+                  <p className={`text-xs mt-1 ${inviteLookup.exists ? "text-emerald-600" : "text-amber-600"}`} data-testid="invite-lookup-status">
+                    {inviteLookup.exists ? "✓ " : ""}{inviteLookup.message}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Customer name {inviteLookup.exists === false && <span className="text-red-500">*</span>}
+                  {inviteLookup.exists === true && <span className="text-xs text-gray-400 font-normal"> (auto-filled)</span>}
+                </label>
+                <input
+                  type="text"
+                  value={inviteForm.customer_name}
+                  onChange={(e) => setInviteForm({ ...inviteForm, customer_name: e.target.value })}
+                  placeholder={inviteLookup.exists === false ? "Required — they're new on Locofast" : "Name"}
+                  disabled={inviteLookup.exists === true}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:outline-none disabled:bg-gray-50 disabled:text-gray-700"
+                  data-testid="invite-name"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Customer email <span className="text-red-500">*</span></label>
+                <input
+                  type="email"
+                  value={inviteForm.email}
+                  onChange={(e) => setInviteForm({ ...inviteForm, email: e.target.value })}
+                  placeholder="name@company.com"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:outline-none"
+                  data-testid="invite-email"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">Currently the only active delivery channel. WhatsApp resumes once your template is approved.</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-6">
+              <button
+                onClick={() => setInviteOpen(false)}
+                disabled={inviteSending}
+                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={sendInviteToCustomer}
+                disabled={inviteSending || (inviteForm.phone || "").length < 10}
+                className="flex-1 px-4 py-2 bg-[#2563EB] text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                data-testid="invite-send"
+              >
+                {inviteSending ? <><Loader2 size={14} className="animate-spin" /> Sending…</> : <><Send size={14} /> Send</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

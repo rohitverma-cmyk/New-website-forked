@@ -87,8 +87,14 @@ class EmailRequest(BaseModel):
 
 # ==================== EMAIL TEMPLATES ====================
 
-def get_order_confirmation_email(order: dict) -> str:
-    """Generate order confirmation email HTML"""
+def get_order_confirmation_email(order: dict, child_orders: Optional[list] = None) -> str:
+    """Generate order confirmation email HTML.
+
+    When `child_orders` is provided (multi-vendor split), the invoice CTA
+    block is rendered as one button per sub-order — the master parent
+    itself never gets a GST invoice (each sub-order carries its own
+    sequential invoice number).
+    """
     items_html = ""
     for item in order.get("items", []):
         items_html += f"""
@@ -110,7 +116,52 @@ def get_order_confirmation_email(order: dict) -> str:
         """
     
     customer = order.get("customer", {})
-    
+
+    # Invoice CTA block — single button for standalone orders, one
+    # button per sub-order for split (multi-vendor) parents.
+    # NOTE: We deliberately hide the vendor company name from the
+    # customer (B2B marketplace policy — Locofast is the seller of
+    # record). Sub-orders are labelled "Shipment 1", "Shipment 2", … .
+    if child_orders:
+        child_buttons = ""
+        for ci, co in enumerate(child_orders, start=1):
+            cid = co.get("id") or ""
+            cnum = co.get("order_number") or ""
+            child_buttons += (
+                f'<div style="margin: 6px 0;">'
+                f'<a href="{SITE_URL}/api/orders/{cid}/invoice" '
+                f'style="display: inline-block; background: #2563EB; color: #fff; '
+                f'text-decoration: none; padding: 10px 22px; border-radius: 8px; '
+                f'font-weight: 600; font-size: 13px;">'
+                f'Download Invoice — Shipment {ci} ({cnum})'
+                f'</a></div>'
+            )
+        invoice_cta_html = (
+            f'<div style="background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-top: none; text-align: center;">'
+            f'<p style="margin: 0 0 12px 0; font-size: 13px; color: #475569; font-weight: 600;">'
+            f'Your order ships in {len(child_orders)} shipments — one GST invoice per shipment:'
+            f'</p>'
+            f'{child_buttons}'
+            f'<p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">'
+            f'Each shipment carries its own sequential GST invoice number.'
+            f'</p>'
+            f'</div>'
+        )
+    else:
+        invoice_cta_html = (
+            f'<div style="background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-top: none; text-align: center;">'
+            f'<a href="{SITE_URL}/api/orders/{order.get("id", "")}/invoice" '
+            f'style="display: inline-block; background: #2563EB; color: #fff; '
+            f'text-decoration: none; padding: 12px 28px; border-radius: 8px; '
+            f'font-weight: 600; font-size: 14px;">'
+            f'Download Tax Invoice (GST)'
+            f'</a>'
+            f'<p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">'
+            f'A GST-compliant invoice has been generated for this order.'
+            f'</p>'
+            f'</div>'
+        )
+
     return f"""
     <!DOCTYPE html>
     <html>
@@ -166,10 +217,13 @@ def get_order_confirmation_email(order: dict) -> str:
                         <td style="padding: 5px 0; color: #64748b;">Subtotal</td>
                         <td style="padding: 5px 0; text-align: right;">₹{order.get('subtotal', 0):,.2f}</td>
                     </tr>
+                    {f'<tr><td style="padding: 5px 0; color: #64748b;">Packaging</td><td style="padding: 5px 0; text-align: right;">₹{order.get("packaging_charge", 0):,.2f}</td></tr>' if (order.get('packaging_charge') or 0) > 0 else ''}
+                    {f'<tr><td style="padding: 5px 0; color: #64748b;">Logistics</td><td style="padding: 5px 0; text-align: right;">₹{(order.get("logistics_only_charge") or order.get("logistics_charge") or 0):,.2f}</td></tr>' if ((order.get('logistics_only_charge') or order.get('logistics_charge') or 0) > 0) else ''}
                     <tr>
                         <td style="padding: 5px 0; color: #64748b;">GST (5%)</td>
                         <td style="padding: 5px 0; text-align: right;">₹{order.get('tax', 0):,.2f}</td>
                     </tr>
+                    {f'<tr><td style="padding: 5px 0; color: #64748b;">Discount</td><td style="padding: 5px 0; text-align: right; color: #dc2626;">-₹{order.get("discount", 0):,.2f}</td></tr>' if (order.get('discount') or 0) > 0 else ''}
                     <tr style="font-size: 18px; font-weight: 600;">
                         <td style="padding: 15px 0 5px 0; border-top: 1px solid #e2e8f0;">Total Paid</td>
                         <td style="padding: 15px 0 5px 0; text-align: right; color: #059669; border-top: 1px solid #e2e8f0;">₹{order.get('total', 0):,.2f}</td>
@@ -193,21 +247,17 @@ def get_order_confirmation_email(order: dict) -> str:
         </div>
         
         <!-- Invoice CTA -->
-        <div style="background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-top: none; text-align: center;">
-            <a href="{SITE_URL}/api/orders/{order.get('id', '')}/invoice" style="display: inline-block; background: #2563EB; color: #fff; text-decoration: none; padding: 12px 28px; border-radius: 8px; font-weight: 600; font-size: 14px;">
-                Download Tax Invoice (GST)
-            </a>
-            <p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">A GST-compliant invoice has been generated for this order.</p>
-        </div>
+        {invoice_cta_html}
 
-        <!-- Next Steps -->
-        <div style="background: #ecfdf5; padding: 20px; border: 1px solid #d1fae5; border-radius: 0 0 12px 12px;">
-            <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #065f46;">What's Next?</h3>
-            <ol style="margin: 0; padding-left: 20px; color: #047857;">
-                <li style="margin-bottom: 8px;">Our team will verify your order and stock availability</li>
-                <li style="margin-bottom: 8px;">You'll receive a confirmation call within 24 hours</li>
-                <li style="margin-bottom: 8px;"><strong>Samples dispatched in 24–48 hours</strong> and <strong>bulk dispatched in 24–48 hours for packaging &amp; dispatch</strong> (for in-stock items). Manufactured-to-order bulk typically dispatches within ~30 days of confirmation.</li>
-                <li>Tracking details will be shared via SMS/Email</li>
+        <!-- Order Terms -->
+        <div style="background: #ecfdf5; padding: 22px; border: 1px solid #d1fae5; border-radius: 0 0 12px 12px;">
+            <h3 style="margin: 0 0 12px 0; font-size: 14px; color: #065f46; font-weight: 700;">Order Confirmation Terms</h3>
+            <ol style="margin: 0; padding-left: 20px; color: #047857; font-size: 13px; line-height: 1.65;">
+                <li style="margin-bottom: 9px;">Your order has been shared with our vendor partner, who will begin packaging and dispatch shortly.</li>
+                <li style="margin-bottom: 9px;">Shipment will be dispatched within <strong>2–3 business days</strong> (Saturdays, Sundays &amp; public holidays excluded).</li>
+                <li style="margin-bottom: 9px;">All tracking details and dispatch updates will be shared with you via SMS/Email from time to time.</li>
+                <li style="margin-bottom: 9px;">In the rare event of stock unavailability, your order will be cancelled and a <strong>full refund</strong> will be initiated promptly.</li>
+                <li>For any queries or support, reach us on WhatsApp at <a href="https://wa.me/918920392418" style="color:#047857;text-decoration:underline;font-weight:600;">+91-8920392418</a> or email us at <a href="mailto:mail@locofast.com" style="color:#047857;text-decoration:underline;font-weight:600;">mail@locofast.com</a> — we're happy to help!</li>
             </ol>
         </div>
         
@@ -215,17 +265,100 @@ def get_order_confirmation_email(order: dict) -> str:
         <div style="text-align: center; padding: 30px 0; color: #64748b; font-size: 13px;">
             <p style="margin: 0 0 10px 0;">Questions about your order?</p>
             <p style="margin: 0;">
-                <a href="mailto:support@locofast.com" style="color: #2563EB; text-decoration: none;">support@locofast.com</a> | 
-                <a href="tel:+919876543210" style="color: #2563EB; text-decoration: none;">+91 98765 43210</a>
+                <a href="mailto:mail@locofast.com" style="color: #2563EB; text-decoration: none;">mail@locofast.com</a> | 
+                <a href="https://wa.me/918920392418" style="color: #2563EB; text-decoration: none;">WhatsApp +91-8920392418</a>
             </p>
             <p style="margin: 20px 0 0 0; color: #94a3b8;">
-                Locofast - Reliable Fabric Sourcing for Brands & Manufacturers
+                Locofast - Reliable Fabric Sourcing for Brands &amp; Manufacturers
             </p>
         </div>
         
     </body>
     </html>
     """
+
+
+def _build_order_context_strip(order: dict) -> str:
+    """Standalone HTML strip describing how an order originated. Rendered
+    below the order-number bar in vendor + admin notification emails.
+
+    Three independent dimensions:
+      1. Booking — Self-Serve (the customer placed it themselves) vs.
+         Assisted Online (a Locofast agent placed it on the customer's
+         behalf). When assisted, the agent's name is shown so the vendor
+         knows who owns special instructions.
+      2. Source — Inventory (vendor's catalog) vs RFQ (vendor's submitted
+         quote). RFQ orders honour the quote's lead time + price, so we
+         link the parent RFQ for traceability.
+      3. Type — Sample / Small Bulk / Large Bulk, computed from the
+         summed line-item quantity. Large bulk (≥500m) implies the
+         provisional 10/90 payment flow.
+    """
+    booking_type = (order.get("booking_type") or "online").lower()
+    if booking_type == "assisted_online":
+        agent_name = (order.get("agent_name") or "").strip() or "Locofast Agent"
+        booking_label = "Assisted Online"
+        booking_detail = f"Placed by {agent_name}"
+        booking_color = "#7c3aed"
+        booking_bg = "#ede9fe"
+    else:
+        booking_label = "Self-Serve"
+        booking_detail = "Customer placed this order directly on locofast.com"
+        booking_color = "#0369a1"
+        booking_bg = "#e0f2fe"
+
+    source = (order.get("source") or "inventory").lower()
+    if source == "rfq":
+        rfq_id = (order.get("rfq_id") or "").strip()
+        source_label = "RFQ Quote"
+        source_detail = f"From RFQ {rfq_id}" if rfq_id else "Converted from your RFQ quote"
+        source_color = "#7c2d12"
+        source_bg = "#fef3c7"
+    else:
+        source_label = "Inventory"
+        source_detail = "Direct catalog order"
+        source_color = "#374151"
+        source_bg = "#f3f4f6"
+
+    items = order.get("items") or []
+    qty = sum(float(it.get("quantity") or 0) for it in items)
+    all_samples = bool(items) and all(
+        (it.get("order_type") or "bulk").lower() == "sample" for it in items
+    )
+    if all_samples or qty < 5:
+        type_label = "Sample"
+        type_detail = f"{qty:g}m — auto-confirm, single-shot dispatch"
+        type_color = "#0c4a6e"
+        type_bg = "#e0f2fe"
+    elif qty >= 500:
+        type_label = "Large Bulk"
+        type_detail = f"{qty:g}m — provisional 10/90 payment flow"
+        type_color = "#9a3412"
+        type_bg = "#fed7aa"
+    else:
+        type_label = "Small Bulk"
+        type_detail = f"{qty:g}m — single-shot full payment"
+        type_color = "#065f46"
+        type_bg = "#d1fae5"
+
+    def _row(label_color, label_bg, label, detail):
+        return (
+            f'<tr><td style="padding: 6px 0; vertical-align: top; width: 110px;">'
+            f'<span style="display: inline-block; background: {label_bg}; color: {label_color}; '
+            f'padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700;">{label}</span>'
+            f'</td><td style="padding: 6px 0; font-size: 13px; color: #475569;">{detail}</td></tr>'
+        )
+
+    return (
+        '<div style="background: #ffffff; padding: 14px 20px; border: 1px solid #e2e8f0; border-top: none;" data-testid="email-order-context">'
+        '<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 8px;">Order Context</div>'
+        '<table style="width: 100%; border-collapse: collapse;">'
+        + _row(booking_color, booking_bg, booking_label, booking_detail)
+        + _row(source_color, source_bg, source_label, source_detail)
+        + _row(type_color, type_bg, type_label, type_detail)
+        + '</table></div>'
+    )
+
 
 def get_order_received_admin_email(order: dict) -> str:
     """Generate admin notification email for new order — includes ALL customer info"""
@@ -288,6 +421,8 @@ def get_order_received_admin_email(order: dict) -> str:
             </table>
         </div>
         
+        {_build_order_context_strip(order)}
+        
         <!-- Customer Details (FULL info including phone) -->
         <div style="background: #f8fafc; padding: 20px; border: 1px solid #e2e8f0; border-top: none;">
             <h3 style="margin: 0 0 12px 0; font-size: 14px; color: #475569;">Customer Details</h3>
@@ -319,6 +454,8 @@ def get_order_received_admin_email(order: dict) -> str:
             <div style="margin-top: 15px; padding-top: 15px; border-top: 2px solid #e2e8f0;">
                 <table style="width: 100%; font-size: 14px;">
                     <tr><td style="text-align: right; color: #64748b;">Subtotal:</td><td style="text-align: right; width: 100px;">₹{order.get('subtotal', 0):,.2f}</td></tr>
+                    {f'<tr><td style="text-align: right; color: #64748b;">Packaging:</td><td style="text-align: right;">₹{order.get("packaging_charge", 0):,.2f}</td></tr>' if (order.get('packaging_charge') or 0) > 0 else ''}
+                    {f'<tr><td style="text-align: right; color: #64748b;">Logistics:</td><td style="text-align: right;">₹{(order.get("logistics_only_charge") or order.get("logistics_charge") or 0):,.2f}</td></tr>' if ((order.get('logistics_only_charge') or order.get('logistics_charge') or 0) > 0) else ''}
                     <tr><td style="text-align: right; color: #64748b;">GST (5%):</td><td style="text-align: right;">₹{order.get('tax', 0):,.2f}</td></tr>
                     {f'<tr><td style="text-align: right; color: #64748b;">Discount:</td><td style="text-align: right; color: #dc2626;">-₹{order.get("discount", 0):,.2f}</td></tr>' if order.get('discount', 0) > 0 else ''}
                     <tr style="font-size: 18px; font-weight: 700;"><td style="text-align: right; padding-top: 10px; border-top: 1px solid #e2e8f0;">Total:</td><td style="text-align: right; padding-top: 10px; border-top: 1px solid #e2e8f0; color: #059669;">₹{order.get('total', 0):,.2f}</td></tr>
@@ -327,7 +464,7 @@ def get_order_received_admin_email(order: dict) -> str:
         </div>
         
         <div style="text-align: center; padding: 20px; background: #f8fafc; border-radius: 0 0 12px 12px; border: 1px solid #e2e8f0; border-top: none;">
-            <a href="https://shop.locofast.com/admin/orders" style="background: #2563EB; color: white; padding: 10px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View in Admin Panel</a>
+            <a href="https://locofast.com/admin/orders" style="background: #2563EB; color: white; padding: 10px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 14px;">View in Admin Panel</a>
         </div>
         
     </body>
@@ -421,6 +558,8 @@ def get_seller_order_notification_email(order: dict, items: list, seller: dict) 
             </table>
         </div>
         
+        {_build_order_context_strip(order)}
+        
         <!-- Action Required -->
         <div style="background: #fef3c7; padding: 15px 20px; border-left: 4px solid #f59e0b;">
             <strong style="color: #92400e;">Action Required:</strong>
@@ -487,16 +626,26 @@ def get_seller_order_notification_email(order: dict, items: list, seller: dict) 
             </table>
         </div>
         
-        <!-- Shipping To (NO phone number) -->
-        <div style="background: #f8fafc; padding: 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px;">
-            <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #475569;">Ship To</h3>
+        <!-- Shipping zone (Ship-To details redacted — Locofast ops handles
+             consignee identity end-to-end via Shiprocket. Vendor only needs
+             a region for routing decisions.) -->
+        <div style="background: #f8fafc; padding: 20px; border: 1px solid #e2e8f0; border-top: none;">
+            <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #475569;">Ship-To Zone</h3>
             <p style="margin: 0; color: #1e293b;">
-                <strong>{customer.get('name', '')}</strong><br>
-                {f"{customer.get('company', '')}<br>" if customer.get('company') else ''}
-                {customer.get('address', '')}<br>
-                {customer.get('city', '')}, {customer.get('state', '')} {customer.get('pincode', '')}<br>
-                <br>
-                <strong>Email:</strong> {customer.get('email', '')}
+                <strong>{customer.get('city', '')}, {customer.get('state', '')} {customer.get('pincode', '')}</strong><br>
+                <span style="color:#64748b; font-size:13px;">Full consignee details (name / contact / GSTIN) are on the Shiprocket pickup label. Address customer queries to Locofast Ops only.</span>
+            </p>
+        </div>
+
+        <!-- Prepare For Dispatch CTA — deep-links the supplier into
+             their Locofast vendor dashboard so they can act on this
+             order immediately (mark goods ready, upload invoice, etc.). -->
+        <div style="background: #fff; padding: 22px 20px; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 12px 12px; text-align: center;">
+            <a href="{SITE_URL}/vendor" style="display: inline-block; background: #059669; color: #ffffff; text-decoration: none; padding: 13px 30px; border-radius: 8px; font-weight: 700; font-size: 14px; letter-spacing: 0.2px;" data-testid="prepare-for-dispatch-cta">
+                Prepare For Dispatch &nbsp;→
+            </a>
+            <p style="margin: 10px 0 0 0; font-size: 12px; color: #64748b;">
+                Opens your Vendor Dashboard to start dispatch preparation.
             </p>
         </div>
         
@@ -1396,6 +1545,121 @@ async def send_rfq_lead_email(lead: dict):
 
 
 
+async def send_order_cancellation_email(order: dict, reason: str = ""):
+    """Customer-facing cancellation email. Best-effort; failures logged
+    but never block the cancel flow. The internal stakeholders are NOT
+    CC'd on this — they receive a separate internal email via
+    `internal_events.fire_internal_event`."""
+    try:
+        to_email = (order.get("customer") or {}).get("email") or ""
+        if not to_email:
+            return {"success": False, "skipped": True, "reason": "no_email"}
+        order_number = order.get("order_number") or ""
+        advance = float(order.get("advance_amount") or 0)
+        items_rows = ""
+        for it in (order.get("items") or []):
+            items_rows += (
+                f'<tr><td style="padding:6px 8px;font-size:13px;border-bottom:1px solid #eee;">'
+                f'<strong>{it.get("fabric_name","")}</strong></td>'
+                f'<td style="padding:6px 8px;text-align:right;font-size:13px;'
+                f'border-bottom:1px solid #eee;">{it.get("quantity",0)}m</td></tr>'
+            )
+        params = {
+            "from": f"Locofast <{SENDER_EMAIL}>",
+            "to": [to_email],
+            "subject": f"Order Cancelled · {order_number}",
+            "html": f"""
+            <div style="font-family: Inter, system-ui, sans-serif; max-width: 560px; margin:0 auto; padding:28px 24px;">
+              <h2 style="font-size:20px; font-weight:700; margin:0 0 12px; color:#b91c1c;">Order cancelled</h2>
+              <p style="color:#475569; line-height:1.5;">Hi {(order.get('customer') or {}).get('name','there')},</p>
+              <p style="color:#475569; line-height:1.5;">We're sorry — your order
+              <strong>{order_number}</strong> has been cancelled.</p>
+              <div style="background:#fef2f2; border:1px solid #fecaca; border-radius:10px; padding:14px 16px; margin:16px 0;">
+                <p style="margin:0; color:#991b1b; font-size:13px;"><strong>Reason:</strong> {reason or 'Supplier could not fulfil the order.'}</p>
+              </div>
+              <table style="width:100%; border-collapse:collapse; margin-top:12px; background:#fff; border:1px solid #eee; border-radius:8px;">
+                {items_rows}
+              </table>
+              {('<p style="margin:18px 0 0; color:#475569; line-height:1.5;">A refund of <strong>Rs {:,.0f}</strong> for the advance you paid will be processed to your original payment method within 5–7 business days.</p>'.format(advance)) if advance > 0 else ''}
+              <p style="margin:18px 0 0; color:#475569; line-height:1.5;">Our team will reach out shortly with alternatives. If you need to chat right away, reply to this email or call us.</p>
+              <p style="color:#94a3b8; font-size:12px; margin-top:24px;">Locofast Online Services — Team Support</p>
+            </div>
+            """,
+        }
+        if RESEND_API_KEY:
+            await asyncio.to_thread(resend.Emails.send, params)
+            await log_email(
+                kind="order_cancellation_customer",
+                recipients=[to_email],
+                subject=params["subject"],
+                html=params["html"],
+                order_id=order.get("id"),
+                order_number=order_number,
+                meta={"reason": reason},
+            )
+        return {"success": True}
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"send_order_cancellation_email failed: {e}")
+        try:
+            await log_email(
+                kind="order_cancellation_customer",
+                recipients=[(order.get("customer") or {}).get("email", "")],
+                subject="Order Cancelled",
+                status="failed",
+                error=str(e),
+                order_id=order.get("id"),
+                order_number=order.get("order_number"),
+            )
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+async def send_balance_payment_due_email(order: dict):
+    """Provisional bulk-order notification: supplier has marked goods
+    ready with actual quantity → customer can now pay the balance.
+    Best-effort; failures are logged but never block the order flow."""
+    try:
+        to_email = (order.get("customer") or {}).get("email") or ""
+        if not to_email:
+            return {"success": False, "skipped": True, "reason": "no_email"}
+        public_base = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/") or "https://locofast.com"
+        link = f"{public_base}/orders/{order.get('id')}"
+        balance = float(order.get("balance_amount") or 0)
+        actual_total = float(order.get("actual_total") or order.get("total") or 0)
+        params = {
+            "from": f"Locofast <{SENDER_EMAIL}>",
+            "to": [to_email],
+            "subject": f"Action needed: pay the balance for {order.get('order_number')}",
+            "html": f"""
+            <div style="font-family: Inter, system-ui, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 24px;">
+                <h2 style="font-size: 20px; font-weight: 600; margin: 0 0 12px;">Your goods are ready — pay the balance</h2>
+                <p style="color: #475569; line-height: 1.5;">Hi {(order.get('customer') or {}).get('name', 'there')},</p>
+                <p style="color: #475569; line-height: 1.5;">The supplier has finished packing your order
+                <strong>{order.get('order_number')}</strong>. Final invoice value is
+                <strong>Rs {actual_total:,.0f}</strong>. You've already paid the
+                <strong>{order.get('advance_pct', 10)}%</strong> advance &mdash; please clear the
+                <strong>balance of Rs {balance:,.0f}</strong> to release dispatch.</p>
+                <p style="margin: 24px 0;"><a href="{link}" style="display: inline-block; background: #2563EB; color: #fff; padding: 12px 22px; border-radius: 10px; text-decoration: none; font-weight: 600;">Pay balance &middot; Rs {balance:,.0f}</a></p>
+                <p style="color: #94a3b8; font-size: 12px;">Once we receive payment, we hand the order over to our logistics partner and you'll get the AWB number for live tracking.</p>
+            </div>
+            """,
+        }
+        resend.Emails.send(params)
+        await log_email(
+            kind="order_balance_due",
+            recipients=[to_email],
+            subject=params["subject"],
+            order_id=order.get("id"),
+            order_number=order.get("order_number"),
+        )
+        return {"success": True}
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"send_balance_payment_due_email failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+
 async def send_order_notification_emails(order: dict, order_db=None):
     """
     Auto-send order notification emails after payment confirmation.
@@ -1465,11 +1729,26 @@ async def send_order_notification_emails(order: dict, order_db=None):
     customer_email = order.get("customer", {}).get("email")
     brand_id = order.get("brand_id")
     customer_id = order.get("customer_id")
-    
+
+    # If this is a multi-vendor master order, fetch the sub-orders so we
+    # can list one invoice CTA per child (the parent has no invoice).
+    # We don't fetch `seller_company` — vendor identity is masked from
+    # the customer; sub-orders are labelled "Shipment N" instead.
+    child_orders_for_email: list = []
+    if use_db and order.get("is_parent_order") and (order.get("child_order_ids") or (order.get("vendor_count") or 0) > 1):
+        try:
+            child_orders_for_email = await use_db.orders.find(
+                {"parent_order_id": order.get("id")},
+                {"_id": 0, "id": 1, "order_number": 1},
+            ).to_list(length=50)
+        except Exception as e:
+            logger.warning(f"Failed to fetch child orders for invoice CTAs ({order_number}): {e}")
+            child_orders_for_email = []
+
     # 1. Send customer confirmation email
     if customer_email:
         subject = f"Order Confirmed - {order_number} | Locofast"
-        html = get_order_confirmation_email(order)
+        html = get_order_confirmation_email(order, child_orders=child_orders_for_email or None)
         try:
             params = {"from": SENDER_EMAIL, "to": [customer_email], "subject": subject, "html": html}
             await asyncio.to_thread(resend.Emails.send, params)
@@ -1612,32 +1891,90 @@ def get_order_shipped_email(order: dict) -> str:
 
 
 def get_order_delivered_email(order: dict) -> str:
-    """HTML email for order delivered notification"""
+    """HTML email for order delivered notification.
+    Format: hero header → "What you ordered" with thumbnails → 5-star
+    rating widget linking to the feedback landing page → CTA →
+    quality-inspection footnote at the bottom."""
     customer = order.get('customer', {})
+    items = order.get('items', []) or []
+    order_id = order.get('id', '') or (order.get('order_number') or '').replace('/', '-')
+
+    def _item_row(it):
+        imgs = it.get('images') or it.get('image_urls') or []
+        img = ''
+        if isinstance(imgs, list) and imgs:
+            first = imgs[0]
+            img = first.get('url', '') if isinstance(first, dict) else first
+        elif it.get('image_url'):
+            img = it.get('image_url')
+        thumb_html = (
+            f'<img src="{img}" alt="" width="60" height="60" style="border-radius:8px;object-fit:cover;display:block;border:1px solid #e5e7eb;">'
+            if img else
+            '<div style="width:60px;height:60px;border-radius:8px;background:linear-gradient(135deg,#475569 0%,#0f172a 100%);"></div>'
+        )
+        name = it.get('fabric_name') or 'Fabric'
+        code = it.get('fabric_code') or it.get('code') or ''
+        cat = it.get('category_name') or it.get('category') or ''
+        meta = ' · '.join(p for p in [code, cat] if p) or '—'
+        qty = float(it.get('quantity') or 0)
+        rate = float(it.get('price_per_meter') or it.get('price') or 0)
+        return f"""
+          <tr style="border-bottom:1px solid #f1f5f9;">
+            <td style="padding:14px;width:80px;">{thumb_html}</td>
+            <td style="padding:14px 14px 14px 0;">
+              <p style="font-weight:600;color:#0f172a;margin:0 0 2px;font-size:13px;">{name}</p>
+              <p style="color:#64748b;font-size:11px;margin:0;">{meta}</p>
+            </td>
+            <td style="padding:14px;text-align:right;color:#475569;white-space:nowrap;font-size:12px;">
+              <strong style="color:#0f172a;">{qty:g}m</strong><br>
+              <span style="color:#94a3b8;font-size:10px;">Rs {rate:,.0f}/m</span>
+            </td>
+          </tr>
+        """
+
+    items_html = ''.join(_item_row(it) for it in items[:5]) or (
+        '<tr><td colspan="3" style="padding:14px;color:#94a3b8;font-size:12px;text-align:center;">Order items unavailable</td></tr>'
+    )
+
+    star_links = ''.join(
+        f'<td><a href="{SITE_URL}/feedback/{order_id}?r={n}" '
+        'style="text-decoration:none;display:inline-block;font-size:34px;line-height:1;color:#fbbf24;padding:0 4px;">★</a></td>'
+        for n in range(1, 6)
+    )
+
     return f"""
     <div style="font-family:Inter,-apple-system,sans-serif;max-width:600px;margin:0 auto;background:#fff;">
-        <div style="background:#059669;padding:32px;text-align:center;">
-            <h1 style="color:#fff;font-size:24px;margin:0;">Your Order Has Been Delivered!</h1>
-            <p style="color:rgba(255,255,255,0.8);font-size:14px;margin:8px 0 0;">Order {order.get('order_number','')}</p>
+        <div style="background:#059669;padding:28px 32px;text-align:center;">
+            <h1 style="color:#fff;font-size:22px;margin:0;font-weight:700;">Your Order Has Been Delivered!</h1>
+            <p style="color:rgba(255,255,255,0.85);font-size:13px;margin:6px 0 0;">Order {order.get('order_number','')} · Rs {order.get('total',0):,.0f}</p>
         </div>
-        <div style="padding:32px;">
-            <p style="font-size:16px;color:#1a1a1a;">Hi {customer.get('name','')},</p>
-            <p style="color:#64748b;line-height:1.6;">Your order has been successfully delivered. We hope you're happy with your purchase!</p>
-            <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:24px;margin:24px 0;text-align:center;">
-                <p style="font-size:48px;margin:0 0 8px;">&#10003;</p>
-                <p style="font-size:18px;font-weight:700;color:#166534;margin:0;">Delivered</p>
-                <p style="color:#64748b;font-size:14px;margin:8px 0 0;">Order {order.get('order_number','')} | Rs {order.get('total',0):,.0f}</p>
+        <div style="padding:28px 32px;">
+            <p style="font-size:15px;color:#0f172a;margin:0 0 4px;">Hi {customer.get('name','')},</p>
+            <p style="color:#475569;line-height:1.55;font-size:13px;margin:8px 0 20px;">Your order has been successfully delivered. We'd love to hear how it went.</p>
+
+            <h3 style="font-size:11px;font-weight:600;color:#64748b;margin:0 0 10px;letter-spacing:0.05em;text-transform:uppercase;">What you ordered</h3>
+            <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:24px;">
+                <table style="width:100%;border-collapse:collapse;font-size:13px;">{items_html}</table>
             </div>
-            <p style="color:#64748b;line-height:1.6;">Please inspect the goods upon receipt. If you find any issues, please write to us within 24 hours at <a href="mailto:mail@locofast.com" style="color:#2563EB;">mail@locofast.com</a>.</p>
-            <div style="background:#f8fafc;border-radius:12px;padding:20px;margin:24px 0;">
-                <p style="font-size:14px;font-weight:600;color:#1a1a1a;margin:0 0 8px;">Need more fabric?</p>
-                <p style="color:#64748b;font-size:13px;margin:0 0 12px;">Browse our catalog and place your next order.</p>
-                <a href="https://locofast.com/fabrics" style="display:inline-block;background:#2563EB;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">Browse Fabrics</a>
+
+            <div style="background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%);border:1px solid #fde68a;border-radius:12px;padding:22px;text-align:center;margin-bottom:16px;">
+                <h3 style="font-size:14px;font-weight:600;color:#78350f;margin:0 0 4px;">How was your experience?</h3>
+                <p style="color:#92400e;font-size:12px;margin:0 0 14px;">Tap a star to rate this order</p>
+                <table style="margin:0 auto;border-spacing:0;"><tr>{star_links}</tr></table>
             </div>
-            <p style="color:#64748b;font-size:13px;">Thank you for choosing Locofast!</p>
+
+            <div style="background:#f8fafc;border-radius:10px;padding:18px;margin:18px 0;text-align:center;">
+                <p style="font-size:13px;font-weight:600;color:#0f172a;margin:0 0 4px;">Need more fabric?</p>
+                <p style="color:#64748b;font-size:12px;margin:0 0 10px;">Browse our catalog and place your next order.</p>
+                <a href="{SITE_URL}/fabrics" style="display:inline-block;background:#2563EB;color:#fff;padding:10px 22px;border-radius:8px;text-decoration:none;font-weight:600;font-size:13px;">Browse Fabrics</a>
+            </div>
+
+            <p style="color:#94a3b8;font-size:10px;line-height:1.5;margin:18px 0 0;text-align:center;">
+                Please inspect the goods upon receipt. If you find any issues, write to us within 24 hours at <a href="mailto:mail@locofast.com" style="color:#94a3b8;">mail@locofast.com</a>.
+            </p>
         </div>
-        <div style="background:#f8fafc;padding:20px;text-align:center;border-top:1px solid #e5e7eb;">
-            <p style="color:#94a3b8;font-size:12px;margin:0;">Locofast Online Services Pvt Ltd | www.locofast.com</p>
+        <div style="background:#f1f5f9;padding:14px;text-align:center;border-top:1px solid #e5e7eb;">
+            <p style="color:#94a3b8;font-size:11px;margin:0;">Locofast Online Services Pvt Ltd · <a href="{SITE_URL}" style="color:#64748b;">www.locofast.com</a></p>
         </div>
     </div>"""
 

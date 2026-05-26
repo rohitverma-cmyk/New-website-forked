@@ -118,15 +118,14 @@ export default function MLogin() {
       </div>
 
       <div className="m-container" style={{ paddingTop: 12 }}>
-        {/* Locofast mark — brand blue with inline double-check icon */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 11, background: "var(--m-blue-50)", color: "var(--m-blue)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 14px rgba(37,99,235,0.20)" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M5 13.5 L9 18 L14 4" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M10.5 13.5 L14.5 18 L19.5 4" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </div>
-          <div style={{ fontWeight: 800, fontSize: 19, color: "var(--m-ink)", letterSpacing: "-0.01em" }}>locofast</div>
+        {/* Locofast brand mark — official horizontal logo asset */}
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 16 }}>
+          <img
+            src="/brand/locofast-logo.png"
+            alt="Locofast"
+            style={{ height: 32, width: "auto", display: "block" }}
+            draggable={false}
+          />
         </div>
 
         {step === "email" ? (

@@ -1,0 +1,98 @@
+{
+  "summary": "Tested Provisional Bulk Orders flow (10% advance) - Backend APIs and Frontend UI for Vendor Mark Goods Ready and Admin Mark Balance Paid. All 10 backend tests pass. Frontend flows verified successfully.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [],
+    "fixed": [
+      {
+        "endpoint": "POST /api/orders/{order_id}/mark-goods-ready",
+        "issue": "500 error due to async function called without await - get_current_vendor() was not awaited",
+        "fix": "Replaced FastAPI dependency injection call with manual JWT token parsing for vendor/admin auth resolution",
+        "file": "/app/backend/orders_router.py"
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "fixed": [
+      {
+        "component": "api.js interceptor",
+        "issue": "Vendor token not sent for /orders/{id}/mark-goods-ready endpoint - interceptor only checked /vendor/* routes",
+        "fix": "Added isMarkGoodsReady check to use vendor token for mark-goods-ready endpoint",
+        "file": "/app/frontend/src/lib/api.js"
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_provisional_orders.py",
+    "/app/test_reports/pytest/pytest_provisional_v68.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [],
+  "updated_files": [
+    "/app/backend/orders_router.py",
+    "/app/frontend/src/lib/api.js",
+    "/app/backend/tests/test_provisional_orders.py"
+  ],
+  "success_rate": {
+    "backend": "100% (10/10 tests passed)",
+    "frontend": "100% (all flows verified)"
+  },
+  "test_credentials": {
+    "admin": "admin@locofast.com / admin123",
+    "vendor": "denimseller@locofast.com / denim@123"
+  },
+  "seed_data_creation": "Created provisional test orders via MongoDB for testing (cleaned up after tests)",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Provisional Bulk Orders flow is fully functional. Backend endpoints mark-goods-ready and mark-balance-paid work correctly. Vendor UI shows Mark Goods Ready modal with rolls breakdown. Admin UI shows provisional banner with Mark Balance Paid button. Balance email is sent when vendor marks goods ready. Shiprocket push happens when admin marks balance paid.",
+  "features_verified": {
+    "backend": {
+      "POST /api/orders/{order_id}/mark-goods-ready": {
+        "status": "PASS",
+        "details": "Vendor JWT can submit items with actual_quantity, rolls breakdown, dispatch_note. State machine: advance_paid → balance_pending when all_ready. goods_ready_at stamped. balance_amount recalculated. ±10% variance enforced for vendor, admin can override."
+      },
+      "POST /api/orders/{order_id}/mark-balance-paid": {
+        "status": "PASS",
+        "details": "Admin JWT only. Requires is_provisional=true and payment_status=balance_pending. Flips to paid+confirmed. Shiprocket push attempted (may fail in test env but endpoint returns 200)."
+      },
+      "E2E Flow": {
+        "status": "PASS",
+        "details": "Create provisional order → advance_paid → vendor marks goods ready → balance_pending → admin marks balance paid → paid+confirmed"
+      }
+    },
+    "frontend": {
+      "Vendor Orders Page": {
+        "status": "PASS",
+        "details": "Provisional order visible with 'Advance Paid · Pending Goods Ready' status"
+      },
+      "Vendor Mark Goods Ready Modal": {
+        "status": "PASS",
+        "details": "Modal opens with rolls inputs (count × length), auto-summed total, variance indicator, add/remove roll rows, dispatch note field"
+      },
+      "Vendor Submit Goods Ready": {
+        "status": "PASS",
+        "details": "POST /api/orders/{id}/mark-goods-ready called successfully, success toast shown, status updates to 'Goods Ready · Balance Pending'"
+      },
+      "Admin Orders Page": {
+        "status": "PASS",
+        "details": "Provisional order visible with 'Balance Pending' payment status"
+      },
+      "Admin Provisional Banner": {
+        "status": "PASS",
+        "details": "Banner shows 'Provisional Bulk Order (10% advance)' with advance/balance/stage tiles (data-testid='admin-provisional-banner')"
+      },
+      "Admin Mark Balance Paid": {
+        "status": "PASS",
+        "details": "Button visible (data-testid='admin-mark-balance-paid-btn'), confirm dialog shown, POST /api/orders/{id}/mark-balance-paid called, payment_status updates to paid"
+      }
+    }
+  },
+  "notes": {
+    "razorpay": "Razorpay calls in mark-balance-paid will fail in test env (no real Razorpay) - this is expected",
+    "shiprocket": "Shiprocket push attempted and succeeded in test (ID: 1351977949)",
+    "email": "Balance payment due email sent successfully (visible in Email Audit Trail)"
+  }
+}

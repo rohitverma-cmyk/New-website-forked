@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, ArrowLeft, Check, Building2, Mail, Phone, User, MapPin, FileText } from "lucide-react";
+import { ArrowRight, ArrowLeft, Check, FileText, Pencil, Lock } from "lucide-react";
 import { toast } from "sonner";
 import api from "../../lib/api";
 import { useCustomerAuth } from "../../context/CustomerAuthContext";
+import RFQAuthGate from "../../components/RFQAuthGate";
 
 const FABRIC_TYPES = [
   { value: "Cotton", emoji: "🌾" },
@@ -23,47 +24,64 @@ const QTY_UNITS = [
 ];
 
 export default function MRFQ() {
+  return (
+    <RFQAuthGate dense title="Sign in to request a quote" subtitle="Our sourcing team replies within 4 working hours.">
+      <MRFQInner />
+    </RFQAuthGate>
+  );
+}
+
+function MRFQInner() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { customer } = useCustomerAuth();
-  const [step, setStep] = useState(1);
+  // Fabric context (PDP-launched RFQs come with a `fabric` slug/id param).
+  const fabricParam = params.get("fabric") || "";
+  const fromPDP = !!fabricParam;
+  const [fabric, setFabric] = useState(null);
+  const [specsEditing, setSpecsEditing] = useState(false);
+
+  const [step, setStep] = useState(1); // 1 = specs+qty, 2 = notes, 3 = success
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({
     fabric_type: "",
     quantity_value: "",
     quantity_unit: "m",
-    fabric_url: params.get("fabric") ? `${window.location.origin}/fabrics/${params.get("fabric")}` : "",
-    name: customer?.name || "",
-    email: customer?.email || "",
-    phone: customer?.phone || "",
-    company_name: customer?.company || "",
-    gst_number: customer?.gstin || "",
-    location: customer?.city || "",
+    fabric_url: fabricParam ? `${window.location.origin}/fabrics/${fabricParam}` : "",
     message: "",
   });
 
+  // Fetch fabric detail when launched from a PDP — auto-fill fabric_type
+  // (so the user doesn't have to pick again). They can hit "Edit" to
+  // override if the source product wasn't quite right.
   useEffect(() => {
-    if (customer) {
-      setForm((f) => ({
-        ...f,
-        name: f.name || customer.name || "",
-        email: f.email || customer.email || "",
-        phone: f.phone || customer.phone || "",
-        company_name: f.company_name || customer.company || "",
-        gst_number: f.gst_number || customer.gstin || "",
-        location: f.location || customer.city || "",
-      }));
-    }
-  }, [customer]);
+    if (!fabricParam) return;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await api.get(`/fabrics/${fabricParam}`);
+        if (!alive) return;
+        const f = res.data;
+        setFabric(f);
+        setForm((prev) => ({
+          ...prev,
+          fabric_type: prev.fabric_type || (f.category_name || "").split(" ")[0] || prev.fabric_type,
+          fabric_url: prev.fabric_url || `${window.location.origin}/fabrics/${f.slug || f.id}`,
+        }));
+      } catch (e) {
+        // PDP fabric isn't found — silently degrade to manual entry
+      }
+    })();
+    return () => { alive = false; };
+  }, [fabricParam]);
 
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
+  // Validation
   const canStep1 = form.fabric_type && form.quantity_value && parseFloat(form.quantity_value) > 0;
-  const canStep2 = form.name.trim() && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()) && form.phone.replace(/\D/g, "").length >= 10;
 
   const next = () => {
     if (step === 1 && !canStep1) { toast.error("Pick a fabric type and quantity"); return; }
-    if (step === 2 && !canStep2) { toast.error("Name, valid email & phone are required"); return; }
     setStep(step + 1);
   };
   const back = () => setStep(Math.max(1, step - 1));
@@ -71,20 +89,24 @@ export default function MRFQ() {
   const submit = async () => {
     setSubmitting(true);
     try {
+      // Customer's name/email/phone/company/gst are already on the
+      // authed profile — backend reads them from JWT. We still send
+      // them in the body for the existing endpoint's contract, but
+      // they're never asked of the user (unified UX).
       await api.post("/enquiries/rfq-lead", {
-        name: form.name.trim(),
-        email: form.email.trim().toLowerCase(),
-        phone: form.phone.trim(),
-        company_name: form.company_name.trim(),
-        gst_number: form.gst_number.trim().toUpperCase(),
+        name: customer?.name || "",
+        email: customer?.email || "",
+        phone: customer?.phone || "",
+        company_name: customer?.company || "",
+        gst_number: (customer?.gstin || "").toUpperCase(),
         fabric_type: form.fabric_type,
         fabric_url: form.fabric_url,
-        location: form.location.trim(),
+        location: customer?.city || "",
         quantity_value: parseFloat(form.quantity_value) || 0,
         quantity_unit: form.quantity_unit,
         message: form.message.trim(),
       });
-      setStep(4); // success
+      setStep(3);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Couldn't submit. Try again.");
     } finally {
@@ -92,19 +114,18 @@ export default function MRFQ() {
     }
   };
 
-  // Progress bar
-  const progress = step === 4 ? 100 : Math.round(((step - 1) / 3) * 100);
+  const totalSteps = 2;
+  const progress = step === 3 ? 100 : Math.round(((step - 1) / totalSteps) * 100);
 
   return (
-    <div style={{ paddingBottom: 100 }}>
+    <div style={{ paddingBottom: 100 }} data-testid="mrfq-form">
       <div className="m-container" style={{ paddingTop: 4 }}>
-        {step !== 4 && (
+        {step !== 3 && (
           <>
-            <div className="m-kicker">Step {step} of 3</div>
+            <div className="m-kicker">Step {step} of {totalSteps}</div>
             <h1 className="m-title-lg" style={{ marginTop: 4 }}>
-              {step === 1 && "What fabric do you need?"}
-              {step === 2 && "How can we reach you?"}
-              {step === 3 && "Anything else?"}
+              {step === 1 && (fromPDP ? "Confirm fabric & quantity" : "What fabric do you need?")}
+              {step === 2 && "Anything else?"}
             </h1>
             <div style={{ height: 4, borderRadius: 2, background: "var(--m-border)", marginTop: 14, overflow: "hidden" }}>
               <div style={{ height: "100%", width: `${progress}%`, background: "var(--m-orange)", transition: "width .25s ease" }} />
@@ -114,35 +135,73 @@ export default function MRFQ() {
 
         {step === 1 && (
           <div style={{ marginTop: 22 }}>
-            <FieldLabel>Fabric type</FieldLabel>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              {FABRIC_TYPES.map((t) => (
-                <button
-                  key={t.value}
-                  onClick={() => update("fabric_type", t.value)}
-                  className={"m-card"}
-                  style={{
-                    padding: "14px 12px", textAlign: "left", cursor: "pointer",
-                    border: form.fabric_type === t.value ? "2px solid var(--m-orange)" : "1px solid var(--m-border-2)",
-                    background: form.fabric_type === t.value ? "var(--m-orange-50)" : "var(--m-surface)",
-                    display: "flex", alignItems: "center", gap: 10,
-                  }}
-                >
-                  <span style={{ fontSize: 22 }}>{t.emoji}</span>
-                  <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>{t.value}</span>
+            {/* PDP context — collapsed specs card with Edit toggle.
+                Plain users (no fabric param) get the full picker grid. */}
+            {fromPDP && !specsEditing ? (
+              <div className="m-card" style={{ padding: 14, border: "1px solid var(--m-border-2)", display: "flex", alignItems: "flex-start", gap: 12 }} data-testid="mrfq-specs-locked">
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: "var(--m-orange-50)", color: "var(--m-orange)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <Lock size={18} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--m-ink-3)", textTransform: "uppercase", letterSpacing: ".05em" }}>Specs locked from</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--m-ink)", marginTop: 2, lineHeight: 1.3 }}>{fabric?.name || "this fabric"}</div>
+                  {fabric?.category_name && (() => {
+                    // `composition` can be either a string ("Cotton 100%") OR
+                    // an array of {material, percentage} objects depending on
+                    // the fabric record's vintage. Normalise for display.
+                    const compStr = Array.isArray(fabric.composition)
+                      ? fabric.composition.map((c) => `${c.material || c.name || ""} ${c.percentage || c.pct || ""}%`).join(", ")
+                      : (typeof fabric.composition === "string" ? fabric.composition : "");
+                    return (
+                      <div className="m-caption" style={{ marginTop: 4 }}>
+                        {fabric.category_name}{compStr ? ` · ${compStr}` : ""}{fabric.weight_gsm ? ` · ${fabric.weight_gsm} GSM` : ""}
+                      </div>
+                    );
+                  })()}
+                </div>
+                <button onClick={() => setSpecsEditing(true)} style={{ background: "transparent", border: "1px solid var(--m-border-2)", borderRadius: 10, padding: "6px 10px", display: "inline-flex", alignItems: "center", gap: 4, color: "var(--m-blue)", fontSize: 12, fontWeight: 600 }} data-testid="mrfq-specs-edit-btn">
+                  <Pencil size={12} /> Edit
                 </button>
-              ))}
-            </div>
+              </div>
+            ) : (
+              <>
+                <FieldLabel>Fabric type</FieldLabel>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {FABRIC_TYPES.map((t) => (
+                    <button
+                      key={t.value}
+                      onClick={() => update("fabric_type", t.value)}
+                      className="m-card"
+                      style={{
+                        padding: "14px 12px", textAlign: "left", cursor: "pointer",
+                        border: form.fabric_type === t.value ? "2px solid var(--m-orange)" : "1px solid var(--m-border-2)",
+                        background: form.fabric_type === t.value ? "var(--m-orange-50)" : "var(--m-surface)",
+                        display: "flex", alignItems: "center", gap: 10,
+                      }}
+                      data-testid={`mrfq-fabric-${t.value}`}
+                    >
+                      <span style={{ fontSize: 22 }}>{t.emoji}</span>
+                      <span style={{ fontWeight: 700, color: "var(--m-ink)" }}>{t.value}</span>
+                    </button>
+                  ))}
+                </div>
+                {fromPDP && (
+                  <button onClick={() => setSpecsEditing(false)} style={{ marginTop: 10, background: "transparent", border: "none", color: "var(--m-blue)", fontSize: 13, fontWeight: 600 }}>
+                    ← Use specs from {fabric?.name || "the original fabric"}
+                  </button>
+                )}
+              </>
+            )}
 
             <FieldLabel style={{ marginTop: 22 }}>Quantity</FieldLabel>
             <div style={{ display: "flex", gap: 8 }}>
               <div className="m-card" style={{ flex: 2, padding: "4px 14px", border: "1px solid var(--m-border-2)" }}>
                 <input
-                  type="number" inputMode="numeric" min={0}
-                  value={form.quantity_value}
+                  type="number" inputMode="numeric" value={form.quantity_value}
                   onChange={(e) => update("quantity_value", e.target.value)}
-                  placeholder="5000"
-                  style={{ width: "100%", border: "none", outline: "none", fontSize: 18, fontWeight: 600, padding: "12px 0", background: "transparent", color: "var(--m-ink)" }}
+                  placeholder="e.g. 3000" min={1}
+                  style={{ width: "100%", padding: "12px 0", border: "none", outline: "none", fontSize: 16, color: "var(--m-ink)", background: "transparent" }}
+                  data-testid="mrfq-qty"
                 />
               </div>
               <select
@@ -159,30 +218,7 @@ export default function MRFQ() {
 
         {step === 2 && (
           <div style={{ marginTop: 22 }}>
-            <FieldLabel>Your name *</FieldLabel>
-            <TextInput icon={User} value={form.name} onChange={(v) => update("name", v)} placeholder="Full name" autoComplete="name" />
-
-            <FieldLabel style={{ marginTop: 14 }}>Work email *</FieldLabel>
-            <TextInput icon={Mail} type="email" value={form.email} onChange={(v) => update("email", v)} placeholder="you@brand.com" autoComplete="email" inputMode="email" />
-
-            <FieldLabel style={{ marginTop: 14 }}>Phone *</FieldLabel>
-            <TextInput icon={Phone} type="tel" value={form.phone} onChange={(v) => update("phone", v)} placeholder="10-digit mobile" autoComplete="tel" inputMode="tel" />
-
-            <FieldLabel style={{ marginTop: 14 }}>Company (optional)</FieldLabel>
-            <TextInput icon={Building2} value={form.company_name} onChange={(v) => update("company_name", v)} placeholder="Your brand name" />
-
-            <FieldLabel style={{ marginTop: 14 }}>City (optional)</FieldLabel>
-            <TextInput icon={MapPin} value={form.location} onChange={(v) => update("location", v)} placeholder="e.g. Bengaluru" />
-          </div>
-        )}
-
-        {step === 3 && (
-          <div style={{ marginTop: 22 }}>
-            <FieldLabel>GSTIN (optional)</FieldLabel>
-            <TextInput icon={FileText} value={form.gst_number} onChange={(v) => update("gst_number", v.toUpperCase())} placeholder="15-char GSTIN" />
-            <p className="m-caption" style={{ marginTop: 6 }}>Sharing your GSTIN helps us route to verified mills + invoice-ready quotes.</p>
-
-            <FieldLabel style={{ marginTop: 18 }}>Anything we should know?</FieldLabel>
+            <FieldLabel>Anything we should know?</FieldLabel>
             <div className="m-card" style={{ padding: 12, border: "1px solid var(--m-border-2)" }}>
               <textarea
                 value={form.message}
@@ -190,26 +226,24 @@ export default function MRFQ() {
                 rows={5}
                 placeholder="Pantone, GSM, finish, target price, deadline… the more detail, the faster we quote."
                 style={{ width: "100%", border: "none", outline: "none", resize: "vertical", fontSize: 14, lineHeight: 1.5, fontFamily: "inherit", color: "var(--m-ink)", background: "transparent" }}
+                data-testid="mrfq-message"
               />
             </div>
 
             {/* Summary */}
             <div style={{ marginTop: 18, padding: 14, borderRadius: 12, background: "var(--m-bg)", border: "1px solid var(--m-border)" }}>
               <div className="m-kicker">Summary</div>
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13 }}>
-                <span style={{ color: "var(--m-ink-3)" }}>Fabric</span><strong>{form.fabric_type}</strong>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13 }}>
-                <span style={{ color: "var(--m-ink-3)" }}>Quantity</span><strong>{form.quantity_value} {form.quantity_unit}</strong>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13 }}>
-                <span style={{ color: "var(--m-ink-3)" }}>Contact</span><strong>{form.email}</strong>
-              </div>
+              {fabric?.name && (
+                <Row label="From" value={fabric.name} />
+              )}
+              <Row label="Fabric" value={form.fabric_type} />
+              <Row label="Quantity" value={`${form.quantity_value} ${form.quantity_unit}`} />
+              <Row label="Contact" value={customer?.email && !customer.email.endsWith("@phone.locofast.local") ? customer.email : (customer?.phone ? `+${customer.phone}` : "")} />
             </div>
           </div>
         )}
 
-        {step === 4 && (
+        {step === 3 && (
           <div style={{ paddingTop: 40, textAlign: "center" }}>
             <div style={{ width: 84, height: 84, margin: "0 auto 20px", borderRadius: "50%", background: "var(--m-green-50)", color: "var(--m-green)", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <Check size={44} strokeWidth={3} />
@@ -219,7 +253,7 @@ export default function MRFQ() {
               Our sourcing team will email you within <strong>4 working hours</strong> with verified mills + indicative pricing.
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 28 }}>
-              <button onClick={() => navigate("/m")} className="m-btn m-btn-primary">Back to home</button>
+              <button onClick={() => navigate("/m")} className="m-btn m-btn-primary" data-testid="mrfq-done-home">Back to home</button>
               <button onClick={() => navigate("/m/catalog")} className="m-btn m-btn-outline">Browse catalog meanwhile</button>
             </div>
           </div>
@@ -227,23 +261,23 @@ export default function MRFQ() {
       </div>
 
       {/* Sticky bottom nav */}
-      {step !== 4 && (
+      {step !== 3 && (
         <div style={{
           position: "fixed", left: 0, right: 0, bottom: "calc(var(--m-tab-h) + env(safe-area-inset-bottom, 0px))",
           background: "var(--m-surface)", borderTop: "1px solid var(--m-border)",
           padding: "10px 16px", display: "flex", gap: 10, zIndex: 50,
         }}>
           {step > 1 && (
-            <button onClick={back} className="m-btn m-btn-outline" style={{ flex: 1 }}>
+            <button onClick={back} className="m-btn m-btn-outline" style={{ flex: 1 }} data-testid="mrfq-back">
               <ArrowLeft size={16} /> Back
             </button>
           )}
-          {step < 3 ? (
-            <button onClick={next} className="m-btn m-btn-primary" style={{ flex: 2 }}>
+          {step < 2 ? (
+            <button onClick={next} className="m-btn m-btn-primary" style={{ flex: 2 }} data-testid="mrfq-next">
               Continue <ArrowRight size={16} />
             </button>
           ) : (
-            <button onClick={submit} disabled={submitting || !canStep2 || !canStep1} className="m-btn m-btn-primary" style={{ flex: 2 }}>
+            <button onClick={submit} disabled={submitting || !canStep1} className="m-btn m-btn-primary" style={{ flex: 2 }} data-testid="mrfq-submit">
               {submitting ? <><span className="m-spinner" style={{ width: 16, height: 16, borderWidth: 2 }} /> Submitting…</> : <>Submit RFQ <ArrowRight size={16} /></>}
             </button>
           )}
@@ -253,19 +287,13 @@ export default function MRFQ() {
   );
 }
 
-function FieldLabel({ children, style }) {
-  return <label style={{ display: "block", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--m-ink-3)", marginBottom: 8, ...style }}>{children}</label>;
-}
-function TextInput({ icon: Icon, value, onChange, ...rest }) {
-  return (
-    <div className="m-card" style={{ padding: "4px 6px 4px 12px", display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--m-border-2)" }}>
-      {Icon && <Icon size={18} color="var(--m-ink-3)" />}
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ flex: 1, border: "none", outline: "none", padding: "13px 0", fontSize: 15, background: "transparent", color: "var(--m-ink)" }}
-        {...rest}
-      />
-    </div>
-  );
-}
+const FieldLabel = ({ children, style }) => (
+  <label style={{ display: "block", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: "var(--m-ink-3)", marginBottom: 8, ...style }}>{children}</label>
+);
+
+const Row = ({ label, value }) => (
+  <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13 }}>
+    <span style={{ color: "var(--m-ink-3)" }}>{label}</span>
+    <strong style={{ color: "var(--m-ink)", textAlign: "right", marginLeft: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{value || "—"}</strong>
+  </div>
+);

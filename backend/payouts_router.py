@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 import uuid
 import logging
 import os
+import re
 import jwt
 
 import auth_helpers
@@ -73,35 +74,229 @@ def _is_super_admin(user: dict) -> bool:
 # ─────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────
-async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str = "") -> float:
+async def _resolve_commission(seller_id: str, fabric_id: str, category_id: str = "", category_name: str = "", pattern: str = "", order_type: str = "") -> float:
     """Look up the CURRENT commission % for a fabric/seller/category.
-    Order of resolution (most-specific wins):
-      1. Rule keyed on (seller_id, fabric_id)
-      2. Rule keyed on (seller_id, category_id)
-      3. Rule keyed on (seller_id) only
+
+    Resolution order (most-specific wins) — must mirror the checkout-time
+    calculator in `commission_router.calculate_commission`:
+      0. SAMPLES are ALWAYS 0% (product decision Feb 2026) — overrides
+         every rule. Bulk/production items continue through the ladder.
+      1. Vendor rule (rule_type=vendor, vendor_id matches seller_id)
+      2. Category + Pattern (rule_type=category_pattern)
+      3. Category (rule_type=category)
       4. Platform default (5%)
+
+    Rules can ALSO be scoped to a specific order_type via the optional
+    `applies_to` field on the rule doc ("sample" | "bulk" | absent=both).
+    Rules whose `applies_to` doesn't match the item's order_type are
+    skipped entirely at lookup time.
+
+    If `category_name` / `pattern` weren't stamped on the order item
+    (common for agent-created carts / RFQ accepts / brand-credit orders),
+    we lazy-load the fabric document and read them from there. Without
+    this lookup, category-level rules silently never match.
     """
     from auth_helpers import db as _db
-    rule = await _db.commission_rules.find_one(
-        {"seller_id": seller_id, "fabric_id": fabric_id, "active": True},
-        {"_id": 0, "commission_pct": 1},
-    )
-    if rule:
-        return float(rule["commission_pct"])
-    if category_id:
+
+    # Hard zero for samples regardless of any rule.
+    if (order_type or "").strip().lower() == "sample":
+        return 0.0
+
+    # Backfill category_name + pattern from the fabric doc when missing.
+    if (not category_name or not pattern) and fabric_id:
+        fab = await _db.fabrics.find_one(
+            {"id": fabric_id},
+            {"_id": 0, "category_name": 1, "category": 1, "pattern": 1, "design_pattern": 1},
+        )
+        if fab:
+            if not category_name:
+                category_name = (fab.get("category_name") or fab.get("category") or "").strip()
+            if not pattern:
+                pattern = (fab.get("pattern") or fab.get("design_pattern") or "").strip()
+
+    # Match `applies_to` against the item's order_type: rules with
+    # `applies_to` absent/empty are type-agnostic; otherwise they must
+    # match the item's order_type. We use the same `$in` trick across
+    # all three rule_type lookups below.
+    order_type_norm = (order_type or "bulk").lower()
+    applies_to_filter = {
+        "$or": [
+            {"applies_to": {"$exists": False}},
+            {"applies_to": ""},
+            {"applies_to": None},
+            {"applies_to": {"$in": [order_type_norm, "both", "all"]}},
+        ]
+    }
+
+    # 1. Vendor-specific
+    # Only run this lookup when we have an actual seller_id — otherwise
+    # a missing seller_id could accidentally match a malformed rule with
+    # `vendor_id: null` / `vendor_id: ""` and short-circuit the chain.
+    if seller_id:
         rule = await _db.commission_rules.find_one(
-            {"seller_id": seller_id, "category_id": category_id, "fabric_id": "", "active": True},
+            {"rule_type": "vendor", "vendor_id": seller_id, "is_active": True, **applies_to_filter},
             {"_id": 0, "commission_pct": 1},
         )
         if rule:
             return float(rule["commission_pct"])
-    rule = await _db.commission_rules.find_one(
-        {"seller_id": seller_id, "fabric_id": "", "category_id": "", "active": True},
-        {"_id": 0, "commission_pct": 1},
-    )
-    if rule:
-        return float(rule["commission_pct"])
+
+    # 2. Category + Pattern (case-insensitive)
+    if category_name and pattern:
+        rule = await _db.commission_rules.find_one(
+            {
+                "rule_type": "category_pattern",
+                "category_name": {"$regex": f"^{re.escape(category_name)}$", "$options": "i"},
+                "pattern": {"$regex": f"^{re.escape(pattern)}$", "$options": "i"},
+                "is_active": True,
+                **applies_to_filter,
+            },
+            {"_id": 0, "commission_pct": 1},
+        )
+        if rule:
+            return float(rule["commission_pct"])
+
+    # 3. Category-specific
+    if category_name:
+        rule = await _db.commission_rules.find_one(
+            {
+                "rule_type": "category",
+                "category_name": {"$regex": f"^{re.escape(category_name)}$", "$options": "i"},
+                "is_active": True,
+                **applies_to_filter,
+            },
+            {"_id": 0, "commission_pct": 1},
+        )
+        if rule:
+            return float(rule["commission_pct"])
+
     return 5.0  # platform default
+
+
+def _gst_rates() -> tuple[float, float]:
+    """Return (goods GST %, commission GST %) read from env, with safe defaults."""
+    try:
+        goods = float(os.environ.get("PAYOUT_GOODS_GST_PCT", "5") or 5)
+    except Exception:
+        goods = 5.0
+    try:
+        comm = float(os.environ.get("PAYOUT_COMMISSION_GST_PCT", "18") or 18)
+    except Exception:
+        comm = 18.0
+    return goods, comm
+
+
+async def resync_payouts_for_actual_qty(order: dict) -> dict:
+    """Recompute every PENDING vendor_payout linked to this order using
+    the freshly-stamped `actual_quantity` on each item.
+
+    Called automatically from `mark_goods_ready` so finance never has to
+    click the manual "Resync" button just to correct the basis when a
+    supplier reports a different dispatched qty.
+
+    Returns a small summary so the caller can log diffs.
+    """
+    from auth_helpers import db as _db
+    order_id = order["id"]
+    payouts = await _db.vendor_payouts.find({"order_id": order_id}, {"_id": 0}).to_list(50)
+    if not payouts:
+        # Order isn't paid yet → no payouts to resync. (materialize will
+        # pick up actual_quantity naturally on first run.)
+        return {"updated": 0, "skipped_paid": 0, "no_payouts": True}
+
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+    updated = 0
+    skipped_paid = 0
+    diffs: list = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for p in payouts:
+        if p.get("status") == "paid":
+            skipped_paid += 1
+            continue
+        sid = p["seller_id"]
+        order_items = [it for it in (order.get("items") or []) if (it.get("seller_id") or "") == sid]
+        if not order_items:
+            continue
+
+        new_lines = []
+        new_gross = 0.0
+        new_comm = 0.0
+        for it in order_items:
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
+            rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
+            line_gross = qty * rate
+            item_pct_raw = it.get("commission_pct")
+            try:
+                item_pct = float(item_pct_raw) if item_pct_raw is not None else None
+            except (TypeError, ValueError):
+                item_pct = None
+            if item_pct is not None:
+                comm_pct = item_pct
+            else:
+                comm_pct = await _resolve_commission(
+                    sid,
+                    it.get("fabric_id", ""),
+                    it.get("category_id", ""),
+                    it.get("category_name", ""),
+                    it.get("pattern", ""),
+                    order_type=it.get("order_type", ""),
+                )
+            line_comm = round(line_gross * comm_pct / 100.0, 2)
+            new_lines.append({
+                "fabric_id": it.get("fabric_id", ""),
+                "fabric_name": it.get("fabric_name", ""),
+                "fabric_code": it.get("fabric_code", ""),
+                "quantity": qty,
+                "rate": rate,
+                "gross": round(line_gross, 2),
+                "commission_pct": comm_pct,
+                "commission_amount": line_comm,
+                "net": round(line_gross - line_comm, 2),
+            })
+            new_gross += line_gross
+            new_comm += line_comm
+
+        new_gross = round(new_gross, 2)
+        new_comm = round(new_comm, 2)
+        gst_on_goods = round(new_gross * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(new_gross + gst_on_goods, 2)
+        gst_on_commission = round(new_comm * comm_gst_pct / 100.0, 2)
+        advances = float(p.get("advances_applied", 0) or 0)
+        net_payable = round(supplier_invoice_value - new_comm - gst_on_commission - advances, 2)
+
+        old_gross = float(p.get("gross_subtotal", 0) or 0)
+        if abs(old_gross - new_gross) <= 0.01:
+            # Nothing actually changed — skip the write.
+            continue
+        await _db.vendor_payouts.update_one(
+            {"id": p["id"]},
+            {"$set": {
+                "items": new_lines,
+                "gross_subtotal": new_gross,
+                "commission_total": new_comm,
+                "commission_gst_pct": comm_gst_pct,
+                "gst_on_commission": gst_on_commission,
+                "goods_gst_pct": goods_gst_pct,
+                "gst_on_goods": gst_on_goods,
+                "supplier_invoice_value": supplier_invoice_value,
+                "net_payable": net_payable,
+                "actual_qty_resync_at": now_iso,
+                "updated_at": now_iso,
+            }},
+        )
+        updated += 1
+        diffs.append({
+            "seller_company": p.get("seller_company", ""),
+            "old_gross": old_gross,
+            "new_gross": new_gross,
+        })
+
+    return {"updated": updated, "skipped_paid": skipped_paid, "diffs": diffs}
+
+
 
 
 async def materialize_payouts_for_order(order: dict) -> List[dict]:
@@ -136,19 +331,57 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
 
     now = datetime.now(timezone.utc).isoformat()
     results: List[dict] = []
+
+    # Source-of-truth commission %: prefer the value stamped on the order
+    # at checkout time (so payout matches the booking confirmation the
+    # customer saw). Only fall back to per-item / resolver lookups when
+    # the order doesn't have one stamped (very old orders).
+    order_commission_pct = order.get("commission_pct")
+    try:
+        order_commission_pct = float(order_commission_pct) if order_commission_pct is not None else None
+    except (TypeError, ValueError):
+        order_commission_pct = None
+
     for sid, items in by_seller.items():
         if sid in existing:
             results.append(existing[sid])
             continue
-        # Compute gross/commission per item using CURRENT rules
+        # Compute gross/commission per item using CURRENT rules.
+        # For provisional bulk orders we use `actual_quantity` (the qty
+        # the vendor actually packed) so the payout matches what they
+        # really dispatched — not what the customer originally ordered.
         line_breakdown = []
         gross_subtotal = 0.0
         commission_total = 0.0
         for it in items:
-            qty = float(it.get("quantity", 0) or 0)
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
             rate = float(it.get("price_per_meter", 0) or 0)
             line_gross = qty * rate
-            comm_pct = await _resolve_commission(sid, it.get("fabric_id", ""), it.get("category_id", ""))
+            # Resolution priority (most-trusted first):
+            #  1. Per-item stamp (item.commission_pct) — future-proof
+            #  2. Order-level stamp (set by commission_router at checkout)
+            #  3. Live rule resolver against db.commission_rules
+            item_pct = it.get("commission_pct")
+            try:
+                item_pct = float(item_pct) if item_pct is not None else None
+            except (TypeError, ValueError):
+                item_pct = None
+            if item_pct is not None:
+                comm_pct = item_pct
+            elif order_commission_pct is not None:
+                comm_pct = order_commission_pct
+            else:
+                comm_pct = await _resolve_commission(
+                    sid,
+                    it.get("fabric_id", ""),
+                    it.get("category_id", ""),
+                    it.get("category_name", ""),
+                    it.get("pattern", ""),
+                    order_type=it.get("order_type", ""),
+                )
             line_comm = round(line_gross * comm_pct / 100.0, 2)
             line_breakdown.append({
                 "fabric_id": it.get("fabric_id", ""),
@@ -169,6 +402,20 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
             {"_id": 0, "id": 1, "company_name": 1, "name": 1, "contact_email": 1, "contact_phone": 1, "payment_terms": 1},
         ) or {}
 
+        goods_gst_pct, comm_gst_pct = _gst_rates()
+        gst_on_goods = round(gross_subtotal * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(gross_subtotal + gst_on_goods, 2)
+        gst_on_commission = round(commission_total * comm_gst_pct / 100.0, 2)
+
+        # Pull vendor invoice uploaded at Mark-Goods-Ready time (provisional
+        # bulk orders) so the payout already carries the invoice and the
+        # vendor doesn't need to re-upload from My Payouts.
+        vendor_inv = None
+        for inv in (order.get("vendor_invoices") or []):
+            if (inv.get("seller_id") or "") == sid:
+                vendor_inv = inv
+                break
+
         payout_doc = {
             "id": str(uuid.uuid4()),
             "order_id": order_id,
@@ -179,10 +426,17 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
             "seller_phone": seller.get("contact_phone", ""),
             "items": line_breakdown,
             "gross_subtotal": round(gross_subtotal, 2),
+            # GST on goods (added to supplier's invoice)
+            "goods_gst_pct": goods_gst_pct,
+            "gst_on_goods": gst_on_goods,
+            "supplier_invoice_value": supplier_invoice_value,
+            # Commission + GST on commission (deducted from payout)
             "commission_total": round(commission_total, 2),
+            "commission_gst_pct": comm_gst_pct,
+            "gst_on_commission": gst_on_commission,
             "advances_applied": 0.0,
             "advance_ids": [],
-            "net_payable": round(gross_subtotal - commission_total, 2),
+            "net_payable": round(supplier_invoice_value - commission_total - gst_on_commission, 2),
             "payment_terms_snapshot": seller.get("payment_terms", ""),
             "status": "pending",
             "paid_at": None,
@@ -194,6 +448,17 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
             "created_at": now,
             "updated_at": now,
         }
+        if vendor_inv:
+            payout_doc.update({
+                "vendor_invoice_url": vendor_inv.get("url", ""),
+                "vendor_invoice_filename": vendor_inv.get("filename", ""),
+                "vendor_invoice_number": vendor_inv.get("invoice_number", ""),
+                "vendor_invoice_date": vendor_inv.get("invoice_date", ""),
+                "vendor_invoice_amount": vendor_inv.get("amount"),
+                "vendor_invoice_status": "uploaded",
+                "vendor_invoice_uploaded_at": vendor_inv.get("uploaded_at", now),
+                "vendor_invoice_source": "mark_goods_ready",
+            })
         # Auto-apply any orphan advances linked to this order/vendor
         async for adv in _db.vendor_advances.find(
             {"seller_id": sid, "order_id": order_id, "status": "active"},
@@ -208,7 +473,9 @@ async def materialize_payouts_for_order(order: dict) -> List[dict]:
         results.append(payout_doc)
         logger.info(
             f"[payout] materialized {payout_doc['order_number']} → {payout_doc['seller_company']} "
-            f"gross=₹{payout_doc['gross_subtotal']} comm=₹{payout_doc['commission_total']} "
+            f"gross=₹{payout_doc['gross_subtotal']} +gst@{goods_gst_pct}%=₹{payout_doc['gst_on_goods']} "
+            f"invoice=₹{payout_doc['supplier_invoice_value']} comm=₹{payout_doc['commission_total']} "
+            f"commGst@{comm_gst_pct}%=₹{payout_doc['gst_on_commission']} "
             f"adv=₹{payout_doc['advances_applied']} net=₹{payout_doc['net_payable']}"
         )
     return results
@@ -351,7 +618,246 @@ async def mark_payout_paid(
     except Exception as e:
         logger.warning(f"[payout-notify] schedule failed: {e}")
 
+    # Internal mail chain — separate mail to Locofast stakeholders
+    try:
+        order = await _db.orders.find_one({"id": payout.get("order_id")}, {"_id": 0}) or {
+            "id": payout.get("order_id"), "order_number": payout.get("order_number"),
+        }
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.VENDOR_PAYOUT_PAID, order, extra={
+            "vendor_seller_id": payout.get("seller_id"),
+            "vendor_company": payout.get("seller_company"),
+            "net_payable": payout.get("net_payable"),
+            "utr": payload.utr.strip(),
+            "paid_via": payload.paid_via,
+            "paid_by": user.get("email", ""),
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[payout-notify] internal event failed: {e}")
+
     return {"success": True, "payout": final}
+
+
+@router.get("/orders/{order_id}/seller-commissions")
+async def get_order_seller_commissions(order_id: str):
+    """Return per-seller commission + payout breakdown for an order.
+    Used by the Admin order detail panel to show commission split when
+    an order has items from multiple suppliers.
+
+    Pulls from `vendor_payouts` (materialized when payment_status flips
+    to paid). For unpaid orders we compute a preview on-the-fly using
+    current commission rules, so admin sees what each supplier WILL
+    earn before money moves.
+    """
+    from auth_helpers import db as _db
+    order = await _db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    rows = []
+    # Materialized rows first (most accurate — locked-in at payment time)
+    async for p in _db.vendor_payouts.find({"order_id": order["id"]}, {"_id": 0}):
+        rows.append({
+            "seller_id": p.get("seller_id", ""),
+            "seller_company": p.get("seller_company", ""),
+            "items_count": len(p.get("items", [])),
+            "gross_subtotal": p.get("gross_subtotal", 0),
+            "commission_pct_weighted": _weighted_pct(p),
+            "commission_total": p.get("commission_total", 0),
+            "gst_on_commission": p.get("gst_on_commission", 0),
+            "commission_gst_pct": p.get("commission_gst_pct", 18),
+            "net_payable": p.get("net_payable", 0),
+            "status": p.get("status", "pending"),
+            "source": "materialized",
+        })
+    if rows:
+        return {"order_number": order.get("order_number"), "paid": order.get("payment_status") == "paid", "sellers": rows}
+
+    # Preview path — order isn't paid yet, compute live.
+    by_seller: dict = {}
+    for it in (order.get("items") or []):
+        sid = (it.get("seller_id") or "").strip()
+        if not sid:
+            continue
+        by_seller.setdefault(sid, []).append(it)
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+    for sid, items in by_seller.items():
+        seller = await _db.sellers.find_one({"id": sid}, {"_id": 0, "company_name": 1, "name": 1}) or {}
+        gross = 0.0
+        comm_total = 0.0
+        for it in items:
+            # Use actual (vendor-reported) qty once goods are marked ready;
+            # falls back to ordered qty for the pre-ready preview.
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
+            rate = float(it.get("price_per_meter", 0) or 0)
+            line_gross = qty * rate
+            pct = await _resolve_commission(sid, it.get("fabric_id", ""), it.get("category_id", ""), it.get("order_type", ""))
+            comm_total += round(line_gross * pct / 100.0, 2)
+            gross += line_gross
+        gst_on_comm = round(comm_total * comm_gst_pct / 100.0, 2)
+        invoice_value = round(gross * (1 + goods_gst_pct / 100.0), 2)
+        weighted = round((comm_total / gross * 100.0), 2) if gross else 0
+        rows.append({
+            "seller_id": sid,
+            "seller_company": seller.get("company_name") or seller.get("name") or "—",
+            "items_count": len(items),
+            "gross_subtotal": round(gross, 2),
+            "commission_pct_weighted": weighted,
+            "commission_total": round(comm_total, 2),
+            "gst_on_commission": gst_on_comm,
+            "commission_gst_pct": comm_gst_pct,
+            "net_payable": round(invoice_value - comm_total - gst_on_comm, 2),
+            "status": "preview",
+            "source": "preview",
+        })
+    return {"order_number": order.get("order_number"), "paid": False, "sellers": rows}
+
+
+def _weighted_pct(payout: dict) -> float:
+    """Weighted commission % across items in a materialized payout."""
+    gross = float(payout.get("gross_subtotal", 0) or 0)
+    comm = float(payout.get("commission_total", 0) or 0)
+    if not gross:
+        return 0.0
+    return round(comm / gross * 100.0, 2)
+
+
+@router.post("/orders/{order_id}/resync-commission")
+async def resync_order_commission(
+    order_id: str,
+    user=Depends(get_current_accounts_or_admin),
+):
+    """Per-order commission resync.
+
+    For every PENDING vendor_payout linked to this order, recompute
+    commission + GST + net_payable **in place** using the new resolution
+    chain (item stamp → order stamp → live rules). Paid payouts are
+    skipped. If no payouts exist yet (and the order is paid), we
+    materialize fresh ones.
+
+    Used from the "Commission & Seller Payout" card on /admin/orders so
+    the admin can fix individual orders without nuking the row.
+    """
+    from auth_helpers import db as _db
+    order = await _db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    payouts = await _db.vendor_payouts.find({"order_id": order_id}, {"_id": 0}).to_list(50)
+
+    # No payouts yet — try to materialize fresh (only succeeds if order is paid).
+    if not payouts:
+        fresh = await materialize_payouts_for_order(order)
+        return {
+            "success": True,
+            "updated": len(fresh),
+            "skipped_paid": 0,
+            "materialized_fresh": True,
+            "payouts": fresh,
+        }
+
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+
+    skipped_paid = 0
+    updated_payouts: List[dict] = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for p in payouts:
+        if p.get("status") == "paid":
+            skipped_paid += 1
+            continue
+
+        sid = p["seller_id"]
+        order_items = [it for it in (order.get("items") or []) if (it.get("seller_id") or "") == sid]
+        if not order_items:
+            order_items = p.get("items") or []
+
+        new_lines = []
+        new_gross = 0.0
+        new_comm = 0.0
+        for it in order_items:
+            # Use actual (vendor-reported) qty whenever available — that's
+            # the quantity the supplier is actually being paid for. Falls
+            # back to ordered qty for legacy / pre-goods-ready orders.
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
+            rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
+            line_gross = qty * rate
+            # Resync intentionally bypasses the stale `order.commission_pct`
+            # stamp (which may have been written by the broken pre-fix
+            # calculator) and re-resolves from the live rules table. Only
+            # honour an explicit per-item stamp if present.
+            item_pct_raw = it.get("commission_pct")
+            try:
+                item_pct = float(item_pct_raw) if item_pct_raw is not None else None
+            except (TypeError, ValueError):
+                item_pct = None
+            if item_pct is not None:
+                comm_pct = item_pct
+            else:
+                comm_pct = await _resolve_commission(
+                    sid,
+                    it.get("fabric_id", ""),
+                    it.get("category_id", ""),
+                    it.get("category_name", ""),
+                    it.get("pattern", ""),
+                    order_type=it.get("order_type", ""),
+                )
+            line_comm = round(line_gross * comm_pct / 100.0, 2)
+            new_lines.append({
+                "fabric_id": it.get("fabric_id", ""),
+                "fabric_name": it.get("fabric_name", ""),
+                "fabric_code": it.get("fabric_code", ""),
+                "quantity": qty,
+                "rate": rate,
+                "gross": round(line_gross, 2),
+                "commission_pct": comm_pct,
+                "commission_amount": line_comm,
+                "net": round(line_gross - line_comm, 2),
+            })
+            new_gross += line_gross
+            new_comm += line_comm
+
+        new_gross = round(new_gross, 2)
+        new_comm = round(new_comm, 2)
+        gst_on_goods = round(new_gross * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(new_gross + gst_on_goods, 2)
+        gst_on_commission = round(new_comm * comm_gst_pct / 100.0, 2)
+        advances = float(p.get("advances_applied", 0) or 0)
+        net_payable = round(supplier_invoice_value - new_comm - gst_on_commission - advances, 2)
+
+        await _db.vendor_payouts.update_one(
+            {"id": p["id"]},
+            {"$set": {
+                "items": new_lines,
+                "gross_subtotal": new_gross,
+                "commission_total": new_comm,
+                "commission_gst_pct": comm_gst_pct,
+                "gst_on_commission": gst_on_commission,
+                "goods_gst_pct": goods_gst_pct,
+                "gst_on_goods": gst_on_goods,
+                "supplier_invoice_value": supplier_invoice_value,
+                "net_payable": net_payable,
+                "updated_at": now_iso,
+            }},
+        )
+        fresh = await _db.vendor_payouts.find_one({"id": p["id"]}, {"_id": 0})
+        updated_payouts.append(fresh)
+
+    return {
+        "success": True,
+        "updated": len(updated_payouts),
+        "skipped_paid": skipped_paid,
+        "payouts": updated_payouts,
+    }
 
 
 @router.post("/payouts/{payout_id}/recalculate")
@@ -360,7 +866,12 @@ async def recalculate_payout(
     user=Depends(get_current_accounts_or_admin),
 ):
     """Re-runs commission lookup against CURRENT rules. Useful after a
-    commission rule change. Refuses to recalculate a paid payout."""
+    commission rule change. Refuses to recalculate a paid payout.
+
+    Delegates to the per-order resync endpoint logic so we stay on the
+    safe in-place update path — never delete-and-recreate (that can lose
+    the row if the parent order's payment_status isn't paid).
+    """
     from auth_helpers import db as _db
     payout = await _db.vendor_payouts.find_one({"id": payout_id}, {"_id": 0})
     if not payout:
@@ -370,11 +881,187 @@ async def recalculate_payout(
     order = await _db.orders.find_one({"id": payout["order_id"]}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    # Wipe & re-materialize this single payout
-    await _db.vendor_payouts.delete_one({"id": payout_id})
-    fresh = await materialize_payouts_for_order(order)
-    seller_payout = next((p for p in fresh if p["seller_id"] == payout["seller_id"]), None)
+
+    # Reuse the order-level resync (it handles in-place update + GST recompute).
+    result = await resync_order_commission(order["id"], user=user)
+    seller_payout = next((p for p in result.get("payouts") or [] if p["seller_id"] == payout["seller_id"]), None)
     return {"success": True, "payout": seller_payout}
+
+
+@router.post("/payouts/backfill-commission")
+async def backfill_pending_payouts_commission(user=Depends(get_current_accounts_or_admin)):
+    """One-shot backfill: recompute commission + net_payable on every
+    PENDING vendor_payout using the new resolution chain (item stamp →
+    order stamp → live rules). Paid payouts are skipped.
+
+    Idempotent — safe to re-run. Returns per-payout diff so the user can
+    audit which rows changed.
+    """
+    from auth_helpers import db as _db
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+
+    updated = 0
+    unchanged = 0
+    skipped_paid = 0
+    skipped_no_order = 0
+    diffs: List[dict] = []
+
+    async for p in _db.vendor_payouts.find({}, {"_id": 0}):
+        if p.get("status") == "paid":
+            skipped_paid += 1
+            continue
+        order = await _db.orders.find_one({"id": p["order_id"]}, {"_id": 0})
+        if not order:
+            skipped_no_order += 1
+            continue
+
+        # Resync bypasses the stale order stamp — re-resolves from live rules.
+        sid = p["seller_id"]
+        order_items = [it for it in (order.get("items") or []) if (it.get("seller_id") or "") == sid]
+        # Fall back to the items snapshot stored on the payout if the
+        # parent order's items list was groomed/migrated.
+        if not order_items:
+            order_items = p.get("items") or []
+
+        new_lines = []
+        new_gross = 0.0
+        new_comm = 0.0
+        for it in order_items:
+            # Use actual (vendor-reported) qty whenever available — that's
+            # the quantity the supplier is actually being paid for. Falls
+            # back to ordered qty for legacy / pre-goods-ready orders.
+            qty = float(
+                it.get("actual_quantity") if it.get("actual_quantity") is not None
+                else (it.get("quantity") or 0)
+            )
+            rate = float(it.get("price_per_meter", it.get("rate", 0)) or 0)
+            line_gross = qty * rate
+            # Resync intentionally bypasses the stale `order.commission_pct`
+            # stamp (which may have been written by the broken pre-fix
+            # calculator) and re-resolves from the live rules table. Only
+            # honour an explicit per-item stamp if present.
+            item_pct_raw = it.get("commission_pct")
+            try:
+                item_pct = float(item_pct_raw) if item_pct_raw is not None else None
+            except (TypeError, ValueError):
+                item_pct = None
+            if item_pct is not None:
+                comm_pct = item_pct
+            else:
+                comm_pct = await _resolve_commission(
+                    sid,
+                    it.get("fabric_id", ""),
+                    it.get("category_id", ""),
+                    it.get("category_name", ""),
+                    it.get("pattern", ""),
+                    order_type=it.get("order_type", ""),
+                )
+            line_comm = round(line_gross * comm_pct / 100.0, 2)
+            new_lines.append({
+                "fabric_id": it.get("fabric_id", ""),
+                "fabric_name": it.get("fabric_name", ""),
+                "fabric_code": it.get("fabric_code", ""),
+                "quantity": qty,
+                "rate": rate,
+                "gross": round(line_gross, 2),
+                "commission_pct": comm_pct,
+                "commission_amount": line_comm,
+                "net": round(line_gross - line_comm, 2),
+            })
+            new_gross += line_gross
+            new_comm += line_comm
+
+        new_gross = round(new_gross, 2)
+        new_comm = round(new_comm, 2)
+        gst_on_goods = round(new_gross * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(new_gross + gst_on_goods, 2)
+        gst_on_commission = round(new_comm * comm_gst_pct / 100.0, 2)
+        advances = float(p.get("advances_applied", 0) or 0)
+        net_payable = round(supplier_invoice_value - new_comm - gst_on_commission - advances, 2)
+
+        old_comm = float(p.get("commission_total", 0) or 0)
+        changed = abs(old_comm - new_comm) > 0.01
+
+        if changed:
+            await _db.vendor_payouts.update_one(
+                {"id": p["id"]},
+                {"$set": {
+                    "items": new_lines,
+                    "gross_subtotal": new_gross,
+                    "commission_total": new_comm,
+                    "commission_gst_pct": comm_gst_pct,
+                    "gst_on_commission": gst_on_commission,
+                    "goods_gst_pct": goods_gst_pct,
+                    "gst_on_goods": gst_on_goods,
+                    "supplier_invoice_value": supplier_invoice_value,
+                    "net_payable": net_payable,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+            updated += 1
+            diffs.append({
+                "payout_id": p["id"],
+                "order_number": p.get("order_number", ""),
+                "seller_company": p.get("seller_company", ""),
+                "old_commission": old_comm,
+                "new_commission": new_comm,
+                "old_net_payable": float(p.get("net_payable", 0) or 0),
+                "new_net_payable": net_payable,
+            })
+        else:
+            unchanged += 1
+
+    return {
+        "success": True,
+        "updated": updated,
+        "unchanged": unchanged,
+        "skipped_paid": skipped_paid,
+        "skipped_no_order": skipped_no_order,
+        "diffs": diffs[:200],  # cap response size for huge backfills
+    }
+
+
+@router.post("/payouts/recalculate-unpaid-gst")
+async def recalculate_unpaid_payouts_gst(user=Depends(get_current_accounts_or_admin)):
+    """Backfill GST fields (goods GST + commission GST) on all UNPAID payouts.
+    Paid payouts are left untouched. Returns counts.
+    Idempotent — re-running is safe.
+    """
+    from auth_helpers import db as _db
+    goods_gst_pct, comm_gst_pct = _gst_rates()
+    updated = 0
+    skipped_paid = 0
+    async for p in _db.vendor_payouts.find({}, {"_id": 0}):
+        if p.get("status") == "paid":
+            skipped_paid += 1
+            continue
+        gross = float(p.get("gross_subtotal", 0) or 0)
+        commission = float(p.get("commission_total", 0) or 0)
+        advances = float(p.get("advances_applied", 0) or 0)
+        gst_on_goods = round(gross * goods_gst_pct / 100.0, 2)
+        supplier_invoice_value = round(gross + gst_on_goods, 2)
+        gst_on_commission = round(commission * comm_gst_pct / 100.0, 2)
+        net_payable = round(supplier_invoice_value - commission - gst_on_commission - advances, 2)
+        await _db.vendor_payouts.update_one(
+            {"id": p["id"]},
+            {"$set": {
+                "goods_gst_pct": goods_gst_pct,
+                "gst_on_goods": gst_on_goods,
+                "supplier_invoice_value": supplier_invoice_value,
+                "commission_gst_pct": comm_gst_pct,
+                "gst_on_commission": gst_on_commission,
+                "net_payable": net_payable,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        updated += 1
+    return {
+        "success": True,
+        "updated": updated,
+        "skipped_paid": skipped_paid,
+        "goods_gst_pct": goods_gst_pct,
+        "commission_gst_pct": comm_gst_pct,
+    }
 
 
 # ── Advances ─────────────────────────────────────────────────────

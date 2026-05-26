@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ChevronLeft, Share2, Heart, Zap, Package, Truck, Shield, ShoppingBag, MessageCircle, FileText } from "lucide-react";
+import { ChevronLeft, Share2, Zap, Package, Truck, Shield, ShoppingBag, MessageCircle, FileText } from "lucide-react";
+import WishlistHeartButton from "../../components/WishlistHeartButton";
 import api from "../../lib/api";
 import {
   formatCompositionShort,
@@ -79,6 +80,10 @@ export default function MFabricDetail() {
   const bulk = getBulkPrice(fabric);
   const stock = getStockBadge(fabric);
   const composition = formatCompositionShort(fabric.composition);
+  // Desktop rule: show Sample + Bulk CTAs whenever the fabric is bookable
+  // (in-stock). Mobile previously hid Sample if `sample` price was null
+  // and silently routed "Book Bulk" → sample sheet — broken parity.
+  const canBook = fabric.is_bookable && Number(fabric.quantity_available || 0) > 0;
 
   const onShare = async () => {
     const url = window.location.href;
@@ -91,7 +96,8 @@ export default function MFabricDetail() {
 
   const startBooking = (type) => {
     setOrderType(type);
-    setQty(type === "sample" ? 1 : Math.max(parseFloat(fabric.moq) || 100, 50));
+    // Customer-initiated samples must be at least 5 m; bulk uses fabric MOQ.
+    setQty(type === "sample" ? 5 : Math.max(parseFloat(fabric.moq) || 100, 50));
   };
 
   const confirmBooking = () => {
@@ -105,20 +111,21 @@ export default function MFabricDetail() {
   };
 
   return (
-    <div style={{ paddingBottom: 16 }}>
+    <div style={{ paddingBottom: 120 }}>
       {/* Custom transparent app bar overlay */}
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 100, paddingTop: "env(safe-area-inset-top, 0px)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 14px" }}>
           <button onClick={() => navigate(-1)} style={iconButtonStyle()} aria-label="Back">
             <ChevronLeft size={22} />
           </button>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button onClick={onShare} style={iconButtonStyle()} aria-label="Share">
               <Share2 size={18} />
             </button>
-            <button style={iconButtonStyle()} aria-label="Save">
-              <Heart size={18} />
-            </button>
+            {/* Wire up the placeholder save-icon to the real wishlist picker.
+                `WishlistHeartButton` already renders the heart + outside-click
+                picker overlay, so we hide the legacy bare button. */}
+            <WishlistHeartButton fabricId={fabric.id} variant="icon" size={18} />
           </div>
         </div>
       </div>
@@ -279,52 +286,73 @@ export default function MFabricDetail() {
         </div>
       </section>
 
-      {/* Sticky bottom CTAs */}
+      {/* Sticky bottom CTAs.
+       * In-stock: [ Quote ] [ Sample ] [ Book Bulk ]
+       * Out of stock: single full-width [ Request a Quote ] — we hide
+       * the smaller Quote pill so we don't show two RFQ CTAs at once.
+       *
+       * NOTE: Tab bar is hidden on this page (HIDE_TABS in MobileLayout)
+       * so the CTA bar sits flush with the viewport bottom. z-index lifted
+       * above the PWA install banner (90) so taps never get hijacked. */}
       <div style={{
-        position: "fixed", left: 0, right: 0, bottom: "calc(var(--m-tab-h) + env(safe-area-inset-bottom, 0px))",
+        position: "fixed", left: "50%", transform: "translateX(-50%)",
+        bottom: 0, width: "100%", maxWidth: "var(--m-frame, 480px)",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
         background: "var(--m-surface)", borderTop: "1px solid var(--m-border)",
-        padding: "10px 16px", display: "flex", gap: 10, zIndex: 50,
+        padding: "10px 16px", display: "flex", gap: 10, zIndex: 100,
         boxShadow: "0 -4px 20px rgba(15,27,45,0.06)",
       }}>
-        <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-outline" style={{ flex: "0 0 auto", padding: "0 14px", aspectRatio: "1" }} aria-label="Ask for a quote">
-          <MessageCircle size={20} />
-        </button>
-        {sample != null && (
-          <button onClick={() => startBooking("sample")} className="m-btn m-btn-outline" style={{ flex: 1 }}>
-            <Package size={16} /> Sample
+        {canBook ? (
+          <>
+            <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-outline" style={{ flex: "0 0 auto", padding: "0 14px", gap: 6 }} data-testid="m-quote" aria-label="Request a quote">
+              <FileText size={16} /> Quote
+            </button>
+            <button onClick={() => startBooking("sample")} className="m-btn m-btn-outline" style={{ flex: 1 }} data-testid="m-book-sample">
+              <Package size={16} /> Sample
+            </button>
+            <button onClick={() => startBooking("bulk")} className="m-btn m-btn-primary" style={{ flex: 1.4 }} data-testid="m-book-bulk">
+              <ShoppingBag size={16} /> Book Bulk
+            </button>
+          </>
+        ) : (
+          // Not in stock — single full-width RFQ CTA only.
+          <button onClick={() => navigate("/m/rfq?fabric=" + fabric.id)} className="m-btn m-btn-primary" style={{ flex: 1 }} data-testid="m-request-quote">
+            <FileText size={16} /> Request a Quote
           </button>
         )}
-        <button onClick={() => startBooking(bulk != null ? "bulk" : (sample != null ? "sample" : "sample"))} className="m-btn m-btn-primary" style={{ flex: 1.4 }}>
-          <ShoppingBag size={16} /> Book {fabric.is_bookable ? "Now" : "Bulk"}
-        </button>
       </div>
 
       {/* Booking quantity sheet */}
       <BottomSheet
         open={!!orderType}
         onClose={() => setOrderType(null)}
-        title={orderType === "sample" ? "Order sample" : "Book bulk"}
+        title={orderType === "sample" ? "Book a Sample (5-25m)" : "Book Bulk Order"}
         footer={
-          <button onClick={confirmBooking} className="m-btn m-btn-primary" style={{ width: "100%" }}>
+          <button onClick={confirmBooking} className="m-btn m-btn-primary" style={{ width: "100%" }} data-testid="m-booking-confirm">
             Continue to checkout
           </button>
         }
       >
         <div style={{ padding: "8px 0" }}>
-          <div className="m-kicker">{orderType === "sample" ? "Quantity (meters)" : "Quantity (meters)"}</div>
+          <div className="m-kicker">Quantity (meters)</div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, padding: "4px 4px 4px 18px", border: "1px solid var(--m-border-2)", borderRadius: 14 }}>
-            <button onClick={() => setQty(Math.max(orderType === "sample" ? 1 : 50, qty - (orderType === "sample" ? 1 : 50)))} style={qtyBtn()}>−</button>
+            <button onClick={() => setQty(Math.max(orderType === "sample" ? 5 : 50, qty - (orderType === "sample" ? 1 : 50)))} style={qtyBtn()}>−</button>
             <input
               type="number"
               inputMode="numeric"
               value={qty}
-              onChange={(e) => setQty(Math.max(1, parseInt(e.target.value || "0", 10)))}
+              onChange={(e) => {
+                const v = Math.max(1, parseInt(e.target.value || "0", 10));
+                // Customer-initiated samples are capped at 25 m and must be ≥5 m.
+                setQty(orderType === "sample" ? Math.max(5, Math.min(25, v)) : v);
+              }}
               style={{ flex: 1, textAlign: "center", border: "none", outline: "none", fontSize: 22, fontWeight: 800, color: "var(--m-ink)", padding: "12px 4px", background: "transparent" }}
+              data-testid="m-booking-qty"
             />
-            <button onClick={() => setQty(qty + (orderType === "sample" ? 1 : 50))} style={qtyBtn()}>+</button>
+            <button onClick={() => setQty(orderType === "sample" ? Math.min(25, qty + 1) : qty + 50)} style={qtyBtn()}>+</button>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-            {(orderType === "sample" ? [1, 3, 5, 10] : [100, 250, 500, 1000]).map((n) => (
+            {(orderType === "sample" ? [5, 10, 15, 20, 25] : [100, 250, 500, 1000]).map((n) => (
               <button key={n} onClick={() => setQty(n)} className={"m-chip" + (qty === n ? " m-chip-on" : "")} style={{ padding: "7px 12px" }}>
                 {n}m
               </button>

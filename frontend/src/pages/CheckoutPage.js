@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ShoppingCart, Truck, CreditCard, CheckCircle2, AlertCircle, Loader2, Package, Tag, Wallet, X } from "lucide-react";
+import { ArrowLeft, ShoppingCart, Truck, CreditCard, CheckCircle2, AlertCircle, Loader2, Package, Wallet, X } from "lucide-react";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
-import { getFabric, createOrder, verifyPayment, sendOrderConfirmation, validateCoupon, getCreditBalance } from "../lib/api";
+import { getFabric, createOrder, verifyPayment, sendOrderConfirmation, getCreditBalance } from "../lib/api";
 import { trackBeginCheckout } from "../lib/analytics";
 import { useCustomerAuth } from "../context/CustomerAuthContext";
+import SavedAddressPicker from "../components/SavedAddressPicker";
 import { toast } from "sonner";
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
@@ -63,12 +64,6 @@ const CheckoutPage = () => {
     pincode: ""
   });
   const [notes, setNotes] = useState("");
-  
-  // Coupon
-  const [couponCode, setCouponCode] = useState("");
-  const [appliedCoupon, setAppliedCoupon] = useState(null);
-  const [couponLoading, setCouponLoading] = useState(false);
-  const [couponError, setCouponError] = useState("");
   
   // Pricing
   const [pricePerMeter, setPricePerMeter] = useState(0);
@@ -178,8 +173,30 @@ const CheckoutPage = () => {
         state: loggedInCustomer.state || prev.state,
         pincode: loggedInCustomer.pincode || prev.pincode,
       }));
+      // Prefill GSTIN from the customer's verified profile so the user
+      // doesn't have to retype it. Mark it verified locally so the
+      // shipping toggle and credit lookup activate immediately.
       if (loggedInCustomer.gstin) {
-        getCreditBalance({ gst_number: loggedInCustomer.gstin }).then(res => {
+        const cleanedGst = loggedInCustomer.gstin.trim().toUpperCase();
+        setGstNumber(cleanedGst);
+        if (loggedInCustomer.gst_verified) {
+          setGstResult({
+            valid: true,
+            trade_name: loggedInCustomer.company || "",
+            legal_name: loggedInCustomer.company || "",
+            city: loggedInCustomer.city || "",
+            state: loggedInCustomer.state || "",
+            pincode: loggedInCustomer.pincode || "",
+            address: loggedInCustomer.address || "",
+          });
+          setGstAddress({
+            address: loggedInCustomer.address || "",
+            city: loggedInCustomer.city || "",
+            state: loggedInCustomer.state || "",
+            pincode: loggedInCustomer.pincode || "",
+          });
+        }
+        getCreditBalance({ gst_number: cleanedGst }).then(res => {
           setCreditBalance(res.data);
           if (res.data?.has_credit) setPaymentMethod("credit");
         }).catch(() => {});
@@ -270,10 +287,18 @@ const CheckoutPage = () => {
   // phone / company / GST from what the user has already entered. Posts
   // to the public `/api/credit/apply` endpoint.
   const submitCreditApplication = async () => {
-    if (!customer.name || !customer.email || !customer.phone) {
-      toast.error("Fill name, email & phone first"); return;
+    if (!customer.name?.trim()) { toast.error("Enter your name"); return; }
+    if (!customer.email?.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer.email)) {
+      toast.error("Enter a valid email"); return;
     }
-    if (!gstResult?.valid) { toast.error("Verify GST before applying"); return; }
+    if (!customer.phone?.trim() || customer.phone.trim().length < 10) {
+      toast.error("Enter a valid 10-digit phone"); return;
+    }
+    if (!gstNumber || gstNumber.length !== 15) {
+      toast.error("Enter your 15-character GSTIN"); return;
+    }
+    if (!gstResult?.valid) { toast.error("GST verification failed — please re-check the number"); return; }
+    if (!creditApplyForm.turnover) { toast.error("Select your annual turnover"); return; }
     setCreditApplying(true);
     try {
       const res = await fetch(`${API_URL}/api/credit/apply`, {
@@ -311,12 +336,18 @@ const CheckoutPage = () => {
           if (!res.ok) throw new Error("Cart not found");
           const data = await res.json();
           const items = Array.isArray(data.items) ? data.items : [];
-          if (items.length > 1) {
+          // Always honour the agent's curated price from the shared cart —
+          // even for single-item carts. Falling back to the catalog price
+          // (which is what fetchFabric() does next) drops any negotiated
+          // rate the agent locked in, causing a mismatch between the
+          // shared-cart summary and the checkout total. The multi-item
+          // pricing path is safe with N=1 too: it computes goods + bulk
+          // logistics + packaging + GST from the items directly.
+          if (items.length >= 1) {
             setCartItems(items);
             setLoading(false);
             return;
           }
-          // Single-item cart — still use the legacy fabric flow below
         } catch {
           // fall through to single fabric_id load
         }
@@ -359,18 +390,23 @@ const CheckoutPage = () => {
       0
     );
     const hasBulk = cartItems.some((it) => (it.order_type || "bulk") === "bulk");
-    let totalLogistics = 0;
     let packaging = 0;
     let logisticsOnly = 0;
     if (!hasBulk) {
-      totalLogistics = 100 * cartItems.length;
+      // Sample-only carts → flat ₹100 per item, no packaging line
+      logisticsOnly = 100 * cartItems.length;
     } else {
+      // Bulk pricing — Feb 2026 rule, updated May 2026:
+      // Packaging and logistics are INDEPENDENT line items.
+      //   packaging = total qty × ₹1
+      //   logistics = max(3% × goods, ₹3,000)
+      // Both are billed in full; logistics is NOT reduced by packaging.
       const totalQty = cartItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
-      totalLogistics = Math.max(sub * 0.03, 3000);
       packaging = totalQty * 1;
-      logisticsOnly = Math.max(0, totalLogistics - packaging);
+      logisticsOnly = Math.max(sub * 0.03, 3000);
     }
-    const taxBase = sub + packaging + totalLogistics;
+    const totalLogistics = packaging + logisticsOnly; // bundled for any UI that still wants the combined dispatch number
+    const taxBase = sub + packaging + logisticsOnly;
     const taxAmount = Math.round(taxBase * 0.05 * 100) / 100;
     const finalTotal = taxBase + taxAmount - discount;
     setSubtotal(sub);
@@ -431,19 +467,21 @@ const CheckoutPage = () => {
     let packaging = 0;
     let logisticsOnly = 0;
     if (orderType === "sample") {
-      totalLogistics = 100; // Flat Rs 100 for samples
+      totalLogistics = 100; // Flat Rs 100 for samples — no packaging line
+      logisticsOnly = totalLogistics;
     } else {
-      // Total = max(3% of cart value, Rs 3000)
-      totalLogistics = Math.max(sub * 0.03, 3000);
-      // Packaging = Rs 1/meter (or kg for knitted)
+      // Bulk pricing (May 2026 rule): packaging and logistics are INDEPENDENT.
+      //   packaging = qty × ₹1
+      //   logistics = max(3% × goods, ₹3,000)
+      // Both billed in full; total dispatch = packaging + logistics.
       packaging = quantity * 1;
-      // Logistics = Total - Packaging (ensure non-negative)
-      logisticsOnly = Math.max(0, totalLogistics - packaging);
+      logisticsOnly = Math.max(sub * 0.03, 3000);
+      totalLogistics = packaging + logisticsOnly;
     }
     const logisticsPerUnit = quantity > 0 ? totalLogistics / quantity : 0;
 
-    // Tax base (Feb 2026+) = goods + packaging + logistics
-    const taxBase = sub + packaging + totalLogistics;
+    // Tax base = goods + packaging + logistics (both lines, both in full)
+    const taxBase = sub + packaging + logisticsOnly;
     const taxAmount = Math.round(taxBase * 0.05 * 100) / 100; // 5% GST
     const finalTotal = taxBase + taxAmount - discount;
 
@@ -465,41 +503,32 @@ const CheckoutPage = () => {
     : 0;
   const grandTotal = total + creditCharge;
 
-  // Apply coupon
-  const handleApplyCoupon = async () => {
-    if (!couponCode.trim()) {
-      setCouponError("Please enter a coupon code");
-      return;
+  // Provisional bulk orders: customer pays only 10 % advance upfront and
+  // the 90 % balance once the supplier marks goods ready with the actual
+  // dispatched quantity. Samples always pay 100 % upfront.
+  // ─ Single-item PDP buyflow: bulk → provisional, sample → actual.
+  // ─ Multi-item cart: provisional iff any bulk item carries
+  //   qty_type === "provisional" (or qty_type empty defaults to provisional
+  //   for bulk).
+  const isProvisional = (() => {
+    if (isMultiItem) {
+      return cartItems.some((it) => {
+        const ot = (it.order_type || "bulk").toLowerCase();
+        const qt = (it.qty_type || "").toLowerCase();
+        if (ot !== "bulk") return false;
+        // Empty qty_type → defaults to provisional for bulk
+        return qt === "provisional" || qt === "";
+      });
     }
-    
-    setCouponLoading(true);
-    setCouponError("");
-    
-    try {
-      const response = await validateCoupon(couponCode, subtotal);
-      if (response.data.valid) {
-        setAppliedCoupon(response.data.coupon);
-        setDiscount(response.data.discount_amount);
-        toast.success(`Coupon applied! You saved ₹${response.data.discount_amount.toLocaleString()}`);
-      } else {
-        setCouponError(response.data.message || "Invalid coupon");
-        setAppliedCoupon(null);
-        setDiscount(0);
-      }
-    } catch (err) {
-      setCouponError(err.response?.data?.detail || "Failed to validate coupon");
-      setAppliedCoupon(null);
-      setDiscount(0);
-    }
-    setCouponLoading(false);
-  };
-
-  const removeCoupon = () => {
-    setAppliedCoupon(null);
-    setDiscount(0);
-    setCouponCode("");
-    setCouponError("");
-  };
+    return orderType === "bulk";
+  })();
+  const ADVANCE_PCT = 10;
+  const advanceAmount = isProvisional
+    ? Math.round(grandTotal * (ADVANCE_PCT / 100) * 100) / 100
+    : grandTotal;
+  const balanceAmount = isProvisional
+    ? Math.max(0, Math.round((grandTotal - advanceAmount) * 100) / 100)
+    : 0;
 
   const loadRazorpayScript = () => {
     return new Promise((resolve) => {
@@ -558,6 +587,12 @@ const CheckoutPage = () => {
             hsn_code: it.hsn_code || "",
             color_name: it.color_name || "",
             color_hex: it.color_hex || "",
+            // Provisional flag — agent stamps this on shared cart items.
+            qty_type: it.qty_type || "",
+            // Unit (m/kg) from agent cart — keeps order line item
+            // consistent with the price the customer saw.
+            unit: it.unit || "",
+            fabric_type: it.fabric_type || "",
             dispatch_timeline: it.dispatch_timeline || (it.order_type === "bulk" ? "15-20 days" : "Ready Stock"),
           }))
         : [{
@@ -574,6 +609,12 @@ const CheckoutPage = () => {
             hsn_code: fabric.hsn_code || "",
             color_name: colorName || "",
             color_hex: colorHex || "",
+            // Bulk orders are provisional by default (10% advance, 90%
+            // balance after goods-ready). Sample orders are always "actual"
+            // and are paid in full upfront.
+            qty_type: orderType === "bulk" ? "provisional" : "actual",
+            unit: (fabric.fabric_type === "knitted" && fabric.category_id !== "cat-denim") ? "kg" : "m",
+            fabric_type: fabric.fabric_type || "",
             dispatch_timeline: fabric.dispatch_timeline || (orderType === 'bulk' ? '15-20 days' : 'Ready Stock')
           }];
 
@@ -599,13 +640,8 @@ const CheckoutPage = () => {
         agent_email: agentEmail,
         agent_name: agentName,
         shared_cart_token: sharedCartToken,
-        coupon: appliedCoupon ? {
-          code: appliedCoupon.code,
-          discount_type: appliedCoupon.discount_type,
-          discount_value: appliedCoupon.discount_value,
-          discount_amount: discount
-        } : null,
-        discount: discount
+        coupon: null,
+        discount: 0
       };
 
       // CREDIT payment path — instant confirmation, no Razorpay
@@ -675,7 +711,13 @@ const CheckoutPage = () => {
         },
         notes: {
           order_id: orderInfo.order_id,
-          fabric_name: fabric.name
+          // For multi-item cart checkout `fabric` is null — fall back to
+          // a summary string. The old code did `fabric.name` directly
+          // which threw "Cannot read properties of null (reading 'name')"
+          // → Razorpay INIT_FAILED on every multi-item order.
+          fabric_name: fabric?.name || (cartItems[0]?.fabric_name
+            ? `${cartItems[0].fabric_name}${cartItems.length > 1 ? ` +${cartItems.length - 1} more` : ""}`
+            : "Cart checkout"),
         },
         theme: {
           color: "#2563EB"
@@ -995,6 +1037,27 @@ const CheckoutPage = () => {
                     Shipping Address
                   </h2>
 
+                  {/* Saved-addresses quick-pick — surfaces past order
+                      shipping addresses as chips so returning buyers
+                      can fill the form with one tap. Renders nothing
+                      for first-time buyers. */}
+                  <SavedAddressPicker
+                    onPick={(a) => {
+                      setUseGstAddress(false);
+                      setCustomer((prev) => ({
+                        ...prev,
+                        name: a.name || prev.name,
+                        company: a.company || prev.company,
+                        phone: a.phone || prev.phone,
+                        address: a.address || "",
+                        city: a.city || "",
+                        state: a.state || "",
+                        pincode: a.pincode || "",
+                        gst_number: a.gst_number || prev.gst_number,
+                      }));
+                    }}
+                  />
+
                   {gstAddress && (
                     <div className="mb-4 space-y-2">
                       <label className={`flex items-center gap-3 p-4 rounded-lg border-2 cursor-pointer ${useGstAddress ? 'border-[#2563EB] bg-blue-50/30' : 'border-gray-200'}`}>
@@ -1156,60 +1219,6 @@ const CheckoutPage = () => {
                   )}
                 </div>
 
-                {/* Coupon Code */}
-                <div className="bg-white rounded-xl p-6 border border-gray-200">
-                  <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                    <Tag size={20} />
-                    Have a Coupon?
-                  </h2>
-                  
-                  {appliedCoupon ? (
-                    <div className="flex items-center justify-between p-4 bg-emerald-50 border border-emerald-200 rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <CheckCircle2 className="text-emerald-600" size={20} />
-                        <div>
-                          <p className="font-medium text-gray-900">{appliedCoupon.code}</p>
-                          <p className="text-sm text-emerald-600">
-                            You saved ₹{discount.toLocaleString()}!
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={removeCoupon}
-                        className="text-sm text-red-600 hover:text-red-700 font-medium"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ) : (
-                    <div>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={couponCode}
-                          onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
-                          placeholder="Enter coupon code"
-                          className="flex-1 px-4 py-2.5 border border-gray-200 rounded-lg focus:border-blue-500 focus:outline-none uppercase"
-                          data-testid="coupon-input"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleApplyCoupon}
-                          disabled={couponLoading}
-                          className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
-                          data-testid="apply-coupon-btn"
-                        >
-                          {couponLoading ? <Loader2 className="animate-spin" size={18} /> : "Apply"}
-                        </button>
-                      </div>
-                      {couponError && (
-                        <p className="mt-2 text-sm text-red-600">{couponError}</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-
                 {/* Additional Notes */}
                 <div className="bg-white rounded-xl p-6 border border-gray-200">
                   <h2 className="text-lg font-semibold mb-4">Additional Notes</h2>
@@ -1347,6 +1356,11 @@ const CheckoutPage = () => {
                         <Wallet size={20} />
                         Pay with Credit ₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                       </>
+                    ) : isProvisional ? (
+                      <>
+                        <CreditCard size={20} />
+                        Pay 10% Advance · ₹{advanceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </>
                     ) : (
                       <>
                         <CreditCard size={20} />
@@ -1387,7 +1401,7 @@ const CheckoutPage = () => {
                     </>
                   )}
                   <div className="flex justify-between pt-3 border-t border-gray-100">
-                    <span className="text-gray-600">Goods Subtotal</span>
+                    <span className="text-gray-600">Order Value</span>
                     <span>₹{subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
                   {(isMultiItem ? packagingCharge > 0 : orderType === "bulk") ? (
@@ -1408,13 +1422,13 @@ const CheckoutPage = () => {
                   ) : (
                     <div className="flex justify-between">
                       <span className="text-gray-600">
-                        Logistics (Flat)
+                        Logistics
                       </span>
                       <span>₹{logistics.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                     </div>
                   )}
                   <div className="flex justify-between text-gray-500 text-xs pt-1 border-t border-dashed border-gray-100">
-                    <span>Taxable value (Goods + Packaging + Logistics)</span>
+                    <span>Gross Value</span>
                     <span>₹{(subtotal + packagingCharge + logistics).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
                   <div className="flex justify-between">
@@ -1434,9 +1448,34 @@ const CheckoutPage = () => {
                     </div>
                   )}
                   <div className="flex justify-between pt-3 border-t border-gray-200 text-lg font-semibold">
-                    <span>Total</span>
+                    <span>Total Invoice Value</span>
                     <span className="text-emerald-600">₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
+
+                  {/* Advance vs Balance breakdown (provisional bulk orders) */}
+                  {isProvisional && (
+                    <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg space-y-2" data-testid="checkout-advance-breakdown">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                        <p className="text-xs text-amber-800 leading-snug">
+                          <strong>Bulk orders book at a 10% advance.</strong> Your supplier
+                          will mark goods ready with the actual dispatched quantity,
+                          after which we'll invoice the balance based on the real meterage.
+                        </p>
+                      </div>
+                      <div className="flex justify-between text-sm pt-2 border-t border-amber-200">
+                        <span className="text-amber-900">Pay now (10% advance)</span>
+                        <span className="font-semibold text-amber-900" data-testid="checkout-advance-amount">
+                          ₹{advanceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs text-amber-800">
+                        <span>Pay later (90% balance after goods-ready)</span>
+                        <span>₹{balanceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                    </div>
+                  )}
+
                   <p className="text-xs text-amber-600 mt-3">For export orders, additional port charges, custom charges, export documentation &amp; cess may be applicable.</p>
                 </div>
 
@@ -1456,6 +1495,11 @@ const CheckoutPage = () => {
                     <>
                       <Wallet size={20} />
                       Pay with Credit
+                    </>
+                  ) : isProvisional ? (
+                    <>
+                      <CreditCard size={20} />
+                      Pay 10% Advance · ₹{advanceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </>
                   ) : (
                     <>
@@ -1485,21 +1529,85 @@ const CheckoutPage = () => {
       {/* ── Apply for Credit modal (inline on checkout) ───────────────── */}
       {showCreditApply && (
         <div className="fixed inset-0 z-[80] bg-black/50 flex items-center justify-center p-4" onClick={() => setShowCreditApply(false)}>
-          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl" onClick={(e) => e.stopPropagation()} data-testid="credit-apply-modal">
+          <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} data-testid="credit-apply-modal">
             <div className="flex items-start justify-between mb-3">
               <div>
                 <h3 className="text-lg font-semibold text-gray-900">Apply for Locofast Credit</h3>
-                <p className="text-xs text-gray-500 mt-0.5">Our team will reach out to <strong>{customer.company || gstResult?.trade_name || '—'}</strong> within 1 working day.</p>
+                <p className="text-xs text-gray-500 mt-0.5">Tell us about your business — our team will reach out within 1 working day.</p>
               </div>
               <button onClick={() => setShowCreditApply(false)} className="text-gray-400 hover:text-gray-600">
                 <X size={18} />
               </button>
             </div>
             <div className="space-y-3 text-sm">
-              <div className="bg-gray-50 border border-gray-200 rounded p-3 text-xs space-y-1">
-                <div><span className="text-gray-500">Applicant:</span> <span className="font-medium">{customer.name}</span></div>
-                <div><span className="text-gray-500">GSTIN:</span> <span className="font-mono">{gstNumber}</span></div>
-                <div><span className="text-gray-500">Email:</span> {customer.email} · <span className="text-gray-500">Phone:</span> {customer.phone}</div>
+              {/* Contact basics — editable so guest users can apply without
+                  filling out the order form first. Values sync back to
+                  the main checkout form (less typing later). */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Full name <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    value={customer.name || ""}
+                    onChange={(e) => setCustomer({ ...customer, name: e.target.value })}
+                    placeholder="Your name"
+                    className="w-full px-3 py-2 border border-gray-200 rounded text-sm focus:border-blue-500 focus:outline-none"
+                    data-testid="credit-apply-name"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Email <span className="text-red-500">*</span></label>
+                  <input
+                    type="email"
+                    value={customer.email || ""}
+                    onChange={(e) => setCustomer({ ...customer, email: e.target.value })}
+                    placeholder="you@company.com"
+                    className="w-full px-3 py-2 border border-gray-200 rounded text-sm focus:border-blue-500 focus:outline-none"
+                    data-testid="credit-apply-email"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Phone <span className="text-red-500">*</span></label>
+                  <input
+                    type="tel"
+                    value={customer.phone || ""}
+                    onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
+                    placeholder="10-digit mobile"
+                    maxLength={13}
+                    className="w-full px-3 py-2 border border-gray-200 rounded text-sm focus:border-blue-500 focus:outline-none"
+                    data-testid="credit-apply-phone"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium text-gray-600 mb-1">GSTIN <span className="text-red-500">*</span></label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={gstNumber}
+                      onChange={(e) => {
+                        const v = e.target.value.toUpperCase().replace(/\s/g, "");
+                        setGstNumber(v);
+                        if (v.length === 15) verifyGst(v);
+                        else setGstResult(null);
+                      }}
+                      placeholder="22AAAAA0000A1Z5"
+                      maxLength={15}
+                      className={`w-full px-3 py-2 pr-9 border rounded text-sm font-mono uppercase focus:outline-none ${gstResult?.valid ? "border-emerald-500 bg-emerald-50/30" : gstResult?.valid === false ? "border-red-400" : "border-gray-200 focus:border-blue-500"}`}
+                      data-testid="credit-apply-gst"
+                    />
+                    {gstVerifying && <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-blue-500" />}
+                    {gstResult?.valid && <CheckCircle2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500" />}
+                    {gstResult?.valid === false && <AlertCircle size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-red-400" />}
+                  </div>
+                  {gstResult?.valid && (
+                    <p className="text-xs text-emerald-600 mt-1" data-testid="credit-apply-gst-verified">
+                      Verified: {gstResult.trade_name || gstResult.legal_name}
+                    </p>
+                  )}
+                  {gstResult?.valid === false && (
+                    <p className="text-xs text-red-500 mt-1">{gstResult.message || "Invalid GST"}</p>
+                  )}
+                </div>
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Annual turnover (₹) <span className="text-red-500">*</span></label>
@@ -1547,8 +1655,15 @@ const CheckoutPage = () => {
                 <button
                   type="button"
                   onClick={submitCreditApplication}
-                  disabled={creditApplying || !creditApplyForm.turnover}
-                  className="flex-1 py-2 bg-[#2563EB] text-white rounded text-sm font-medium hover:bg-blue-600 disabled:opacity-50"
+                  disabled={
+                    creditApplying ||
+                    !creditApplyForm.turnover ||
+                    !customer.name?.trim() ||
+                    !customer.email?.trim() ||
+                    !customer.phone?.trim() ||
+                    !gstResult?.valid
+                  }
+                  className="flex-1 py-2 bg-[#2563EB] text-white rounded text-sm font-medium hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
                   data-testid="credit-apply-submit"
                 >
                   {creditApplying ? "Submitting…" : "Submit Application"}
@@ -1562,4 +1677,20 @@ const CheckoutPage = () => {
   );
 };
 
-export default CheckoutPage;
+import RFQAuthGate from "../components/RFQAuthGate";
+// eslint-disable-next-line
+function CheckoutPageGated() {
+  // For B2B checkout, we now require the buyer to be signed in via the
+  // same WhatsApp-OTP gate used on the RFQ form. Logged-in customers
+  // pass through immediately; guests see the OTP flow first (and the
+  // GST-verified registration step if they're brand new). This avoids
+  // the long checkout form for unknown visitors and lets us auto-fill
+  // every shipping field for returning buyers.
+  return (
+    <RFQAuthGate title="Sign in to place this order" subtitle="We'll fill in your shipping & GST details automatically.">
+      <CheckoutPage />
+    </RFQAuthGate>
+  );
+}
+
+export default CheckoutPageGated;

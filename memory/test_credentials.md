@@ -4,13 +4,34 @@
 - Email: admin@locofast.com
 - Password: admin123
 - Login URL: /admin/login
+- **Super-admin only**: can access `/admin/users` to create/reset/deactivate other admin users (gated by `SUPER_ADMIN_EMAIL` env var, default `admin@locofast.com`).
 
-## Credit Operations (Vendor Payouts panel)
+## Locofast Agent (Sourcing / Sales Team)
+- Email: agent@locofast.com (or deepak.wadhwa@locofast.com for Sujata)
+- Auth: **Email OTP only** — no password
+- Login URL: /agent/login (preview: https://fabric-sourcing-cms.preview.emergentagent.com/agent/login · prod: https://locofast.com/agent/login)
+- Flow: enter email → 6-digit OTP arrives in inbox (Resend) → enter OTP → land on agent dashboard
+- Dev OTP retrieval (no inbox in preview): `db.agent_otps` collection, latest `used=false` row for that email
+- What an agent can do:
+  - **AI Sourcing Search** (Claude) — natural-language fabric discovery
+  - **Build catalogues** — curated shareable URLs from search results (PublicCataloguePage)
+  - **Create shared carts** — agent-assisted curated carts with custom pricing, generates `/shared-cart/{token}` for the buyer
+  - **View orders** — all orders, with the new "Invoice Value (all-incl.)" breakdown column (Goods · Pkg · Logs · GST)
+  - **View RFQs assigned to them** — quote management
+- Rate limit: 3 OTP requests per 10 minutes per email
+- Note: Use OTP login from `/admin` won't work — `/agent/login` is a separate auth surface.
+
+## Credit Operations / Finance & Accounts (Vendor Payouts + Credit Ledger)
 - Email: creditoperations@locofast.com
-- Password: Accounts@123
-- Login URL: /admin/login
-- Role: `accounts` — focused nav (Payouts · Orders read · Vendors)
-- Permissions: read all orders/sellers/payouts, mark payouts paid, edit ONLY bank/PAN/payment_terms on vendors
+- Password: accounts@2026
+- Login URL: /admin/login (preview: https://fabric-sourcing-cms.preview.emergentagent.com/admin/login · prod: https://locofast.com/admin/login)
+- Role: `accounts` — focused nav for finance users:
+  - **Vendor Payouts** — mark vendor invoices paid, generate UTRs
+  - **Credit Adjustments** — OTP-gated CN/DN entry (gated to `sandeep.kumar@locofast.com` only, even within accounts role)
+  - **Credit Limits** — view & update buyer credit limits
+  - **Orders (read)** — read-only order audit
+  - **Vendors** — edit bank/PAN/payment_terms only (no other fields)
+- Permissions: read all orders/sellers/payouts, mark payouts paid, post CN/DN with OTP, edit credit limits, upload disbursement/payment CSVs.
 - Note: previously seeded as `accounts@locofast.com`, renamed Feb 2026 because that DL has no inbox.
 
 ## Vendor
@@ -31,11 +52,14 @@
 - Email: info@palimills.com
 - Password: admin@123
 
-## Vendor — Cotton Manufacturer (for Payout Invoice test)
+## Vendor — Cotton Manufacturer (for Payout Invoice test + order LF/ORD/057)
 - Email: bhuvnesh.sharma@nsltextiles.com
-- Password: vendor123
+- Password: Vendor@2026
 - Login URL: /vendor/login
-- Used to test the "Vendor uploads invoice → Accounts mark paid" flow.
+- Seller code: LS-OFUCT
+- Seller ID: a1edb4e2-f942-4034-ad9b-e075979cc8a4
+- Company: NT, Cotton Manufacturer, Hyderabad
+- Used to test the "Vendor uploads invoice → Accounts mark paid" flow. Also the seller for order LF/ORD/057.
 
 ## Agent
 - Email: agent@locofast.com
@@ -67,8 +91,26 @@ c.admin_otps.update_one({'id': '<otp_request_id>'}, {'$set': {'code_hash': bcryp
 ```
 Then use `123456` as the OTP. Applies to `purpose`: `brand_credit_upload` AND `brand_sample_credit_adjust`.
 
+## Supplier Manager (acts on behalf of mapped vendors)
+- Email: supplier.manager@locofast.com
+- Password: sm@2026
+- Login URL: /vendor/login (unified — same as vendors; backend detects role)
+- After login → /supplier-manager/vendors → pick a vendor to act as
+- Mapped vendors (seed): KALLAM TEXTILES LIMITED (LS-GD6VB), Macrosoft (LS-IQOLO)
+- Admin CRUD: /admin/supplier-managers
+- Permissions: can do everything a vendor can — inventory, RFQ quotes, orders, invoice uploads. The vendor JWT minted via `/api/supplier-manager/impersonate/{seller_id}` carries `acting_as_sm` for audit.
+- Acting-as banner: yellow strip at top of vendor portal + "Switch vendor" pill to return to picker
+
 ## Locofast Support Placeholder
 - Email: support@locofast.com (env: `LOCOFAST_SUPPORT_EMAIL`)
 - Phone: +91 120 4938200 (env: `LOCOFAST_SUPPORT_PHONE`)
 - Ops inbox: orders@locofast.com (env: `LOCOFAST_OPS_INBOX`) — brand order notifications go here
 - Endpoint: `GET /api/brand/support`
+
+## Credit Adjustments (OTP-gated)
+- Authorised email: sandeep.kumar@locofast.com (env: `CREDIT_ADJUSTMENT_ADMIN_EMAIL`)
+- Auth: OTP via Resend → exchange for 4h JWT scoped `credit_adjustment`
+- Admin URL: /admin/credit-adjustments
+- Test customer with seeded ledger data: test.ledger@locofast.com (OTP login via /api/customer/send-otp), GSTIN 07AIKPY4565A1Z0
+- OTP retrieval for tests: `db.credit_adjustment_otps` collection (most recent unused row)
+

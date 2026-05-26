@@ -89,6 +89,8 @@ const AdminFabrics = () => {
     sample_delivery_days: "", // New: 1-3, 3-5, 5-7, etc.
     bulk_delivery_days: "",   // New: 1-3, 3-5, 5-7, etc.
     is_bookable: false,
+    // Pickup-location-level inventory
+    pickup_address_id: "",
     // Pricing fields
     sample_price: "",
     pricing_tiers: [
@@ -275,7 +277,7 @@ const AdminFabrics = () => {
   };
 
   // Materials that share the stretch-fibre class and use the 0.5→20% dropdown
-  const STRETCH_FIBRES = ['spandex', 'elastane', 'lycra', 'stretch'];
+  const STRETCH_FIBRES = ['spandex', 'elastane', 'lycra', 'flex', 'stretch'];
   const isStretchFibre = (material) =>
     STRETCH_FIBRES.some((f) => (material || '').toLowerCase().includes(f));
 
@@ -532,6 +534,7 @@ const AdminFabrics = () => {
       bulk_delivery_days: fabric.bulk_delivery_days || "",
       is_bookable: fabric.is_bookable || false,
       certifications: Array.isArray(fabric.certifications) ? fabric.certifications : [],
+      pickup_address_id: fabric.pickup_address_id || "",
       // Pricing fields
       sample_price: fabric.sample_price ? fabric.sample_price.toString() : "",
       pricing_tiers: fabric.pricing_tiers && fabric.pricing_tiers.length > 0 
@@ -1708,6 +1711,39 @@ const AdminFabrics = () => {
 
                   {/* Estimated delivery fields removed — Locofast now enforces a global
                       turnaround (24–48 hrs for in-stock, ~30 days for manufacturing). */}
+
+                  {/* Pickup Location (Inventory) */}
+                  <div className="bg-white rounded p-3 mb-4 border border-emerald-200">
+                    <label className="block text-sm font-medium text-emerald-800 mb-2">
+                      Pickup Location <span className="text-gray-500 text-xs font-normal">(where this SKU is stocked)</span>
+                    </label>
+                    {(() => {
+                      const sel = sellers.find((s) => s.id === form.seller_id);
+                      const addrs = sel?.pickup_addresses || [];
+                      if (!form.seller_id) {
+                        return <p className="text-xs text-gray-500">Select a vendor first to see pickup locations.</p>;
+                      }
+                      if (addrs.length === 0) {
+                        return <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">This vendor has no saved pickup addresses. Add one on the vendor profile first.</p>;
+                      }
+                      return (
+                        <select
+                          value={form.pickup_address_id || ""}
+                          onChange={(e) => setForm({ ...form, pickup_address_id: e.target.value })}
+                          className="w-full px-4 py-2 border border-emerald-200 rounded bg-white"
+                          data-testid="fabric-pickup-address-select"
+                        >
+                          <option value="">Use vendor's default (primary) pickup address</option>
+                          {addrs.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.nickname || "—"} · {a.city || ""}{a.state ? `, ${a.state}` : ""} {a.is_primary ? "(Primary)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })()}
+                    <p className="text-xs text-gray-500 mt-1">Orders for this SKU will dispatch from the selected location. A single SKU cannot be split across locations.</p>
+                  </div>
 
                   {/* Sample Pricing */}
                   <div className="bg-white rounded p-3 mb-4 border border-emerald-200">

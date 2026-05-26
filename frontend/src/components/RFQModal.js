@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ArrowRight, X, FileText } from "lucide-react";
+import { ArrowRight, X, FileText, Pencil } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { trackGenerateLead } from "../lib/analytics";
@@ -30,6 +30,11 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
   });
   const [submitting, setSubmitting] = useState(false);
   const [loggedInCustomer, setLoggedInCustomer] = useState(null);
+  // Lets the buyer override the auto-filled fabric specs (composition,
+  // weight, width, type) without leaving the quick-RFQ modal. Empty values
+  // mean "use the fabric's default" — only overrides are sent to backend.
+  const [editingSpec, setEditingSpec] = useState(false);
+  const [specOverride, setSpecOverride] = useState({ composition: "", weight: "", width: "", type: "" });
 
   // If a customer is logged in, prefill contact fields and hide the contact
   // section in the modal — they shouldn't have to retype name/email/phone/GST.
@@ -62,6 +67,14 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
     return () => { cancelled = true; };
   }, [open]);
 
+  // Escape key closes the modal — common accessibility expectation.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
   const isIndia = form.location === "India";
   const isBangladesh = form.location === "Bangladesh";
 
@@ -92,6 +105,18 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
     }
     setSubmitting(true);
     try {
+      // Build a "Spec changes" preamble from any fabric-spec overrides
+      // the buyer entered. We surface this prominently in the notes so the
+      // sourcing team sees the deltas vs the fabric's catalog spec.
+      const overrideBits = [
+        specOverride.composition && `Composition: ${specOverride.composition}`,
+        specOverride.weight && `Weight: ${specOverride.weight}`,
+        specOverride.width && `Width: ${specOverride.width}`,
+        specOverride.type && `Type: ${specOverride.type}`,
+      ].filter(Boolean);
+      const message = overrideBits.length
+        ? `[Spec changes requested] ${overrideBits.join(" · ")}${form.notes ? `\n\n${form.notes}` : ""}`
+        : (form.notes || "");
       await fetch(`${API}/api/enquiries/rfq-lead`, {
         method: "POST",
         headers: {
@@ -108,7 +133,8 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
           fabric_name: fabricName || "",
           quantity_value: parseFloat(form.quantity) || 0,
           quantity_unit: form.quantity_unit,
-          message: form.notes || "",
+          message,
+          spec_override: overrideBits.length ? specOverride : null,
         })
       });
       toast.success("Your enquiry has been submitted! Our team will reach out within 24 hours.");
@@ -151,18 +177,26 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" data-testid="rfq-modal-overlay">
-      <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl relative overflow-hidden" data-testid="rfq-modal">
-        <div className="bg-gradient-to-r from-[#2563EB] to-[#1d4ed8] px-6 py-5 text-white">
-          <button onClick={onClose} className="absolute top-4 right-4 text-white/70 hover:text-white transition-colors" data-testid="rfq-modal-close">
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      onClick={onClose}
+      data-testid="rfq-modal-overlay"
+    >
+      <div
+        className="bg-white rounded-2xl max-w-lg w-full shadow-2xl relative max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+        data-testid="rfq-modal"
+      >
+        <div className="bg-gradient-to-r from-[#2563EB] to-[#1d4ed8] px-6 py-5 text-white sticky top-0 z-10">
+          <button onClick={onClose} className="absolute top-4 right-4 text-white/70 hover:text-white transition-colors" data-testid="rfq-modal-close" aria-label="Close">
             <X size={20} />
           </button>
-          <h3 className="text-lg font-semibold">Request a Quote</h3>
+          <h3 className="text-lg font-semibold pr-8">Request a Quote</h3>
           <p className="text-blue-100 text-sm mt-1">Fill in your details — our sourcing experts will reach out within 24 hours.</p>
           <p className="text-blue-100/90 text-xs mt-1">Bulk production typically dispatches within ~30 days of order confirmation.</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4" data-testid="rfq-form">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto flex-1" data-testid="rfq-form">
           {loggedInCustomer ? null : (
             <>
               <div className="grid grid-cols-2 gap-4">
@@ -231,28 +265,103 @@ export default function RFQModal({ open, onClose, fabricUrl, fabricName, fabric 
                   </a>
                   {fabric.fabric_code && <p className="text-[11px] text-gray-500 font-mono mt-0.5">{fabric.fabric_code}</p>}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingSpec((v) => !v)}
+                  className="text-xs font-medium text-[#2563EB] hover:text-[#1d4ed8] inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-blue-50"
+                  data-testid="rfq-edit-spec-btn"
+                >
+                  {editingSpec ? <>Done</> : <><Pencil size={11} />Edit</>}
+                </button>
               </div>
 
-              {/* Spec grid — only shows fields that have data */}
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs pt-2 border-t border-gray-200">
-                {Array.isArray(fabric.composition) && fabric.composition.length > 0 && (
-                  <div className="col-span-2">
-                    <span className="text-gray-500">Composition: </span>
-                    <span className="text-gray-900 font-medium">
-                      {fabric.composition.filter(c => c.material).map(c => `${c.percentage}% ${c.material}`).join(" + ")}
-                    </span>
+              {/* Spec grid — read-only mode shows the fabric's defaults. */}
+              {!editingSpec && (
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs pt-2 border-t border-gray-200">
+                  {Array.isArray(fabric.composition) && fabric.composition.length > 0 && (
+                    <div className="col-span-2">
+                      <span className="text-gray-500">Composition: </span>
+                      <span className="text-gray-900 font-medium">
+                        {specOverride.composition || fabric.composition.filter(c => c.material).map(c => `${c.percentage}% ${c.material}`).join(" + ")}
+                      </span>
+                      {specOverride.composition && <span className="ml-1 text-[10px] text-amber-600 font-semibold">(edited)</span>}
+                    </div>
+                  )}
+                  {(fabric.gsm || specOverride.weight) && <div><span className="text-gray-500">Weight: </span><span className="text-gray-900 font-medium">{specOverride.weight || `${fabric.gsm} GSM`}</span>{specOverride.weight && <span className="ml-1 text-[10px] text-amber-600 font-semibold">(edited)</span>}</div>}
+                  {fabric.ounce && !fabric.gsm && !specOverride.weight && <div><span className="text-gray-500">Weight: </span><span className="text-gray-900 font-medium">{fabric.ounce} oz</span></div>}
+                  {(fabric.width || specOverride.width) && <div><span className="text-gray-500">Width: </span><span className="text-gray-900 font-medium">{specOverride.width || `${fabric.width}"`}</span>{specOverride.width && <span className="ml-1 text-[10px] text-amber-600 font-semibold">(edited)</span>}</div>}
+                  {(fabric.fabric_type || specOverride.type) && <div><span className="text-gray-500">Type: </span><span className="text-gray-900 font-medium capitalize">{specOverride.type || fabric.fabric_type}</span>{specOverride.type && <span className="ml-1 text-[10px] text-amber-600 font-semibold">(edited)</span>}</div>}
+                  {fabric.weave_pattern && <div><span className="text-gray-500">Weave: </span><span className="text-gray-900 font-medium">{fabric.weave_pattern}</span></div>}
+                  {fabric.knit_type && <div><span className="text-gray-500">Knit: </span><span className="text-gray-900 font-medium">{fabric.knit_type}</span></div>}
+                  {fabric.color_or_shade && <div><span className="text-gray-500">Colour: </span><span className="text-gray-900 font-medium">{fabric.color_or_shade}</span></div>}
+                  {fabric.starting_price && <div><span className="text-gray-500">Starting price: </span><span className="text-gray-900 font-medium">₹{fabric.starting_price}/{fabric.unit || form.quantity_unit}</span></div>}
+                  {Number.isFinite(fabric.moq) && fabric.moq > 0 && <div><span className="text-gray-500">MOQ: </span><span className="text-gray-900 font-medium">{fabric.moq} {fabric.unit || form.quantity_unit}</span></div>}
+                </div>
+              )}
+
+              {/* Edit mode — small inline form lets buyer override the 4
+                  most-customised specs without leaving the quick modal. */}
+              {editingSpec && (
+                <div className="space-y-2 pt-2 border-t border-gray-200" data-testid="rfq-spec-edit-fields">
+                  <p className="text-[10px] text-gray-500 leading-relaxed">Need a different spec? Override below — we'll flag the changes to the sourcing team. Leave blank to keep the catalog spec.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="col-span-2">
+                      <label className="text-[10px] uppercase tracking-wide text-gray-500 font-medium">Composition</label>
+                      <input
+                        type="text"
+                        value={specOverride.composition}
+                        onChange={(e) => setSpecOverride((p) => ({ ...p, composition: e.target.value }))}
+                        placeholder={Array.isArray(fabric.composition) && fabric.composition.length ? fabric.composition.filter(c => c.material).map(c => `${c.percentage}% ${c.material}`).join(" + ") : "e.g. 80% Cotton + 20% Polyester"}
+                        className="w-full mt-1 px-2 py-1.5 border border-gray-300 rounded text-xs focus:border-[#2563EB] focus:outline-none bg-white"
+                        data-testid="rfq-spec-composition"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase tracking-wide text-gray-500 font-medium">Weight</label>
+                      <input
+                        type="text"
+                        value={specOverride.weight}
+                        onChange={(e) => setSpecOverride((p) => ({ ...p, weight: e.target.value }))}
+                        placeholder={fabric.gsm ? `${fabric.gsm} GSM` : fabric.ounce ? `${fabric.ounce} oz` : "e.g. 180 GSM"}
+                        className="w-full mt-1 px-2 py-1.5 border border-gray-300 rounded text-xs focus:border-[#2563EB] focus:outline-none bg-white"
+                        data-testid="rfq-spec-weight"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] uppercase tracking-wide text-gray-500 font-medium">Width</label>
+                      <input
+                        type="text"
+                        value={specOverride.width}
+                        onChange={(e) => setSpecOverride((p) => ({ ...p, width: e.target.value }))}
+                        placeholder={fabric.width ? `${fabric.width}"` : 'e.g. 58"'}
+                        className="w-full mt-1 px-2 py-1.5 border border-gray-300 rounded text-xs focus:border-[#2563EB] focus:outline-none bg-white"
+                        data-testid="rfq-spec-width"
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="text-[10px] uppercase tracking-wide text-gray-500 font-medium">Type</label>
+                      <input
+                        type="text"
+                        value={specOverride.type}
+                        onChange={(e) => setSpecOverride((p) => ({ ...p, type: e.target.value }))}
+                        placeholder={fabric.fabric_type || "e.g. Woven, Knit"}
+                        className="w-full mt-1 px-2 py-1.5 border border-gray-300 rounded text-xs focus:border-[#2563EB] focus:outline-none bg-white"
+                        data-testid="rfq-spec-type"
+                      />
+                    </div>
                   </div>
-                )}
-                {fabric.gsm && <div><span className="text-gray-500">GSM: </span><span className="text-gray-900 font-medium">{fabric.gsm}</span></div>}
-                {fabric.ounce && !fabric.gsm && <div><span className="text-gray-500">Weight: </span><span className="text-gray-900 font-medium">{fabric.ounce} oz</span></div>}
-                {fabric.width && <div><span className="text-gray-500">Width: </span><span className="text-gray-900 font-medium">{fabric.width}"</span></div>}
-                {fabric.fabric_type && <div><span className="text-gray-500">Type: </span><span className="text-gray-900 font-medium capitalize">{fabric.fabric_type}</span></div>}
-                {fabric.weave_pattern && <div><span className="text-gray-500">Weave: </span><span className="text-gray-900 font-medium">{fabric.weave_pattern}</span></div>}
-                {fabric.knit_type && <div><span className="text-gray-500">Knit: </span><span className="text-gray-900 font-medium">{fabric.knit_type}</span></div>}
-                {fabric.color_or_shade && <div><span className="text-gray-500">Colour: </span><span className="text-gray-900 font-medium">{fabric.color_or_shade}</span></div>}
-                {fabric.starting_price && <div><span className="text-gray-500">Starting price: </span><span className="text-gray-900 font-medium">₹{fabric.starting_price}/{fabric.unit || form.quantity_unit}</span></div>}
-                {Number.isFinite(fabric.moq) && fabric.moq > 0 && <div><span className="text-gray-500">MOQ: </span><span className="text-gray-900 font-medium">{fabric.moq} {fabric.unit || form.quantity_unit}</span></div>}
-              </div>
+                  {(specOverride.composition || specOverride.weight || specOverride.width || specOverride.type) && (
+                    <button
+                      type="button"
+                      onClick={() => setSpecOverride({ composition: "", weight: "", width: "", type: "" })}
+                      className="text-[10px] text-gray-500 hover:text-[#2563EB] hover:underline"
+                      data-testid="rfq-spec-reset"
+                    >
+                      Reset to original spec
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           ) : fabricUrl ? (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">

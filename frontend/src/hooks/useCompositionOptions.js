@@ -16,6 +16,7 @@ const FALLBACK = [
   "Lyocell",
   "Modal",
   "Lycra",
+  "Flex",
   "Linen",
   "Hemp",
   "Nylon",

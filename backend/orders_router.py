@@ -2,11 +2,11 @@
 Orders Router - Handles order creation, payment, and management
 Phase 1: Razorpay Integration + Order Management
 """
-from fastapi import APIRouter, HTTPException, Depends, Request, Query
+from fastapi import APIRouter, HTTPException, Depends, Request, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 import razorpay
@@ -17,9 +17,27 @@ import os
 import asyncio
 import logging
 import io
+import jwt
 
 from email_router import send_order_notification_emails
 import auth_helpers
+from order_pipeline import compute_pipeline_stage, PIPELINE_LABELS
+
+
+def _attach_pipeline(order: dict) -> dict:
+    """Attach the 6-stage pipeline bucket onto an order dict (read-time map)."""
+    if not order:
+        return order
+    try:
+        stage = compute_pipeline_stage(order)
+        order["pipeline_stage"] = stage
+        order["pipeline_label"] = PIPELINE_LABELS.get(stage, stage)
+    except Exception:  # noqa: BLE001 — never let display logic break an API
+        pass
+    return order
+
+JWT_SECRET = os.environ.get('JWT_SECRET', 'default-secret')
+JWT_ALGORITHM = 'HS256'
 
 # PDF Generation imports
 from reportlab.lib.pagesizes import A4
@@ -28,6 +46,48 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+
+# Locofast brand logo used on the top-left header of every PDF the
+# platform ships (tax invoice + proforma invoice). The PNG is
+# pre-rendered with a transparent background so it composites cleanly
+# on the white invoice canvas.
+_LOGO_PNG_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'locofast-logo.png')
+_LOGO_SVG_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'locofast-logo.svg')
+
+
+def _get_logo_drawing(target_height_mm: float = 11):
+    """Return the Locofast logo as a reportlab flowable scaled to
+    `target_height_mm`. Prefers the PNG (transparent BG, ships with the
+    repo); falls back to the legacy SVG if the PNG is missing. Returns
+    None if neither asset is loadable — callers then render the
+    wordmark fallback."""
+    target_pt = target_height_mm * mm
+    # Preferred path: PNG via reportlab's Image (no extra deps needed).
+    if os.path.exists(_LOGO_PNG_PATH):
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(_LOGO_PNG_PATH) as im:
+                w_px, h_px = im.size
+            aspect = w_px / h_px if h_px else 1.0
+            img = Image(_LOGO_PNG_PATH, width=target_pt * aspect, height=target_pt)
+            img.hAlign = 'LEFT'
+            return img
+        except Exception:  # noqa: BLE001
+            pass
+    # Fallback: SVG via svglib.
+    try:
+        from svglib.svglib import svg2rlg
+        d = svg2rlg(_LOGO_SVG_PATH)
+        if d is None or not d.height:
+            return None
+        scale = target_pt / d.height
+        d.width = d.width * scale
+        d.height = d.height * scale
+        d.scale(scale, scale)
+        d.hAlign = 'LEFT'
+        return d
+    except Exception:  # noqa: BLE001
+        return None
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -76,6 +136,13 @@ class OrderItem(BaseModel):
     # Buyer-selected color variant (for multi-color SKUs)
     color_name: str = ""
     color_hex: str = ""
+    # Unit of sale — "m" (default) or "kg" for knitted (non-denim)
+    # fabrics. Determined at cart-add time from fabric.fabric_type.
+    unit: str = ""
+    # Provisional flag set by the Agent on the shared cart. When
+    # "provisional" → triggers the 10% advance flow at checkout.
+    # When "actual" or empty → full payment upfront (legacy).
+    qty_type: str = ""
 
 class CustomerInfo(BaseModel):
     name: str
@@ -132,6 +199,15 @@ class OrderCreate(BaseModel):
     agent_email: str = ""
     agent_name: str = ""
     shared_cart_token: str = ""
+    # Provisional bulk-order flow.
+    # When `is_provisional` is True the customer pays only `advance_pct`
+    # of the total upfront. Order moves to status `provisional` after
+    # advance is paid. Supplier marks goods-ready with the actual quantity
+    # which triggers a balance invoice. We push to Shiprocket only after
+    # the balance payment is received (or finance marks it paid).
+    # Sample orders ignore this flag — they always pay 100% upfront.
+    is_provisional: bool = False
+    advance_pct: float = 0  # 0 = inherit platform default at create-time
 
 class Order(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -290,14 +366,21 @@ async def split_order_into_child_orders(parent_order: dict) -> List[dict]:
         child_total = round(child_subtotal + child_tax + child_logistics + child_packaging, 2)
         child_total_share = round(parent_total * share, 2)  # what they actually paid for this vendor's portion
 
-        suffix = suffix_letters[idx] if idx < len(suffix_letters) else f"{idx + 1}"
+        # Each child gets its own SEQUENTIAL invoice number (e.g. LF/ORD/052,
+        # LF/ORD/053) rather than the legacy suffix scheme (LF/ORD/051-A,
+        # -B). Sequential numbering keeps the GST invoice series unbroken
+        # and matches accounting practice. The suffix letter is still
+        # retained as `vendor_label` so the UI / Shiprocket can show a
+        # short tag distinguishing the splits of the same master order.
+        vendor_label = suffix_letters[idx] if idx < len(suffix_letters) else f"{idx + 1}"
         child_id = str(uuid.uuid4())
-        child_number = f"{parent_order['order_number']}-{suffix}"
+        child_number = await generate_order_number()
         seller_company = sub_items[0].get("seller_company", "") if sub_items else ""
 
         child_doc = {
             "id": child_id,
             "order_number": child_number,
+            "vendor_label": vendor_label,
             "parent_order_id": parent_order["id"],
             "parent_order_number": parent_order["order_number"],
             "is_parent_order": False,
@@ -376,6 +459,19 @@ async def create_order(order_data: OrderCreate):
     """Create a new order and initiate payment (Razorpay or Credit)"""
     if not order_data.items or len(order_data.items) == 0:
         raise HTTPException(status_code=400, detail="No items in order")
+
+    # Customer-initiated samples must be at least 5 m. Agent-assisted
+    # carts (where `agent_id` or `shared_cart_token` is set) keep the
+    # 1 m floor so the field team can request fabric swatches for
+    # client previews.
+    is_agent_assisted = bool(order_data.agent_id or order_data.shared_cart_token)
+    if not is_agent_assisted:
+        for it in order_data.items:
+            if (it.order_type or "bulk") == "sample" and (it.quantity or 0) < 5:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Sample orders on the website require a minimum of 5 metres. '{it.fabric_name or it.fabric_id}' has {it.quantity}.",
+                )
     
     # Calculate totals
     totals = calculate_totals(order_data.items, order_data.logistics_charge, order_data.packaging_charge, order_data.logistics_only_charge)
@@ -582,17 +678,42 @@ async def create_order(order_data: OrderCreate):
     if not razorpay_client:
         logger.error("Razorpay client not initialized")
         raise HTTPException(status_code=503, detail="Payment service not configured. Please contact support.")
-    
-    # Create Razorpay order
+
+    # Provisional rule (Feb 2026): every BULK order placed by a customer
+    # online is provisional — the customer pays a 10 % advance now and the
+    # 90 % balance after the supplier marks goods ready. The only way to
+    # opt OUT is an explicit `qty_type="actual"` per item (used by agents
+    # for negotiated full-payment deals). `order_data.is_provisional` is
+    # still honoured as a hard override for legacy callers / PI flow.
+    from provisional_orders import resolve_advance_pct, split_amounts
+    items_raw = [i.model_dump() for i in order_data.items]
+    has_provisional_item = any(
+        ((it.get("order_type") or "bulk") == "bulk")
+        and ((it.get("qty_type") or "").lower() != "actual")
+        for it in items_raw
+    )
+    use_provisional = order_data.is_provisional or has_provisional_item
+    if use_provisional:
+        advance_pct = resolve_advance_pct(order_data.advance_pct)
+        advance_amount, balance_amount = split_amounts(final_total, advance_pct)
+        rzp_amount_paise = int(round(advance_amount * 100))
+    else:
+        advance_pct = 100.0
+        advance_amount = final_total
+        balance_amount = 0.0
+        rzp_amount_paise = int(round(final_total * 100))
+
+    # Create Razorpay order (for the ADVANCE amount on provisional orders)
     try:
         razorpay_order = razorpay_client.order.create({
-            "amount": int(final_total * 100),  # Amount in paise
+            "amount": rzp_amount_paise,
             "currency": "INR",
             "receipt": order_number,
             "notes": {
                 "order_id": order_id,
                 "customer_email": order_data.customer.email,
-                "customer_name": order_data.customer.name
+                "customer_name": order_data.customer.name,
+                "payment_stage": "advance" if use_provisional else "full",
             }
         })
     except Exception as e:
@@ -619,7 +740,17 @@ async def create_order(order_data: OrderCreate):
         "total": final_total,
         "currency": "INR",
         "status": "payment_pending",
-        "payment_status": "initiated",
+        # On provisional orders payment moves: pending_advance → advance_paid
+        # → balance_pending → paid. Legacy single-stage flow stays on the
+        # original `initiated → paid` cycle.
+        "payment_status": "pending_advance" if use_provisional else "initiated",
+        "is_provisional": use_provisional,
+        "advance_pct": advance_pct,
+        "advance_amount": advance_amount,
+        "balance_amount": balance_amount,
+        "advance_paid_at": "",
+        "balance_paid_at": "",
+        "goods_ready_at": "",
         "payment_method": "razorpay",
         "booking_type": "assisted_online" if order_data.agent_id else "online",
         "agent_id": order_data.agent_id,
@@ -654,11 +785,75 @@ async def create_order(order_data: OrderCreate):
         "order_number": order_number,
         "razorpay_order_id": razorpay_order["id"],
         "razorpay_key_id": os.environ.get('RAZORPAY_KEY_ID'),
-        "amount": final_total,
-        "amount_paise": int(final_total * 100),
+        # `amount` is what the customer pays NOW (advance on provisional,
+        # full on non-provisional). `total` / `balance_amount` describe
+        # the full obligation so the frontend can render "₹X now · ₹Y later".
+        "amount": advance_amount if use_provisional else final_total,
+        "amount_paise": rzp_amount_paise,
+        "total": final_total,
+        "is_provisional": use_provisional,
+        "advance_pct": advance_pct,
+        "advance_amount": advance_amount,
+        "balance_amount": balance_amount,
         "currency": "INR",
         "customer": order_data.customer.model_dump()
     }
+
+@router.post("/{order_id}/retry-payment")
+async def retry_payment(order_id: str, request: Request):
+    """Create a fresh Razorpay order for an existing 'initiated' order.
+
+    Used by the mobile/desktop "Pay" button on `Awaiting payment` orders
+    so customers can complete payment after closing the original modal.
+    Refuses if the order is already paid or cancelled.
+    """
+    # Reuse customer_router's auth helper. Returns the customer dict
+    # or raises HTTPException — same envelope used by every other
+    # customer-side endpoint, so the JWT/cookie contract is identical.
+    from customer_router import get_current_customer as _get_current_customer
+    customer = _get_current_customer(request)
+    order = await db.orders.find_one({"id": order_id, "customer.email": customer["email"]}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("payment_status") == "paid":
+        raise HTTPException(status_code=400, detail="Order is already paid")
+    if order.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Order has been cancelled — cannot re-pay. Please place a new order.")
+    if order.get("payment_method") == "credit":
+        raise HTTPException(status_code=400, detail="Credit orders cannot be retried via Razorpay.")
+
+    total_paise = int(round(float(order.get("total", 0)) * 100))
+    if total_paise <= 0:
+        raise HTTPException(status_code=400, detail="Order total is invalid.")
+
+    try:
+        rzp = razorpay_client.order.create({
+            "amount": total_paise,
+            "currency": "INR",
+            "receipt": order.get("order_number") or order_id[:36],
+            "notes": {"order_id": order_id, "retry": "true"},
+        })
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "razorpay_order_id": rzp["id"],
+            "payment_status": "initiated",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+    return {
+        "razorpay_order_id": rzp["id"],
+        "amount": rzp["amount"],
+        "currency": rzp["currency"],
+        "key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
+        "order_id": order_id,
+        "order_number": order.get("order_number", ""),
+    }
+
 
 @router.post("/verify-payment")
 async def verify_payment(verification: PaymentVerification):
@@ -691,63 +886,195 @@ async def verify_payment(verification: PaymentVerification):
         )
         raise HTTPException(status_code=400, detail="Payment verification failed")
     
-    # Update order as paid
+    # Update order as paid. For provisional orders this is the ADVANCE
+    # leg (advance_paid → wait for goods-ready). The balance leg comes
+    # in through `/orders/{id}/balance-paid` once supplier reports actual
+    # quantity. Non-provisional orders move straight to paid + confirmed.
     now = datetime.now(timezone.utc).isoformat()
+    is_provisional = bool(order.get("is_provisional"))
+    payment_stage = "advance" if is_provisional else "full"
+    if is_provisional and order.get("payment_status") == "balance_pending":
+        # This payment is for the BALANCE leg (re-payment endpoint flips
+        # razorpay_order_id but keeps `payment_status: balance_pending`).
+        payment_stage = "balance"
+
+    update_doc = {
+        "razorpay_payment_id": verification.razorpay_payment_id,
+        "razorpay_signature": verification.razorpay_signature,
+        "updated_at": now,
+    }
+    if payment_stage == "advance":
+        update_doc["payment_status"] = "advance_paid"
+        update_doc["status"] = "provisional"
+        update_doc["advance_paid_at"] = now
+        # Vendor accept-step removed (Feb 2026 product decision):
+        # the order is considered auto-confirmed at payment-capture
+        # time. Vendor goes straight to "Mark Ready". We still stamp
+        # `accepted` on the field for downstream compatibility.
+        update_doc["vendor_acceptance_status"] = "accepted"
+        update_doc["vendor_accepted_at"] = now
+        update_doc["vendor_accept_step_skipped"] = True
+    else:
+        update_doc["payment_status"] = "paid"
+        # Don't roll the order's lifecycle status backward — if the vendor
+        # has already marked goods ready (or it's been shipped/delivered),
+        # paying the balance should NOT undo that. Only set "confirmed"
+        # when status is at or before that point.
+        if order.get("status") not in ("goods_ready", "shipped", "delivered"):
+            update_doc["status"] = "confirmed"
+        update_doc["paid_at"] = now
+        if payment_stage == "balance":
+            update_doc["balance_paid_at"] = now
+        # Same: vendor accept-step skipped — orders auto-confirmed.
+        if payment_stage == "full":
+            update_doc["vendor_acceptance_status"] = "accepted"
+            update_doc["vendor_accepted_at"] = now
+            update_doc["vendor_accept_step_skipped"] = True
+
     await db.orders.update_one(
         {"razorpay_order_id": verification.razorpay_order_id},
-        {"$set": {
-            "razorpay_payment_id": verification.razorpay_payment_id,
-            "razorpay_signature": verification.razorpay_signature,
-            "payment_status": "paid",
-            "status": "confirmed",
-            "updated_at": now,
-            "paid_at": now
-        }}
+        {"$set": update_doc},
     )
+    # Refresh the in-memory order doc with the values we just persisted
+    # so downstream branches (inventory, payouts, Shiprocket) read the
+    # right state.
+    order.update(update_doc)
     
-    # Deduct inventory (best effort)
-    try:
-        for item in order["items"]:
-            await db.fabrics.update_one(
-                {"id": item["fabric_id"], "quantity_available": {"$gte": item["quantity"]}},
-                {"$inc": {"quantity_available": -item["quantity"]}}
-            )
-    except Exception as e:
-        logger.error(f"Failed to update inventory: {str(e)}")
-    
-    # Create Shiprocket shipment (best effort, non-blocking)
-    # First, split into child orders if multi-vendor
-    child_orders = []
-    try:
-        child_orders = await split_order_into_child_orders(order)
-    except Exception as e:
-        logger.warning(f"Failed to split multi-vendor order {order.get('order_number')}: {e}")
+    # Deduct inventory + push to Shiprocket only when the order is FULLY
+    # paid. On the advance leg of a provisional order, we just confirm
+    # the booking and wait for the supplier to mark goods-ready (which
+    # then unlocks the balance invoice).
+    fully_paid = payment_stage != "advance"
 
-    # Fire Shiprocket pushes — one per child (or parent if no split)
-    shiprocket_targets = child_orders or [order]
-    for tgt in shiprocket_targets:
+    if fully_paid:
+        # Deduct inventory (best effort)
         try:
-            shiprocket_result = await create_shiprocket_shipment(tgt)
-            if shiprocket_result.get("success"):
-                await db.orders.update_one(
-                    {"id": tgt["id"]},
-                    {"$set": {
-                        "shiprocket_order_id": str(shiprocket_result.get("order_id") or shiprocket_result.get("shiprocket_order_id") or ""),
-                        "shiprocket_shipment_id": shiprocket_result.get("shipment_id"),
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }}
+            for item in order["items"]:
+                await db.fabrics.update_one(
+                    {"id": item["fabric_id"], "quantity_available": {"$gte": item["quantity"]}},
+                    {"$inc": {"quantity_available": -item["quantity"]}}
                 )
-                logger.info(f"Shiprocket shipment created for {tgt['order_number']}")
         except Exception as e:
-            logger.error(f"Failed to create Shiprocket shipment for {tgt.get('order_number')}: {str(e)}")
+            logger.error(f"Failed to update inventory: {str(e)}")
 
-    # Materialize vendor payouts (one per seller in the order)
-    try:
-        from payouts_router import materialize_payouts_for_order
-        for tgt in (child_orders or [order]):
-            await materialize_payouts_for_order(tgt)
-    except Exception as e:
-        logger.warning(f"Failed to materialize payouts for {order.get('order_number')}: {e}")
+    # Auto-record into credit_payments ledger (best-effort, non-blocking)
+    if fully_paid:
+        try:
+            import credit_ledger_router as _clr
+            await _clr.record_razorpay_payment(order, verification.razorpay_payment_id)
+        except Exception as _e:
+            logger.warning(f"credit_ledger auto-record skipped: {_e}")
+
+    # Create Shiprocket shipment (best effort, non-blocking) — only on full pay
+    child_orders = []
+    if fully_paid:
+        try:
+            child_orders = await split_order_into_child_orders(order)
+        except Exception as e:
+            logger.warning(f"Failed to split multi-vendor order {order.get('order_number')}: {e}")
+
+    # Fire Shiprocket pushes — one per child (or parent if no split).
+    # Skipped on advance leg (provisional booking) — we push after the
+    # supplier marks goods-ready AND balance is paid.
+    if fully_paid:
+        shiprocket_targets = child_orders or [order]
+        parent_shipments: list = []  # collected so the parent's
+                                     # `shiprocket_shipments[]` stays in
+                                     # sync with each child push — this
+                                     # prevents a second admin click on
+                                     # the parent from re-pushing and
+                                     # creating duplicate SR# on Shiprocket.
+        for tgt in shiprocket_targets:
+            try:
+                shiprocket_result = await create_shiprocket_shipment(tgt)
+                if shiprocket_result.get("success"):
+                    sr_order_id = str(shiprocket_result.get("order_id") or shiprocket_result.get("shiprocket_order_id") or "")
+                    sr_ship_id = shiprocket_result.get("shipment_id")
+                    await db.orders.update_one(
+                        {"id": tgt["id"]},
+                        {"$set": {
+                            "shiprocket_order_id": sr_order_id,
+                            "shiprocket_shipment_id": sr_ship_id,
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }}
+                    )
+                    logger.info(f"Shiprocket shipment created for {tgt['order_number']}")
+                    if child_orders:  # mirror onto parent.shiprocket_shipments
+                        parent_shipments.append({
+                            "seller_id": tgt.get("seller_id", ""),
+                            "seller_company": tgt.get("seller_company", ""),
+                            "items_count": len(tgt.get("items") or []),
+                            "success": True,
+                            "order_id": sr_order_id,
+                            "shipment_id": sr_ship_id,
+                            "awb_code": shiprocket_result.get("awb_code", ""),
+                            "courier_name": shiprocket_result.get("courier_name", ""),
+                            "child_order_id": tgt.get("id"),
+                            "child_order_number": tgt.get("order_number"),
+                            "pushed_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                    try:
+                        from internal_events import fire_internal_event as _fire, OrderEvent as _OE
+                        await _fire(_OE.ORDER_DISPATCHED, tgt, extra={
+                            "shiprocket_order_id": sr_order_id,
+                            "shipment_id": sr_ship_id,
+                            "awb_code": shiprocket_result.get("awb_code", ""),
+                        })
+                    except Exception:
+                        pass
+                elif child_orders:
+                    # Capture the failure so the admin can see WHY and
+                    # decide to re-push that supplier from the picker.
+                    parent_shipments.append({
+                        "seller_id": tgt.get("seller_id", ""),
+                        "seller_company": tgt.get("seller_company", ""),
+                        "items_count": len(tgt.get("items") or []),
+                        "success": False,
+                        "error": shiprocket_result.get("error") or shiprocket_result.get("message") or "Shiprocket push failed",
+                        "child_order_id": tgt.get("id"),
+                        "child_order_number": tgt.get("order_number"),
+                        "pushed_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            except Exception as e:
+                logger.error(f"Failed to create Shiprocket shipment for {tgt.get('order_number')}: {str(e)}")
+                if child_orders:
+                    parent_shipments.append({
+                        "seller_id": tgt.get("seller_id", ""),
+                        "seller_company": tgt.get("seller_company", ""),
+                        "items_count": len(tgt.get("items") or []),
+                        "success": False,
+                        "error": str(e),
+                        "child_order_id": tgt.get("id"),
+                        "child_order_number": tgt.get("order_number"),
+                        "pushed_at": datetime.now(timezone.utc).isoformat(),
+                    })
+
+        # Persist the aggregated map on the parent so subsequent admin
+        # actions are idempotent (admin_push_to_shiprocket short-circuits
+        # when shiprocket_shipments is populated).
+        if child_orders and parent_shipments:
+            first_ok = next((s for s in parent_shipments if s.get("success")), parent_shipments[0])
+            await db.orders.update_one(
+                {"id": order["id"]},
+                {"$set": {
+                    "shiprocket_shipments": parent_shipments,
+                    "shiprocket_pushed": True,
+                    "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+                    "shiprocket_order_id": first_ok.get("order_id") or None,
+                    "shiprocket_shipment_id": first_ok.get("shipment_id"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }}
+            )
+
+    # Materialize vendor payouts — also wait until full payment so the
+    # payout reflects the actual quantity (not the booked quantity).
+    if fully_paid:
+        try:
+            from payouts_router import materialize_payouts_for_order
+            for tgt in (child_orders or [order]):
+                await materialize_payouts_for_order(tgt)
+        except Exception as e:
+            logger.warning(f"Failed to materialize payouts for {order.get('order_number')}: {e}")
     
     # Get updated order
     updated_order = await db.orders.find_one(
@@ -761,6 +1088,27 @@ async def verify_payment(verification: PaymentVerification):
         logger.info(f"Order {order['order_number']} email notifications: {email_results}")
     except Exception as e:
         logger.error(f"Failed to send order notification emails: {str(e)}")
+
+    # ── Internal mail chain (separate from customer emails) ─────────
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        if payment_stage == "advance":
+            await fire_internal_event(OrderEvent.ADVANCE_PAID, updated_order, extra={
+                "advance_amount": updated_order.get("advance_amount"),
+                "balance_amount": updated_order.get("balance_amount"),
+                "vendor_action_deadline": updated_order.get("vendor_action_deadline"),
+            })
+            await fire_internal_event(OrderEvent.ORDER_PLACED, updated_order)
+        elif payment_stage == "balance":
+            await fire_internal_event(OrderEvent.ORDER_CONFIRMED, updated_order, extra={
+                "balance_amount": updated_order.get("balance_amount"),
+            })
+            await fire_internal_event(OrderEvent.PAYMENT_CAPTURED, updated_order)
+        else:
+            await fire_internal_event(OrderEvent.PAYMENT_CAPTURED, updated_order)
+            await fire_internal_event(OrderEvent.ORDER_CONFIRMED, updated_order)
+    except Exception as e:
+        logger.warning(f"Internal event email failed: {e}")
     
     # Note: Orders are NOT sent to Zapier - only general enquiries are
     
@@ -780,24 +1128,33 @@ async def _push_to_shiprocket_safe(order: dict) -> None:
     back onto the order doc. Used by the auto-create path after order
     creation; errors are logged but never raised so the order flow
     completes regardless of Shiprocket availability.
+
+    Multi-supplier orders create one Shiprocket shipment per seller.
     """
     try:
-        result = await create_shiprocket_shipment(order)
-        if not result.get("success"):
-            logger.warning(f"[shiprocket-auto] {order.get('order_number')} failed: {result.get('error')}")
+        multi = await create_shiprocket_shipments_multi(order)
+        if not multi.get("success"):
+            logger.warning(f"[shiprocket-auto] {order.get('order_number')} failed: {multi.get('error')}")
             return
-        sr_order_id = result.get("order_id") or result.get("shiprocket_order_id")
+        shipments = multi["shipments"]
+        first_ok = next((s for s in shipments if s["success"]), shipments[0])
         update = {
-            "shiprocket_order_id": str(sr_order_id) if sr_order_id is not None else None,
-            "shiprocket_shipment_id": result.get("shipment_id"),
+            "shiprocket_shipments": shipments,
+            "shiprocket_pushed": True,
+            "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+            "shiprocket_order_id": first_ok.get("order_id") or None,
+            "shiprocket_shipment_id": first_ok.get("shipment_id"),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        if result.get("awb_code"):
-            update["awb_code"] = result["awb_code"]
-        if result.get("courier_name"):
-            update["courier_name"] = result["courier_name"]
+        if first_ok.get("awb_code"):
+            update["awb_code"] = first_ok["awb_code"]
+        if first_ok.get("courier_name"):
+            update["courier_name"] = first_ok["courier_name"]
         await db.orders.update_one({"id": order["id"]}, {"$set": update})
-        logger.info(f"[shiprocket-auto] {order.get('order_number')} pushed · sr={sr_order_id}")
+        logger.info(
+            f"[shiprocket-auto] {order.get('order_number')} pushed · "
+            f"shipments={multi['count']} ok={sum(1 for s in shipments if s['success'])}"
+        )
     except Exception as e:
         logger.warning(f"[shiprocket-auto] {order.get('order_number')} exception: {e}")
 
@@ -953,7 +1310,7 @@ async def _cancel_shiprocket_order_safe(sr_order_id: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-async def create_shiprocket_shipment(order: dict) -> dict:
+async def create_shiprocket_shipment(order: dict, items_override: Optional[List[dict]] = None, seller_override: Optional[str] = None, order_id_suffix: str = "") -> dict:
     """Create a shipment in Shiprocket after payment is confirmed.
 
     Routing rule (per business spec):
@@ -965,10 +1322,23 @@ async def create_shiprocket_shipment(order: dict) -> dict:
     Cargo and Courier responses are normalized into the same envelope
     on the order doc so downstream UI/PDF/payouts code doesn't care
     which vertical handled the shipment.
+
+    Multi-supplier support:
+      • Pass `items_override` to push only a subset of the order's items
+        (used when splitting one order into N shipments — one per seller).
+      • Pass `seller_override` to lock the pickup-address resolution to
+        a specific seller_id (even if the order doc has another at the
+        top level).
+      • Pass `order_id_suffix` to append a short tag to the SR order_id
+        (e.g. `-A`, `-B`) so each split shipment has a unique reference
+        Shiprocket-side.
     """
     try:
-        # ── Vertical routing — Cargo for bulk, Courier for everything else ──
-        items_for_routing = order.get("items", []) or []
+        # ── Use override items if provided (multi-supplier split path) ──
+        if items_override is not None:
+            items_for_routing = items_override
+        else:
+            items_for_routing = order.get("items", []) or []
         is_bulk = bool(items_for_routing) and all(
             (it.get("order_type") or "").lower() == "production" for it in items_for_routing
         )
@@ -981,6 +1351,7 @@ async def create_shiprocket_shipment(order: dict) -> dict:
                     cargo = await create_cargo_shipment(order, db)
                     # Persist the cargo response onto the order doc so we
                     # don't lose it if the caller forgets to.
+                    awaiting_manual = bool(cargo.get("awaiting_manual_association"))
                     await db.orders.update_one(
                         {"id": order["id"]},
                         {"$set": {
@@ -993,6 +1364,8 @@ async def create_shiprocket_shipment(order: dict) -> dict:
                             "shiprocket_lrn": cargo.get("lrn"),
                             "shiprocket_label_url": cargo.get("label_url"),
                             "shiprocket_courier_name": cargo.get("delivery_partner_name", "Cargo"),
+                            "shiprocket_awaiting_manual_association": awaiting_manual,
+                            "shiprocket_manual_action_reason": cargo.get("manual_action_reason", ""),
                             "shiprocket_meta": {
                                 "transporter_id": cargo.get("transporter_id"),
                                 "mode": cargo.get("mode"),
@@ -1016,7 +1389,7 @@ async def create_shiprocket_shipment(order: dict) -> dict:
         from shiprocket.schemas.orders import CreateOrderRequest, OrderItemSchema
 
         customer = order.get("customer", {})
-        items = order.get("items", [])
+        items = items_override if items_override is not None else order.get("items", [])
         ship_to = order.get("ship_to") or {}
 
         if not customer or not items:
@@ -1024,6 +1397,7 @@ async def create_shiprocket_shipment(order: dict) -> dict:
 
         # ── Resolve vendor pickup (Ship-From) ──
         # Resolution order:
+        #   0. seller_override (multi-supplier split path) — highest priority
         #   1. order.pickup_address_id  →  pick from seller's saved addresses
         #   2. seller's PRIMARY pickup address
         #   3. legacy `_ensure_vendor_pickup_nickname` fallback
@@ -1034,13 +1408,28 @@ async def create_shiprocket_shipment(order: dict) -> dict:
             if (it.get("seller_id") or "").strip():
                 seller_id_from_items = it["seller_id"].strip()
                 break
-        seller_id = (order.get("seller_id") or seller_id_from_items or "").strip()
+        seller_id = (seller_override or order.get("seller_id") or seller_id_from_items or "").strip()
         seller_doc = await db.sellers.find_one({"id": seller_id}, {"_id": 0}) if seller_id else None
         pickup_nickname = None
         if seller_doc:
             sel_addresses = seller_doc.get("pickup_addresses", []) or []
             chosen = None
             order_addr_id = order.get("pickup_address_id")
+            # Fabric-level pickup: if every item in the order shares the same
+            # fabric.pickup_address_id, honor it. Inventory is defined at the
+            # supplier pickup-location level (one SKU = one location).
+            if not order_addr_id and items:
+                fabric_ids = [it.get("fabric_id") for it in items if it.get("fabric_id")]
+                if fabric_ids:
+                    pickup_ids_seen = set()
+                    async for f in db.fabrics.find(
+                        {"id": {"$in": fabric_ids}},
+                        {"_id": 0, "pickup_address_id": 1},
+                    ):
+                        pickup_ids_seen.add((f.get("pickup_address_id") or "").strip())
+                    pickup_ids_seen.discard("")
+                    if len(pickup_ids_seen) == 1:
+                        order_addr_id = pickup_ids_seen.pop()
             if order_addr_id:
                 chosen = next((a for a in sel_addresses if a.get("id") == order_addr_id), None)
             if not chosen:
@@ -1049,6 +1438,45 @@ async def create_shiprocket_shipment(order: dict) -> dict:
                 pickup_nickname = chosen["shiprocket_nickname"]
         if not pickup_nickname:
             pickup_nickname = await _ensure_vendor_pickup_nickname(seller_doc or {})
+
+        # ── Validate pickup nickname against Shiprocket's actual list ──
+        # SR happily returns 200 with `order_id: null` when the nickname doesn't
+        # match any registered pickup location (case-sensitive, whitespace
+        # sensitive). Pre-flight the call so admins get a precise error
+        # ("you sent X, here are the N options actually registered") instead
+        # of the cryptic "SR# null" loop.
+        try:
+            from shiprocket.services.pickup import PickupService  # type: ignore
+            headers_for_list = await auth_service.get_auth_headers_async()
+            async with httpx.AsyncClient(timeout=20) as client:
+                pl_service = PickupService(client, headers_for_list)
+                pl_response = await pl_service.get_pickup_locations()
+            sr_addrs = (pl_response or {}).get("data", {}).get("shipping_address", []) or []
+            sr_nicknames = [str(a.get("pickup_location") or "").strip() for a in sr_addrs]
+            sr_nicknames_norm = {n.lower(): n for n in sr_nicknames if n}
+            sent_norm = (pickup_nickname or "").strip().lower()
+            if sr_nicknames_norm and sent_norm not in sr_nicknames_norm:
+                # See if a near-match exists (case/whitespace insensitive)
+                close = next((n for k, n in sr_nicknames_norm.items() if k.replace(" ", "") == sent_norm.replace(" ", "")), None)
+                hint = (
+                    f"\n→ Closest registered match in Shiprocket: '{close}'. Use exactly this string on the seller's pickup_addresses[].shiprocket_nickname."
+                    if close else
+                    f"\n→ Available nicknames in your Shiprocket account ({len(sr_nicknames)}): {', '.join(sr_nicknames[:8])}{('...' if len(sr_nicknames) > 8 else '')}"
+                )
+                err = (
+                    f"Pickup nickname '{pickup_nickname}' is NOT registered in Shiprocket for "
+                    f"seller_id={seller_id or '(none)'}. Shiprocket nicknames are case + whitespace sensitive.{hint}"
+                )
+                logger.error(f"[shiprocket] pickup mismatch for {order.get('order_number')}: sent='{pickup_nickname}' available={sr_nicknames[:10]}")
+                return {"success": False, "error": err, "available_pickup_nicknames": sr_nicknames}
+            # Use the SR-side casing if there's a case-only diff
+            if sent_norm in sr_nicknames_norm and sr_nicknames_norm[sent_norm] != pickup_nickname:
+                logger.info(f"[shiprocket] using SR-side cased nickname '{sr_nicknames_norm[sent_norm]}' (was '{pickup_nickname}')")
+                pickup_nickname = sr_nicknames_norm[sent_norm]
+        except Exception as e:
+            # If the pre-flight fails for any reason (network, auth), don't
+            # block the push — fall through and let SR itself handle it.
+            logger.warning(f"[shiprocket] pickup list pre-flight failed (non-fatal): {e}")
 
         # ── Resolve shipping address (Ship-To) ──
         # Use the explicit ship_to when present, else fall back to billing.
@@ -1075,8 +1503,23 @@ async def create_shiprocket_shipment(order: dict) -> dict:
         # Calculate weight (0.3 kg per meter, min 0.5 kg)
         weight_kg = max(0.5, total_quantity * 0.3)
 
+        # Per-split subtotal — when this shipment is one supplier's slice
+        # of a multi-supplier order, the value Shiprocket charges insurance
+        # against should be that supplier's slice, not the full order.
+        per_shipment_subtotal = sum(
+            float(it.get("price_per_meter", 0)) * float(it.get("quantity", 1))
+            for it in items
+        )
+
+        # Append the suffix to order_id so each split shipment is a unique
+        # reference in Shiprocket (e.g. LF/ORD/057-A, -B). When pushing the
+        # whole order as a single shipment the suffix is "".
+        sr_order_ref = order.get("order_number", order.get("id"))
+        if order_id_suffix:
+            sr_order_ref = f"{sr_order_ref}-{order_id_suffix}"
+
         req = CreateOrderRequest(
-            order_id=order.get("order_number", order.get("id")),
+            order_id=sr_order_ref,
             order_date=datetime.now(timezone.utc),
             pickup_location=pickup_nickname,
             billing_customer_name=customer.get("name", "") or "Customer",
@@ -1099,13 +1542,34 @@ async def create_shiprocket_shipment(order: dict) -> dict:
             breadth=30,
             height=15,
             payment_method="Prepaid",
-            sub_total=float(order.get("subtotal", 0)),
+            sub_total=round(per_shipment_subtotal, 2),
         )
 
         headers = await auth_service.get_auth_headers_async()
         async with httpx.AsyncClient(timeout=30) as client:
             service = OrderService(client, headers)
             result = await service.create_order(req)
+
+        # Shiprocket sometimes returns 200 OK with `order_id: null` when
+        # the pickup nickname doesn't match any saved pickup location in
+        # their portal. Treat that as a failure so the admin sees a clear
+        # error instead of a row that says "SR# null".
+        sr_oid = result.get("order_id") or result.get("shiprocket_order_id")
+        sr_sid = result.get("shipment_id")
+        if sr_oid in (None, "", "null", "None") or sr_sid in (None, "", "null", "None"):
+            # Pickup nickname pre-flight passed (it matched Shiprocket's list)
+            # yet SR returned blank. Other root causes at this point:
+            #   • pincode/serviceability — destination not reachable
+            #   • billing/shipping payload validation (e.g. missing phone)
+            #   • the seller's pickup is registered but not VERIFIED in SR
+            err = (
+                f"Shiprocket accepted the request but returned a blank shipment for pickup '{pickup_nickname}'. "
+                f"Possible causes: (1) the destination pincode {ship_pin or '?'} isn't serviceable, "
+                f"(2) the pickup is registered but not VERIFIED in your Shiprocket panel (open SR → Settings → Pickup → confirm 'Verified' badge), "
+                f"(3) a missing required field in the order. seller_id={seller_id or '(none)'}."
+            )
+            logger.error(f"[shiprocket] blank shipment despite valid pickup for {order.get('order_number')} pickup={pickup_nickname}: raw={result}")
+            return {"success": False, "error": err, **result}
 
         return {"success": True, **result}
 
@@ -1114,21 +1578,235 @@ async def create_shiprocket_shipment(order: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
+async def create_shiprocket_shipments_multi(order: dict, only_seller_ids: Optional[List[str]] = None) -> dict:
+    """Split an order into per-supplier shipments and push each one to
+    Shiprocket independently. Returns a normalized envelope.
+
+    `only_seller_ids` (optional): if provided, ONLY these suppliers'
+    shipments are pushed. Everything else is left alone. Used by the
+    admin picker UI so the operator chooses which slices to push.
+    """
+    items = order.get("items", []) or []
+    if not items:
+        return {"success": False, "error": "Order has no items"}
+
+    # Normalize filter — empty/None means "no filter, push everything"
+    filter_ids = None
+    if only_seller_ids is not None:
+        filter_ids = {str(s).strip() for s in only_seller_ids if str(s).strip()}
+        if not filter_ids:
+            return {"success": False, "error": "No suppliers selected"}
+
+    # If this order is the PARENT of a multi-vendor split, push each
+    # child individually using its OWN sequential order_number (which
+    # equals the GST invoice number). This keeps the Shiprocket
+    # reference and the customer's invoice in lock-step — no more
+    # `-A`/`-B` suffix divergence from the invoice series.
+    if order.get("is_parent_order") and (order.get("child_order_ids") or []):
+        children = await db.orders.find(
+            {"parent_order_id": order["id"]},
+            {"_id": 0},
+        ).to_list(length=200)
+        if filter_ids is not None:
+            children = [c for c in children if (c.get("seller_id") or "") in filter_ids]
+        if not children:
+            return {"success": False, "error": "No matching child orders to push"}
+        # Hydrate ship_to and other top-level fields from parent if a
+        # child happens to be missing them (rare on freshly-split orders).
+        for c in children:
+            c.setdefault("customer", order.get("customer", {}))
+            c.setdefault("ship_to", order.get("ship_to", {}))
+            c.setdefault("currency", order.get("currency", "INR"))
+            c.setdefault("payment_method", order.get("payment_method", ""))
+
+        shipments: list = []
+        any_success = False
+        for child in children:
+            sid = child.get("seller_id") or ""
+            seller_doc = None
+            if sid:
+                seller_doc = await db.sellers.find_one({"id": sid}, {"_id": 0, "company_name": 1, "name": 1}) or {}
+            sub_items = child.get("items") or []
+            subtotal = round(
+                sum(float(i.get("price_per_meter", 0)) * float(i.get("quantity", 1)) for i in sub_items),
+                2,
+            )
+            try:
+                # Push using the child as-is — sr_order_ref will be the
+                # child's order_number (e.g. LF/ORD/052), matching the
+                # invoice the customer downloads.
+                res = await create_shiprocket_shipment(child)
+            except Exception as e:
+                logger.exception(f"[shiprocket-multi] child {child.get('order_number')} push raised: {e}")
+                res = {"success": False, "error": str(e), "raw_error": str(e)}
+            shipment = {
+                "seller_id": sid,
+                "seller_company": (seller_doc or {}).get("company_name") or (seller_doc or {}).get("name") or "",
+                "child_order_id": child.get("id"),
+                "child_order_number": child.get("order_number"),
+                "items_count": len(sub_items),
+                "subtotal": subtotal,
+                "success": bool(res.get("success")),
+                "order_id": str(res.get("order_id") or "") if res.get("order_id") is not None else "",
+                "shipment_id": res.get("shipment_id"),
+                "awb_code": res.get("awb_code", ""),
+                "courier_name": res.get("courier_name", ""),
+                "vertical": res.get("vertical", "courier"),
+                "error": res.get("error", ""),
+                "raw_error": (str(res.get("error") or "") if not res.get("success") else "")[:4000],
+                "awaiting_manual_association": bool(res.get("awaiting_manual_association")),
+                "manual_action_reason": res.get("manual_action_reason", ""),
+                "pushed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            shipments.append(shipment)
+            if shipment["success"]:
+                any_success = True
+        return {
+            "success": any_success,
+            "count": len(shipments),
+            "shipments": shipments,
+        }
+
+    # Group items by seller_id (preserving insertion order for stable suffixes)
+    seller_groups: dict = {}
+    seller_order: list = []
+    for it in items:
+        sid = (it.get("seller_id") or "").strip() or "_unknown"
+        if sid not in seller_groups:
+            seller_groups[sid] = []
+            seller_order.append(sid)
+        seller_groups[sid].append(it)
+
+    # Apply selection filter
+    if filter_ids is not None:
+        seller_order = [sid for sid in seller_order if sid in filter_ids]
+        if not seller_order:
+            return {"success": False, "error": "Selected suppliers not found on this order"}
+
+    # Single-supplier short-circuit (only when there's truly one supplier overall,
+    # NOT when the filter narrows to one — picker-driven push always uses suffixes
+    # so existing SR records keep their unique reference IDs).
+    use_legacy_single = (filter_ids is None and len(seller_order) == 1)
+    if use_legacy_single:
+        only_sid = seller_order[0]
+        seller_doc = None
+        if only_sid and only_sid != "_unknown":
+            seller_doc = await db.sellers.find_one({"id": only_sid}, {"_id": 0, "company_name": 1, "name": 1}) or {}
+        result = await create_shiprocket_shipment(order)
+        single = {
+            "seller_id": only_sid if only_sid != "_unknown" else "",
+            "seller_company": (seller_doc or {}).get("company_name") or (seller_doc or {}).get("name") or "",
+            "items_count": len(items),
+            "subtotal": round(sum(float(i.get("price_per_meter", 0)) * float(i.get("quantity", 1)) for i in items), 2),
+            "success": bool(result.get("success")),
+            "order_id": str(result.get("order_id") or "") if result.get("order_id") is not None else "",
+            "shipment_id": result.get("shipment_id"),
+            "awb_code": result.get("awb_code", ""),
+            "courier_name": result.get("courier_name", ""),
+            "vertical": result.get("vertical", "courier"),
+            "error": result.get("error", ""),
+            "raw_error": (str(result.get("error") or "") if not result.get("success") else "")[:4000],
+            # Cargo soft-fail propagation (single-supplier path)
+            "awaiting_manual_association": bool(result.get("awaiting_manual_association")),
+            "manual_action_reason": result.get("manual_action_reason", ""),
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return {"success": single["success"], "count": 1, "shipments": [single]}
+
+    # Multi-supplier — one shipment per seller.
+    logger.info(f"[shiprocket-multi] order={order.get('order_number')} splitting into {len(seller_order)} supplier shipments")
+    suffixes = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    shipments: list = []
+    any_success = False
+    for idx, sid in enumerate(seller_order):
+        seller_items = seller_groups[sid]
+        seller_doc = None
+        if sid and sid != "_unknown":
+            seller_doc = await db.sellers.find_one({"id": sid}, {"_id": 0, "company_name": 1, "name": 1}) or {}
+        suffix = suffixes[idx] if idx < len(suffixes) else f"{idx + 1}"
+        subtotal = round(sum(float(i.get("price_per_meter", 0)) * float(i.get("quantity", 1)) for i in seller_items), 2)
+        try:
+            res = await create_shiprocket_shipment(
+                order,
+                items_override=seller_items,
+                seller_override=sid if sid != "_unknown" else None,
+                order_id_suffix=suffix,
+            )
+        except Exception as e:
+            logger.exception(f"[shiprocket-multi] supplier {sid} push raised: {e}")
+            res = {"success": False, "error": str(e), "raw_error": str(e)}
+        shipment = {
+            "seller_id": sid if sid != "_unknown" else "",
+            "seller_company": (seller_doc or {}).get("company_name") or (seller_doc or {}).get("name") or "",
+            "suffix": suffix,
+            "items_count": len(seller_items),
+            "subtotal": subtotal,
+            "success": bool(res.get("success")),
+            "order_id": str(res.get("order_id") or "") if res.get("order_id") is not None else "",
+            "shipment_id": res.get("shipment_id"),
+            "awb_code": res.get("awb_code", ""),
+            "courier_name": res.get("courier_name", ""),
+            "vertical": res.get("vertical", "courier"),
+            "error": res.get("error", ""),
+            # Persist the raw provider response so the admin can inspect
+            # exactly what Shiprocket said when a push fails. Trimmed to
+            # 4 KB to keep the order doc reasonable. Only set on failure.
+            "raw_error": (str(res.get("error") or "") if not res.get("success") else "")[:4000],
+            # Cargo soft-fail: step-1 succeeded but step-2 needs manual
+            # action by admin in Shiprocket panel (host whitelist issue).
+            # Treated as "success" so the order isn't pushed to courier
+            # fallback, but flagged for admin attention.
+            "awaiting_manual_association": bool(res.get("awaiting_manual_association")),
+            "manual_action_reason": res.get("manual_action_reason", ""),
+            "pushed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        shipments.append(shipment)
+        if shipment["success"]:
+            any_success = True
+
+    return {
+        "success": any_success,
+        "count": len(shipments),
+        "shipments": shipments,
+        "error": "" if any_success else "; ".join(s.get("error", "") for s in shipments if not s["success"]),
+    }
+
+
 # ────────────────────────────────────────────────────────────────────
 #  ADMIN — Manual "Push to Shiprocket" for orders that didn't auto-push
 #  (e.g. older orders created before the auth bug fix, credit-paid B2C
 #  orders that aren't on the auto-push path, etc.)
 # ────────────────────────────────────────────────────────────────────
 @router.post("/admin/{order_id}/push-to-shiprocket")
-async def admin_push_to_shiprocket(order_id: str, force: bool = False):
-    """Admin-only — manually push an order to Shiprocket. Idempotent by
-    default: re-pushing an already-pushed order returns the existing
-    Shiprocket IDs unless `force=true` is passed (which creates a new SR
-    shipment — useful only if the original SR record was deleted).
+async def admin_push_to_shiprocket(
+    order_id: str,
+    force: bool = False,
+    payload: Optional[dict] = Body(default=None),
+):
+    """Admin-only — manually push an order to Shiprocket.
 
-    Matches the auth pattern of /status and /cancel endpoints in this
-    router — frontend admin layout is route-protected.
+    Body (optional):
+      {
+        "seller_ids": ["...", "..."]   // only push these supplier shipments
+      }
+
+    Behavior:
+      • Idempotent by default: re-pushing returns the existing Shiprocket
+        IDs UNLESS `force=true` is passed.
+      • If `seller_ids` is provided, ONLY those supplier shipments are
+        pushed. Already-pushed shipments in the same order remain
+        untouched in `shiprocket_shipments[]` (we merge by seller_id).
+      • Multi-supplier orders without `seller_ids` push every supplier
+        in one go (legacy behaviour).
     """
+    selected_seller_ids: Optional[List[str]] = None
+    if payload and isinstance(payload, dict):
+        raw = payload.get("seller_ids")
+        if isinstance(raw, list):
+            selected_seller_ids = [str(s).strip() for s in raw if str(s).strip()]
+            if not selected_seller_ids:
+                raise HTTPException(status_code=400, detail="seller_ids is empty")
+
     order = await db.orders.find_one(
         {"$or": [{"id": order_id}, {"order_number": order_id}]},
         {"_id": 0},
@@ -1136,51 +1814,466 @@ async def admin_push_to_shiprocket(order_id: str, force: bool = False):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    # Short-circuit if already pushed
-    if not force and order.get("shiprocket_order_id"):
+    existing_shipments = order.get("shiprocket_shipments") or []
+
+    # Short-circuit ONLY if no picker and not forcing:
+    # - selected_seller_ids = None means "push all suppliers" — the picker
+    #   case always wants to attempt the named suppliers regardless.
+    if not force and selected_seller_ids is None and (existing_shipments or order.get("shiprocket_order_id")):
         return {
             "success": True,
             "already_pushed": True,
+            "count": len(existing_shipments) or 1,
+            "shipments": existing_shipments,
             "shiprocket_order_id": order.get("shiprocket_order_id"),
             "shipment_id": order.get("shiprocket_shipment_id"),
             "message": "Order is already in Shiprocket",
         }
 
-    result = await create_shiprocket_shipment(order)
-    if not result.get("success"):
-        # Surface the underlying error so the admin can fix the order
-        # (e.g. missing pincode, address too short, etc.) and retry.
+    # Block re-pushing already-pushed suppliers unless force=true
+    if selected_seller_ids and not force and existing_shipments:
+        already_ok = {s.get("seller_id") for s in existing_shipments if s.get("success")}
+        blocked = [sid for sid in selected_seller_ids if sid in already_ok]
+        if blocked:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{len(blocked)} supplier(s) already pushed — toggle 'force re-push' to create duplicates",
+            )
+
+    multi_result = await create_shiprocket_shipments_multi(order, only_seller_ids=selected_seller_ids)
+    if not multi_result.get("success"):
         raise HTTPException(
             status_code=502,
-            detail=result.get("error") or "Shiprocket push failed",
+            detail=multi_result.get("error") or "Shiprocket push failed",
         )
 
-    # Persist the new SR identifiers on the order doc so future webhooks
-    # can match this order back.
-    sr_order_id = result.get("order_id") or result.get("shiprocket_order_id")
-    shipment_id = result.get("shipment_id")
+    new_shipments = multi_result["shipments"]
+
+    # MERGE new shipments into existing ones (by seller_id) so the picker
+    # path doesn't wipe out previously successful supplier shipments.
+    merged_by_sid: dict = {s.get("seller_id", ""): s for s in existing_shipments}
+    for s in new_shipments:
+        merged_by_sid[s.get("seller_id", "")] = s  # overwrite — newer push wins
+    shipments = list(merged_by_sid.values())
+
+    first_ok = next((s for s in shipments if s.get("success")), shipments[0])
+
     set_fields = {
-        "shiprocket_order_id": str(sr_order_id) if sr_order_id is not None else None,
-        "shiprocket_shipment_id": shipment_id,
+        "shiprocket_shipments": shipments,
+        "shiprocket_pushed": True,
+        "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+        # Backward-compat: mirror the first successful shipment's IDs onto
+        # the legacy single-shipment fields so existing UI/webhook code
+        # continues to work for single-supplier orders unchanged.
+        "shiprocket_order_id": first_ok.get("order_id") or None,
+        "shiprocket_shipment_id": first_ok.get("shipment_id"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    if result.get("awb_code"):
-        set_fields["awb_code"] = result["awb_code"]
-    if result.get("courier_name"):
-        set_fields["courier_name"] = result["courier_name"]
+    if first_ok.get("awb_code"):
+        set_fields["awb_code"] = first_ok["awb_code"]
+    if first_ok.get("courier_name"):
+        set_fields["courier_name"] = first_ok["courier_name"]
 
     await db.orders.update_one({"id": order["id"]}, {"$set": set_fields})
-    logger.info(f"[shiprocket] manual push ok · order={order.get('order_number')} sr={sr_order_id} shipment={shipment_id}")
+    new_ok = sum(1 for s in new_shipments if s["success"])
+    logger.info(
+        f"[shiprocket] manual push · order={order.get('order_number')} "
+        f"requested={len(new_shipments)} new_ok={new_ok} "
+        f"{'picker' if selected_seller_ids else 'all'} force={force}"
+    )
 
     return {
         "success": True,
         "already_pushed": False,
-        "shiprocket_order_id": str(sr_order_id) if sr_order_id is not None else None,
-        "shipment_id": shipment_id,
-        "awb_code": result.get("awb_code") or "",
-        "courier_name": result.get("courier_name") or "",
-        "message": "Order pushed to Shiprocket successfully",
+        "count": len(new_shipments),
+        "shipments": shipments,
+        "pushed_in_this_call": new_shipments,
+        "shiprocket_order_id": first_ok.get("order_id"),
+        "shipment_id": first_ok.get("shipment_id"),
+        "awb_code": first_ok.get("awb_code") or "",
+        "courier_name": first_ok.get("courier_name") or "",
+        "message": f"Pushed {new_ok}/{len(new_shipments)} shipment{'s' if len(new_shipments) > 1 else ''}",
     }
+
+
+
+@router.post("/admin/{order_id}/cargo-force-recreate")
+async def admin_cargo_force_recreate(
+    order_id: str,
+    payload: Optional[dict] = Body(default=None),
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Cargo-only — archive ALL existing Shiprocket records for this
+    order and create fresh ones from scratch.
+
+    Why this exists:
+      Shiprocket Cargo doesn't expose a public cancel/delete endpoint
+      for B2B orders, so when we end up with orphaned or duplicate
+      cargo_order_ids on their side, the only clean path is to:
+        1. Move our `shiprocket_shipments[]` and top-level mirrors
+           into `shiprocket_shipments_archived[]` for audit
+        2. Reset the order's Shiprocket state
+        3. Call the multi-vendor push fresh — generates new cargo_order_ids
+
+      The OLD cargo_order_ids will still exist on Shiprocket's side. Admin
+      should cancel/discard them via the Shiprocket Cargo panel once the
+      new push succeeds.
+
+    Refuses to act on courier (B2C) shipments — those have a proper
+    cancel API (`/api/v1/external/orders/cancel`) which is exposed via
+    the existing per-row delete; keeping this surgical.
+    """
+    selected_seller_ids: Optional[List[str]] = None
+    if payload and isinstance(payload, dict):
+        raw = payload.get("seller_ids")
+        if isinstance(raw, list):
+            selected_seller_ids = [str(s).strip() for s in raw if str(s).strip()] or None
+
+    order = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    existing = list(order.get("shiprocket_shipments") or [])
+
+    # Backfill: legacy orders may have only the top-level `shiprocket_order_id`
+    # without a `shipments[]` row. Synthesize one so we can archive + recreate
+    # consistently.
+    if not existing and order.get("shiprocket_order_id"):
+        items = order.get("items") or []
+        # Best-effort seller_id: from first item or top-level
+        sid = (items[0].get("seller_id") if items else "") or order.get("seller_id") or ""
+        existing.append({
+            "seller_id": sid,
+            "seller_company": (items[0].get("seller_company") if items else "") or "",
+            "items_count": len(items),
+            "subtotal": round(sum(float(i.get("price_per_meter", 0)) * float(i.get("actual_quantity") or i.get("quantity", 1)) for i in items), 2),
+            "success": True,
+            "order_id": str(order.get("shiprocket_order_id") or ""),
+            "shipment_id": order.get("shiprocket_shipment_id"),
+            "awb_code": order.get("shiprocket_waybill_no") or order.get("awb_code") or "",
+            "courier_name": order.get("shiprocket_courier_name") or order.get("courier_name") or "",
+            "vertical": order.get("shiprocket_vertical") or "",
+            "synthesized_for_recreate": True,
+        })
+
+    if not existing:
+        raise HTTPException(
+            status_code=400,
+            detail="No Shiprocket records to recreate — nothing to delete.",
+        )
+
+    # Determine which rows we're recreating. If `selected_seller_ids`
+    # filter is given, only archive+recreate those; the rest stay put.
+    target_rows = (
+        [s for s in existing if (s.get("seller_id") or "") in selected_seller_ids]
+        if selected_seller_ids else existing
+    )
+
+    # "Cargo" check: a row counts as cargo if either (a) it has
+    # vertical=='cargo', OR (b) vertical is empty/missing AND the order's
+    # items are all production-type (legacy data didn't store vertical).
+    items = order.get("items") or []
+    order_is_bulk = bool(items) and all(
+        (it.get("order_type") or "").lower() == "production" for it in items
+    )
+    def _is_cargo_row(s):
+        v = (s.get("vertical") or "").strip().lower()
+        if v == "cargo":
+            return True
+        if v in ("", "unknown") and order_is_bulk:
+            return True
+        return False
+
+    cargo_rows = [s for s in target_rows if _is_cargo_row(s)]
+    if not cargo_rows:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This order has no Cargo shipments to recreate. "
+                "Force-recreate is restricted to Cargo (B2B) — courier shipments "
+                "should use the normal Re-push button."
+            ),
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    archived = order.get("shiprocket_shipments_archived") or []
+
+    # Move target rows into archive (with the timestamp + actor)
+    for row in cargo_rows:
+        archived.append({
+            **row,
+            "archived_at": now_iso,
+            "archived_by": admin.get("email", ""),
+            "archived_reason": "cargo_force_recreate",
+        })
+
+    # Build the new shipments[] excluding the rows we're recreating.
+    kept = [
+        s for s in existing
+        if s not in cargo_rows  # remove archived cargo rows
+    ]
+
+    # Reset top-level mirrors when no shipments remain at all.
+    reset_mirrors = {}
+    if not kept:
+        reset_mirrors = {
+            "shiprocket_order_id": None,
+            "shiprocket_shipment_id": None,
+            "shiprocket_waybill_no": None,
+            "shiprocket_lrn": None,
+            "shiprocket_label_url": None,
+            "shiprocket_courier_name": None,
+            "shiprocket_awaiting_manual_association": False,
+            "shiprocket_manual_action_reason": None,
+            "shiprocket_pushed": False,
+        }
+
+    await db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": {
+            "shiprocket_shipments": kept,
+            "shiprocket_shipments_archived": archived,
+            "shiprocket_force_recreate_at": now_iso,
+            "shiprocket_force_recreate_by": admin.get("email", ""),
+            **reset_mirrors,
+        }},
+    )
+
+    # Now run a fresh push for the affected sellers
+    fresh_order = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+    only_sellers = (
+        selected_seller_ids
+        if selected_seller_ids
+        else [s.get("seller_id") for s in cargo_rows if s.get("seller_id")]
+        or None
+    )
+    multi = await create_shiprocket_shipments_multi(fresh_order, only_seller_ids=only_sellers)
+
+    # MERGE freshly-pushed shipments into the kept list and persist —
+    # mirrors the logic in `admin_push_to_shiprocket` because the helper
+    # itself doesn't write to DB.
+    new_shipments = multi.get("shipments") or []
+    merged: dict = {s.get("seller_id", ""): s for s in kept}
+    for s in new_shipments:
+        merged[s.get("seller_id", "")] = s  # newer push wins
+    final_shipments = list(merged.values())
+    first_ok = next((s for s in final_shipments if s.get("success")), (final_shipments[0] if final_shipments else {}))
+
+    persist: dict = {
+        "shiprocket_shipments": final_shipments,
+        "shiprocket_pushed": True,
+        "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+        "shiprocket_order_id": first_ok.get("order_id") or None,
+        "shiprocket_shipment_id": first_ok.get("shipment_id"),
+        "shiprocket_awaiting_manual_association": bool(first_ok.get("awaiting_manual_association")),
+        "shiprocket_manual_action_reason": first_ok.get("manual_action_reason", ""),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if first_ok.get("awb_code"):
+        persist["awb_code"] = first_ok["awb_code"]
+    if first_ok.get("courier_name"):
+        persist["courier_name"] = first_ok["courier_name"]
+    await db.orders.update_one({"id": order["id"]}, {"$set": persist})
+
+    final_order = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+    logger.info(
+        f"[cargo-force-recreate] order={fresh_order.get('order_number')} "
+        f"archived={len(cargo_rows)} new_pushed={multi.get('count')} by={admin.get('email')}"
+    )
+    return {
+        "success": True,
+        "archived_count": len(cargo_rows),
+        "new_pushed_count": multi.get("count", 0),
+        "old_cargo_order_ids": [s.get("order_id") for s in cargo_rows if s.get("order_id")],
+        "shipments": final_order.get("shiprocket_shipments", []),
+        "order": final_order,
+        "warning": (
+            "Old Cargo order IDs above still exist in Shiprocket's queue — "
+            "please cancel them manually via the Shiprocket Cargo panel."
+        ),
+    }
+
+
+
+@router.post("/admin/{order_id}/refresh-shiprocket-status")
+async def admin_refresh_shiprocket_status(
+    order_id: str,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Pull the latest tracking status from Shiprocket for this order's
+    shipment(s) on-demand. Works for both Cargo (B2B) and Courier (B2C).
+
+    Updates per-shipment fields in `shiprocket_shipments[]` (status,
+    awb, lrn, label_url, courier_name) AND the top-level mirrors
+    (`shiprocket_status`, etc.). Returns the refreshed order doc.
+
+    Use this after manually completing the association step in
+    Shiprocket's Cargo panel so the UI catches up without waiting for
+    the next webhook event.
+    """
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    shipments = order.get("shiprocket_shipments") or []
+    # Legacy single-shipment orders — build a synthetic shipment row
+    # from the top-level mirrors so we can refresh them too.
+    if not shipments and order.get("shiprocket_order_id"):
+        shipments = [{
+            "vertical": order.get("shiprocket_vertical") or "courier",
+            "order_id": order.get("shiprocket_order_id"),
+            "shipment_id": order.get("shiprocket_shipment_id"),
+            "awb_code": order.get("shiprocket_waybill_no") or "",
+            "courier_name": order.get("shiprocket_courier_name") or "",
+        }]
+
+    if not shipments:
+        raise HTTPException(status_code=400, detail="No Shiprocket shipments to refresh")
+
+    updates: list[dict] = []
+    refreshed_count = 0
+    overall_status: Optional[str] = None
+
+    for sh in shipments:
+        sr_oid = sh.get("order_id")
+        vertical = sh.get("vertical") or "courier"
+        if not sr_oid:
+            continue
+        try:
+            if vertical == "cargo":
+                from shiprocket.cargo_service import get_cargo_order_status
+                resp = await get_cargo_order_status(int(sr_oid))
+                # Cargo response format varies — pluck the most likely keys.
+                payload = resp.get("data", resp) if isinstance(resp, dict) else {}
+                if isinstance(payload, list):
+                    payload = payload[0] if payload else {}
+                sh_update = {
+                    "current_status": payload.get("current_status") or payload.get("status_name") or payload.get("status"),
+                    "awb_code": sh.get("awb_code") or payload.get("waybill_no") or payload.get("awb_no") or "",
+                    "lrn": sh.get("lrn") or payload.get("lrn") or "",
+                    "label_url": payload.get("label_url") or sh.get("label_url") or "",
+                    "courier_name": payload.get("delivery_partner_name") or sh.get("courier_name") or "",
+                    "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+                    "raw_status": payload,
+                }
+                # If we now have AWB and we previously were awaiting manual
+                # association, flip the flag off — admin completed the
+                # booking on the Shiprocket panel.
+                if sh_update["awb_code"] and sh.get("awaiting_manual_association"):
+                    sh_update["awaiting_manual_association"] = False
+            else:
+                # Courier (B2C) — reuse the existing tracking helper.
+                from shiprocket.services.tracking import TrackingService
+                from shiprocket.services.auth import auth_service
+                import httpx as _httpx
+                async with _httpx.AsyncClient(timeout=30) as cli:
+                    headers = await auth_service.get_headers()
+                    ts = TrackingService(cli, headers)
+                    if sh.get("awb_code"):
+                        result = await ts.track_by_awb(sh["awb_code"])
+                    elif sh.get("shipment_id"):
+                        result = await ts.track_by_shipment_id(int(sh["shipment_id"]))
+                    else:
+                        continue
+                tracking_data = (result or {}).get("tracking_data") or {}
+                first_track = (tracking_data.get("shipment_track") or [{}])[0]
+                cs = first_track.get("current_status") or ""
+                sh_update = {
+                    "current_status": cs,
+                    "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+                    "raw_status": tracking_data,
+                }
+            sh.update(sh_update)
+            refreshed_count += 1
+            if sh_update.get("current_status"):
+                overall_status = sh_update["current_status"]
+        except Exception as e:  # noqa: BLE001
+            sh["last_refresh_error"] = str(e)[:500]
+            logger.warning(f"[refresh-status] shipment refresh failed for {sr_oid}: {e}")
+
+    set_doc: dict = {
+        "shiprocket_shipments": shipments,
+        "shiprocket_last_refreshed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if overall_status:
+        set_doc["shiprocket_current_status"] = overall_status
+    await db.orders.update_one({"id": order_id}, {"$set": set_doc})
+
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {
+        "success": True,
+        "refreshed_count": refreshed_count,
+        "shipments": fresh.get("shiprocket_shipments", []),
+        "shiprocket_current_status": fresh.get("shiprocket_current_status"),
+        "order": fresh,
+    }
+
+
+@router.get("/admin/shiprocket-logs/{order_id}")
+async def admin_get_shiprocket_logs(
+    order_id: str,
+    lines: int = 200,
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Tail the supervisor backend log and return the most recent
+    Shiprocket-related lines for this order. Useful when a push fails
+    and you want to read the exact provider response without SSHing
+    into the container.
+
+    Filter: any line that mentions either the order_id, the order_number,
+    or starts with `[shiprocket`, `[cargo-`, `[shiprocket-route]`.
+    """
+    order = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0, "id": 1, "order_number": 1, "shiprocket_shipments": 1},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    log_paths = [
+        "/var/log/supervisor/backend.err.log",
+        "/var/log/supervisor/backend.out.log",
+    ]
+    # Match lines that mention THIS specific order (by number or id)
+    # AND are Shiprocket/Cargo-related. We don't include the bare
+    # `[shiprocket` tag as a positive — that would pull lines from
+    # unrelated orders into the response.
+    order_keys = [k for k in [order.get("order_number", ""), order.get("id", "")] if k]
+    if not order_keys:
+        return {"order_id": order.get("id"), "order_number": order.get("order_number"), "shipments": order.get("shiprocket_shipments", []), "log_lines": [], "count": 0}
+
+    collected = []
+    for path in log_paths:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                buf = f.readlines()[-5000:]
+            for ln in buf:
+                low = ln.lower()
+                # Require the order id or number to appear in the line
+                if not any(k.lower() in low for k in order_keys):
+                    continue
+                # And the line must be shiprocket/cargo-related
+                if "shiprocket" not in low and "cargo" not in low:
+                    continue
+                collected.append({"source": os.path.basename(path), "line": ln.rstrip("\n")})
+        except FileNotFoundError:
+            continue
+
+    # Trim to the most recent N
+    collected = collected[-max(50, min(1000, lines)):]
+
+    return {
+        "order_id": order.get("id"),
+        "order_number": order.get("order_number"),
+        "shipments": order.get("shiprocket_shipments", []),
+        "log_lines": collected,
+        "count": len(collected),
+    }
+
+
 
 
 @router.get("/{order_id}")
@@ -1194,316 +2287,20 @@ async def get_order(order_id: str):
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
-    return order
+    return _attach_pipeline(order)
 
 
 # ────────────────────────────────────────────────────────────────────
-#  ADMIN — Edit Order
+#  ADMIN — Edit Order (DEPRECATED — orders are read-only online)
 # ────────────────────────────────────────────────────────────────────
-class OrderEditPayload(BaseModel):
-    """Partial edit payload. Any field omitted is left unchanged.
-    Per business rules:
-      • Item prices are NOT auto-repriced when the vendor changes —
-        admin's responsibility to update separately if needed.
-      • Recompute totals after edits (since ship_to state may have
-        flipped IGST↔CGST+SGST).
-      • Recompute commission + seller_payout after vendor changes —
-        new vendor may attract a different commission rule.
-      • If the order was already pushed to Shiprocket, cancel the old
-        shipment and create a new one (with the new vendor's pickup
-        address + new shipping address).
-    """
-    items: Optional[List[OrderItem]] = None
-    customer: Optional[CustomerInfo] = None
-    ship_to: Optional[ShipTo] = None
-    seller_id: Optional[str] = None
-    seller_company: Optional[str] = None
-    # Pickup-address selector: must be one of the seller's saved
-    # `pickup_addresses[].id`. Set to "" to fall back to the seller's
-    # primary. Free-form addresses are no longer supported here.
-    pickup_address_id: Optional[str] = None
-    notes: Optional[str] = None
-    repush_shiprocket: bool = True  # set False to skip the Shiprocket re-push
-
-
-def _compute_totals_from_items(items: List[dict], gst_rate: float = 0.05) -> dict:
-    """Mirror of the order-creation totals math so edits don't drift."""
-    subtotal = 0.0
-    for it in items:
-        try:
-            subtotal += float(it.get("price_per_meter") or 0) * float(it.get("quantity") or 0)
-        except (TypeError, ValueError):
-            pass
-    tax = round(subtotal * gst_rate, 2)
-    total = round(subtotal + tax, 2)
-    return {"subtotal": round(subtotal, 2), "tax": tax, "total": total}
-
-
 @router.patch("/{order_id}/edit")
-async def admin_edit_order(
-    order_id: str,
-    payload: OrderEditPayload,
-    admin=Depends(auth_helpers.get_current_admin),
-):
-    """Admin: edit an existing order. Tracks a full diff in `order_edits`.
-
-    If the order's status is `delivered` or `cancelled`, edits are
-    rejected to preserve audit integrity. All other statuses can be
-    edited — when the order has already been pushed to Shiprocket and
-    Shiprocket-impacting fields change (items, ship_to, vendor), the old
-    SR shipment is cancelled and a new one is created against the
-    (possibly new) vendor's pickup address.
-    """
-    order = await db.orders.find_one(
-        {"$or": [{"id": order_id}, {"order_number": order_id}]},
-        {"_id": 0},
+async def admin_edit_order(order_id: str):
+    """DEPRECATED — Edit Order is disabled. Orders are read-only online.
+    Returns HTTP 405 for any caller."""
+    raise HTTPException(
+        status_code=405,
+        detail="Order editing has been disabled. Orders cannot be edited online.",
     )
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    if order.get("status") in ("delivered", "cancelled"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot edit a {order['status']} order. Reopen or cancel-and-recreate instead.",
-        )
-
-    update: dict = {}
-    changed: dict = {}  # before/after diff for the audit trail
-    now = datetime.now(timezone.utc).isoformat()
-
-    if payload.items is not None:
-        new_items = [it.model_dump() for it in payload.items]
-        if new_items != order.get("items"):
-            update["items"] = new_items
-            changed["items"] = {"before": order.get("items", []), "after": new_items}
-
-    if payload.customer is not None:
-        new_customer = payload.customer.model_dump()
-        if new_customer != order.get("customer"):
-            update["customer"] = new_customer
-            changed["customer"] = {"before": order.get("customer", {}), "after": new_customer}
-
-    if payload.ship_to is not None:
-        new_ship_to = payload.ship_to.model_dump()
-        if all(not (v or "").strip() for v in new_ship_to.values() if isinstance(v, str)):
-            new_ship_to = None
-        if new_ship_to != order.get("ship_to"):
-            update["ship_to"] = new_ship_to
-            changed["ship_to"] = {"before": order.get("ship_to"), "after": new_ship_to}
-
-    vendor_changed = False
-    if payload.seller_id is not None and payload.seller_id != (order.get("seller_id") or ""):
-        # Look up the target vendor — accept active OR inactive (admin
-        # may legitimately want to reassign to a soft-disabled vendor
-        # for back-office corrections). Frontend lists active only.
-        new_seller = await db.sellers.find_one({"id": payload.seller_id}, {"_id": 0})
-        if not new_seller:
-            # Defensive: also try matching by `_id` (legacy / Mongo ObjectId
-            # string) so a frontend cache miss doesn't silently 404.
-            from bson import ObjectId  # local import — never used elsewhere in this hot path
-            try:
-                new_seller = await db.sellers.find_one({"_id": ObjectId(payload.seller_id)}, {"_id": 0})
-            except Exception:
-                new_seller = None
-        if not new_seller:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Target vendor not found (id={payload.seller_id}). "
-                       f"It may have been deleted or is missing from the sellers collection.",
-            )
-        update["seller_id"] = payload.seller_id
-        update["seller_company"] = new_seller.get("company_name") or payload.seller_company or ""
-        changed["seller_id"] = {"before": order.get("seller_id", ""), "after": payload.seller_id}
-        changed["seller_company"] = {
-            "before": order.get("seller_company", ""),
-            "after": update["seller_company"],
-        }
-        # Stamp seller_id onto every item. Prices stay per business rule.
-        items_now = update.get("items") or order.get("items", [])
-        items_now = [
-            {**it, "seller_id": payload.seller_id, "seller_company": update["seller_company"]}
-            for it in items_now
-        ]
-        update["items"] = items_now
-        if "items" in changed:
-            changed["items"]["after"] = items_now
-        vendor_changed = True
-
-    if payload.notes is not None and payload.notes != order.get("notes", ""):
-        update["notes"] = payload.notes
-        changed["notes"] = {"before": order.get("notes", ""), "after": payload.notes}
-
-    # Pickup-address selector — must reference one of the SELLER's
-    # saved pickup_addresses (after any seller_id change above).
-    # Empty string clears the per-order override, falling back to the
-    # seller's Primary.
-    if payload.pickup_address_id is not None and payload.pickup_address_id != order.get("pickup_address_id", ""):
-        new_pid = (payload.pickup_address_id or "").strip()
-        if new_pid:
-            # Determine effective seller (post-edit)
-            effective_seller_id = update.get("seller_id") or order.get("seller_id") or ""
-            if not effective_seller_id:
-                raise HTTPException(400, "Order has no seller — cannot set pickup address")
-            seller = await db.sellers.find_one({"id": effective_seller_id}, {"_id": 0})
-            if not seller:
-                raise HTTPException(404, "Seller not found")
-            addrs = seller.get("pickup_addresses", []) or []
-            if not any(a.get("id") == new_pid for a in addrs):
-                raise HTTPException(
-                    400,
-                    "Pickup address not found on this seller. Add it under Sellers → Pickup Addresses first.",
-                )
-        update["pickup_address_id"] = new_pid
-        changed["pickup_address_id"] = {
-            "before": order.get("pickup_address_id", ""),
-            "after": new_pid,
-        }
-
-    if not changed:
-        return {"success": True, "no_changes": True, "order": order}
-
-    # Recompute totals after the edits
-    items_for_totals = update.get("items") or order.get("items", [])
-    totals = _compute_totals_from_items(items_for_totals)
-    if (
-        totals["subtotal"] != order.get("subtotal")
-        or totals["tax"] != order.get("tax")
-        or totals["total"] != order.get("total")
-    ):
-        update.update(totals)
-        changed["totals"] = {
-            "before": {k: order.get(k) for k in ("subtotal", "tax", "total")},
-            "after": totals,
-        }
-
-    # Recompute commission + seller_payout when items OR vendor change.
-    # A new vendor may attract a vendor-specific commission rule, and
-    # quantity/price edits change the commission base — keeping the
-    # stale values would show wrong payouts in the order detail panel.
-    if changed.get("items") or vendor_changed:
-        try:
-            from commission_router import calculate_commission
-            commission_info = await calculate_commission(
-                {"source": order.get("source", "")},
-                items_for_totals,
-            )
-            new_subtotal = update.get("subtotal", order.get("subtotal", 0))
-            new_commission_pct = commission_info["commission_pct"]
-            new_commission_amount = commission_info["commission_amount"]
-            new_rule = commission_info["rule_applied"]
-            new_seller_payout = round(new_subtotal - new_commission_amount, 2)
-            commission_diff = {
-                "before": {
-                    "commission_pct": order.get("commission_pct"),
-                    "commission_amount": order.get("commission_amount"),
-                    "commission_rule": order.get("commission_rule"),
-                    "seller_payout": order.get("seller_payout"),
-                },
-                "after": {
-                    "commission_pct": new_commission_pct,
-                    "commission_amount": new_commission_amount,
-                    "commission_rule": new_rule,
-                    "seller_payout": new_seller_payout,
-                },
-            }
-            # Only persist when at least one field actually changed
-            if commission_diff["before"] != commission_diff["after"]:
-                update["commission_pct"] = new_commission_pct
-                update["commission_amount"] = new_commission_amount
-                update["commission_rule"] = new_rule
-                update["seller_payout"] = new_seller_payout
-                changed["commission"] = commission_diff
-        except Exception as e:
-            logger.warning(f"[order-edit] commission recompute failed for {order.get('order_number')}: {e}")
-
-    update["updated_at"] = now
-    update["last_edited_by"] = admin.get("email", "")
-    update["last_edited_at"] = now
-
-    await db.orders.update_one({"id": order["id"]}, {"$set": update})
-
-    audit = {
-        "id": str(uuid.uuid4()),
-        "order_id": order["id"],
-        "order_number": order.get("order_number", ""),
-        "edited_by": admin.get("email", ""),
-        "edited_at": now,
-        "changed_fields": list(changed.keys()),
-        "diff": changed,
-    }
-    await db.order_edits.insert_one(audit.copy())
-    audit.pop("_id", None)
-
-    sr_result = None
-    sr_impacting = bool(
-        changed.get("items") or changed.get("ship_to") or changed.get("seller_id")
-        or changed.get("customer")
-    )
-    if payload.repush_shiprocket and sr_impacting:
-        existing_sr = order.get("shiprocket_order_id")
-        if existing_sr:
-            cancel_res = await _cancel_shiprocket_order_safe(existing_sr)
-            logger.info(f"[order-edit] cancel old SR for {order.get('order_number')}: {cancel_res}")
-            await db.orders.update_one(
-                {"id": order["id"]},
-                {"$set": {
-                    "shiprocket_order_id": None,
-                    "shiprocket_shipment_id": None,
-                    "awb_code": "",
-                    "courier_name": "",
-                }},
-            )
-        fresh = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
-        push_res = await create_shiprocket_shipment(fresh)
-        sr_result = push_res
-        if push_res.get("success"):
-            sr_order_id = push_res.get("order_id") or push_res.get("shiprocket_order_id")
-            sr_update = {
-                "shiprocket_order_id": str(sr_order_id) if sr_order_id is not None else None,
-                "shiprocket_shipment_id": push_res.get("shipment_id"),
-            }
-            if push_res.get("awb_code"):
-                sr_update["awb_code"] = push_res["awb_code"]
-            if push_res.get("courier_name"):
-                sr_update["courier_name"] = push_res["courier_name"]
-            await db.orders.update_one({"id": order["id"]}, {"$set": sr_update})
-
-    if vendor_changed:
-        old_payouts = await db.vendor_payouts.find(
-            {"order_id": order["id"]}, {"_id": 0}
-        ).to_list(10)
-        for op in old_payouts:
-            if op.get("status") == "paid":
-                logger.warning(
-                    f"[order-edit] vendor changed but payout {op['id']} is already PAID — flagged for manual review"
-                )
-                await db.vendor_payouts.update_one(
-                    {"id": op["id"]},
-                    {"$set": {
-                        "needs_review": True,
-                        "review_reason": f"Vendor changed by {admin.get('email','')} after payout was paid",
-                        "updated_at": now,
-                    }},
-                )
-            else:
-                await db.vendor_payouts.update_one(
-                    {"id": op["id"]},
-                    {"$set": {
-                        "status": "cancelled",
-                        "cancelled_reason": "Vendor reassigned via order edit",
-                        "cancelled_at": now,
-                        "cancelled_by": admin.get("email", ""),
-                    }},
-                )
-
-    fresh_order = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
-    return {
-        "success": True,
-        "order": fresh_order,
-        "audit": audit,
-        "shiprocket": sr_result,
-        "vendor_changed": vendor_changed,
-    }
 
 
 @router.get("/{order_id}/edits")
@@ -1542,10 +2339,15 @@ async def get_order_by_razorpay_id(razorpay_order_id: str):
 async def list_orders(
     status: Optional[str] = None,
     payment_status: Optional[str] = None,
+    pipeline_stage: Optional[str] = None,
     limit: int = 50,
     skip: int = 0
 ):
-    """List all orders (admin endpoint)"""
+    """List all orders (admin endpoint).
+
+    `pipeline_stage` is an optional client filter applied AFTER loading
+    (the stage is a read-time computation, not a stored field).
+    """
     query = {}
     if status:
         query["status"] = status
@@ -1569,6 +2371,12 @@ async def list_orders(
             inv_by_order[inv["order_id"]] = inv
         for o in orders:
             o["linked_invoice"] = inv_by_order.get(o["id"])
+
+    for o in orders:
+        _attach_pipeline(o)
+
+    if pipeline_stage:
+        orders = [o for o in orders if o.get("pipeline_stage") == pipeline_stage]
 
     return {
         "orders": orders,
@@ -1610,6 +2418,1138 @@ async def update_order_status(order_id: str, status: str):
                 logger.warning(f"Status email failed for {order_id}: {e}")
     
     return {"success": True, "message": f"Order status updated to {status}"}
+
+@router.put("/{order_id}/payment-status")
+async def update_payment_status(order_id: str, payload: dict):
+    """Admin-only manual payment-status override. Useful for offline
+    payments (NEFT, RTGS, cheque, credit-line release) where the
+    customer paid through a channel the gateway can't auto-confirm.
+
+    Body:
+      {
+        "payment_status": "paid" | "pending" | "failed" | "refunded",
+        "payment_method": "neft" | "rtgs" | "cheque" | "credit" | "razorpay" | ...   (optional)
+        "utr": "...",                                                                 (optional, recommended for paid)
+        "notes": "human note for the audit trail"                                     (optional)
+      }
+
+    Side-effects when status flips to `paid`:
+      • `order.status` is bumped from `payment_pending`→`pending` so it
+        shows up in fulfillment queues (no auto-bump if already past).
+      • `paid_at` timestamp recorded.
+      • Order confirmation email is fired off (idempotent on our side —
+        safe if already sent).
+      • Vendor payouts are materialized.
+    """
+    valid_statuses = ["pending", "initiated", "paid", "failed", "refunded"]
+    new_status = (payload.get("payment_status") or "").strip().lower()
+    if new_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"payment_status must be one of {valid_statuses}")
+
+    order = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    previous = order.get("payment_status", "")
+    set_fields = {
+        "payment_status": new_status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if payload.get("payment_method"):
+        set_fields["payment_method"] = payload["payment_method"]
+    if payload.get("utr"):
+        set_fields["utr"] = payload["utr"].strip()
+    if payload.get("notes"):
+        set_fields["payment_status_notes"] = payload["notes"]
+
+    if new_status == "paid":
+        set_fields["paid_at"] = datetime.now(timezone.utc).isoformat()
+        # Bump fulfillment status only if still in the pre-pay limbo. Once
+        # paid, advance to "confirmed" so vendor's Mark Ready CTA renders
+        # (don't roll backward from goods_ready/shipped/delivered).
+        if order.get("status") in ("payment_pending", "pending"):
+            set_fields["status"] = "confirmed"
+
+    # Audit trail (append-only)
+    audit = {
+        "from": previous,
+        "to": new_status,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "method": payload.get("payment_method") or order.get("payment_method", ""),
+        "utr": payload.get("utr", ""),
+        "notes": payload.get("notes", ""),
+        "actor": "admin",
+    }
+
+    await db.orders.update_one(
+        {"id": order["id"]},
+        {"$set": set_fields, "$push": {"payment_status_history": audit}},
+    )
+
+    # Re-fetch for side-effects
+    if new_status == "paid" and previous != "paid":
+        fresh = await db.orders.find_one({"id": order["id"]}, {"_id": 0})
+        # Send order confirmation email + materialize payouts (best-effort)
+        try:
+            await send_order_notification_emails(fresh)
+        except Exception as e:
+            logger.warning(f"[manual-paid] email failed for {order['id']}: {e}")
+        try:
+            from payouts_router import materialize_payouts_for_order
+            await materialize_payouts_for_order(fresh)
+        except Exception as e:
+            logger.warning(f"[manual-paid] payout materialize failed for {order['id']}: {e}")
+        logger.info(f"[admin] payment_status: {order.get('order_number')} {previous} → {new_status}")
+
+    return {"success": True, "previous": previous, "current": new_status}
+
+
+@router.post("/{order_id}/mark-goods-ready")
+async def mark_goods_ready(order_id: str, data: dict, request: Request):
+    """Supplier reports actual quantity they've packed/dispatched.
+
+    Body: `{ items: [{ fabric_id: str, actual_quantity: float }] }`
+
+    The endpoint accepts vendor JWT (supplier marks their OWN items) or
+    admin/agent JWT (can override on the vendor's behalf). The order
+    must be `advance_paid` (provisional). On success we:
+      • stamp `actual_quantity` on each item the caller controls
+      • recompute subtotal/tax/total → save as `actual_total`
+      • set `balance_amount = actual_total - advance_amount`
+      • flip `payment_status: balance_pending`, `status: goods_ready`
+      • stamp `goods_ready_at`
+      • fire an email to the customer with a "Pay balance" link
+    Variance outside ±10 % requires admin role to proceed.
+    """
+    from provisional_orders import within_variance, recalc_item_total, VARIANCE_PCT, resolve_category_variance
+
+    # Caller resolution — vendor, admin, or agent
+    caller_seller_id = None
+    caller_role = "unknown"
+    
+    # Extract Authorization header manually for auth check
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        try:
+            import jwt
+            JWT_SECRET = os.environ.get("JWT_SECRET", "")
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            
+            if payload.get("type") == "vendor":
+                # Vendor token
+                seller_id = payload.get("seller_id")
+                seller = await db.sellers.find_one({"id": seller_id, "is_active": True}, {"_id": 0})
+                if seller:
+                    caller_seller_id = seller.get("id")
+                    caller_role = "vendor"
+            else:
+                # Admin token (no type field or type != vendor)
+                admin_id = payload.get("sub")
+                if admin_id:
+                    admin = await db.admins.find_one({"id": admin_id}, {"_id": 0})
+                    if admin:
+                        caller_role = "admin"
+        except Exception:
+            pass  # Invalid token
+    
+    if caller_role == "unknown":
+        raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    is_prov = bool(order.get("is_provisional"))
+    if is_prov:
+        if order.get("payment_status") not in ("advance_paid", "balance_pending"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot mark goods-ready in payment_status={order.get('payment_status')}",
+            )
+    else:
+        # Non-provisional (full-payment) orders — supplier still uploads
+        # rolls + invoice and we flip status → goods_ready. No balance
+        # recompute since the customer already paid in full.
+        if order.get("status") not in ("confirmed", "processing", "goods_ready"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Order must be confirmed before marking goods ready (current: {order.get('status')})",
+            )
+
+    # Build per-fabric payload map. Each entry may carry actual_quantity,
+    # an optional `rolls` breakdown ([{count:int, length:float}, ...]) and
+    # an optional `dispatch_note`. The latter two are recorded verbatim
+    # for traceability — they don't influence totals.
+    payload_by_fabric: dict[str, dict] = {}
+    for it in (data.get("items") or []):
+        fid = (it.get("fabric_id") or "").strip()
+        if not fid:
+            continue
+        rolls = []
+        for r in (it.get("rolls") or []):
+            try:
+                cnt = int(r.get("count") or 0)
+                ln = float(r.get("length") or 0)
+            except (TypeError, ValueError):
+                continue
+            if cnt > 0 and ln > 0:
+                rolls.append({"count": cnt, "length": round(ln, 2)})
+        # Derive actual_quantity from rolls when caller didn't send it.
+        derived = sum(r["count"] * r["length"] for r in rolls)
+        try:
+            qty_payload = float(it.get("actual_quantity")) if it.get("actual_quantity") is not None else 0.0
+        except (TypeError, ValueError):
+            qty_payload = 0.0
+        actual_qty = qty_payload if qty_payload > 0 else derived
+        payload_by_fabric[fid] = {
+            "actual_quantity": actual_qty,
+            "rolls": rolls,
+            "dispatch_note": (it.get("dispatch_note") or "").strip(),
+        }
+
+    if not payload_by_fabric:
+        raise HTTPException(status_code=400, detail="No items provided")
+
+    # Resolve category-level variance bands for all items in one fabric lookup
+    fabric_ids = list({(it.get("fabric_id") or "") for it in (order.get("items") or []) if it.get("fabric_id")})
+    cat_by_fabric: dict[str, str] = {}
+    if fabric_ids:
+        async for f in db.fabrics.find({"id": {"$in": fabric_ids}}, {"_id": 0, "id": 1, "category_id": 1}):
+            if f.get("category_id"):
+                cat_by_fabric[f["id"]] = f["category_id"]
+
+    # Stamp actual_quantity on the matching items. Vendors can only
+    # update their own items; admins can update all.
+    new_items = []
+    out_of_band = []
+    for it in (order.get("items") or []):
+        fid = it.get("fabric_id") or ""
+        if fid in payload_by_fabric:
+            if caller_role == "vendor":
+                if (it.get("seller_id") or "") != caller_seller_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Item {it.get('fabric_name','?')} is not assigned to this vendor",
+                    )
+            p = payload_by_fabric[fid]
+            actual_qty = float(p["actual_quantity"] or 0)
+            if actual_qty <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Quantity is required for {it.get('fabric_name') or fid}",
+                )
+            # Per-category variance % (falls back to platform default
+            # when the category record doesn't override it).
+            cat_id = it.get("category_id") or cat_by_fabric.get(it.get("fabric_id") or "")
+            item_variance = await resolve_category_variance(db, cat_id)
+            if not within_variance(float(it.get("quantity") or 0), actual_qty, item_variance):
+                out_of_band.append({
+                    "name": it.get("fabric_name") or fid,
+                    "pct": item_variance,
+                })
+            stamped = recalc_item_total(it, actual_qty)
+            if p["rolls"]:
+                stamped["dispatch_rolls"] = p["rolls"]
+            if p["dispatch_note"]:
+                stamped["dispatch_note"] = p["dispatch_note"]
+            new_items.append(stamped)
+        else:
+            # Preserve existing actual_quantity stamp (set by a prior
+            # vendor in a multi-supplier order) or leave unset.
+            new_items.append(it)
+
+    if out_of_band and caller_role != "admin":
+        # `out_of_band` is a list of {name, pct} dicts so we can surface
+        # the exact category band that was breached.
+        details = ", ".join(f"{o['name']} (±{o['pct']:.1f}%)" for o in out_of_band)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Actual quantity outside variance band for: {details}. Admin approval required.",
+        )
+
+    # Per-vendor invoice: OPTIONAL at goods-ready time. The new 6-tab
+    # pipeline collects the tax invoice at the dedicated "Prepare Dispatch"
+    # stage (after the customer settles balance) via the
+    # /vendor-upload-invoice endpoint. Legacy callers that still send a
+    # vendor_invoice payload here have it persisted, but nothing is required.
+    inv_payload = data.get("vendor_invoice") or {}
+    inv_url = (inv_payload.get("url") or "").strip()
+    inv_no = (inv_payload.get("invoice_number") or "").strip()
+    inv_date = (inv_payload.get("invoice_date") or "").strip()
+    inv_filename = (inv_payload.get("filename") or "").strip()
+    try:
+        inv_amount = float(inv_payload.get("amount") or 0) or None
+    except (TypeError, ValueError):
+        inv_amount = None
+
+    # Check ALL items now have actual_quantity. If not, the supplier is
+    # mid-update (multi-vendor split where Vendor A reported, Vendor B
+    # hasn't yet) — we stamp progress but DON'T move to balance_pending.
+    all_ready = all(it.get("actual_quantity") is not None for it in new_items)
+
+    update_doc = {
+        "items": new_items,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Persist per-vendor invoice on the order (keyed by seller_id) so the
+    # payout materializer can pull it without a second upload step.
+    if inv_url and caller_seller_id:
+        existing_invoices = [
+            v for v in (order.get("vendor_invoices") or [])
+            if (v.get("seller_id") or "") != caller_seller_id
+        ]
+        existing_invoices.append({
+            "seller_id": caller_seller_id,
+            "url": inv_url,
+            "filename": inv_filename,
+            "invoice_number": inv_no,
+            "invoice_date": inv_date,
+            "amount": inv_amount,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        })
+        update_doc["vendor_invoices"] = existing_invoices
+
+    if all_ready:
+        if is_prov:
+            # Recompute totals using actual_total per item (keeps tax /
+            # logistics / packaging proportional to the original booking).
+            actual_subtotal = sum(float(it.get("actual_total") or 0) for it in new_items)
+            booked_subtotal = float(order.get("subtotal") or 0)
+            ratio = (actual_subtotal / booked_subtotal) if booked_subtotal > 0 else 1.0
+            packaging = round(float(order.get("packaging_charge") or 0) * ratio, 2)
+            logistics = round(float(order.get("logistics_only_charge") or order.get("logistics_charge") or 0) * ratio, 2)
+            tax = round((actual_subtotal + packaging + logistics) * 0.05, 2)  # 5 % GST
+            discount = float(order.get("discount") or 0)
+            actual_total = round(actual_subtotal + packaging + logistics + tax - discount, 2)
+            advance_amount = float(order.get("advance_amount") or 0)
+            balance_amount = max(round(actual_total - advance_amount, 2), 0.0)
+
+            update_doc.update({
+                "actual_subtotal": round(actual_subtotal, 2),
+                "actual_packaging_charge": packaging,
+                "actual_logistics_charge": logistics,
+                "actual_tax": tax,
+                "actual_total": actual_total,
+                "balance_amount": balance_amount,
+                "payment_status": "balance_pending",
+                "status": "goods_ready",
+                "goods_ready_at": datetime.now(timezone.utc).isoformat(),
+                "goods_ready_by": caller_seller_id or caller_role,
+                # Customer has BALANCE_PAYMENT_TIMEOUT_HOURS (default 48h)
+                # to settle the balance once goods are ready, after which
+                # the auto-cancel poller will void the order and notify Ops.
+                "balance_due_at": (
+                    datetime.now(timezone.utc)
+                    + timedelta(hours=int(os.environ.get("BALANCE_PAYMENT_TIMEOUT_HOURS", "48")))
+                ).isoformat(),
+            })
+        else:
+            # Non-provisional: customer paid 100% upfront on the ordered
+            # qty. When the vendor reports a *different* actual qty we now
+            # also recompute order-level `actual_*` totals — proportional
+            # to the booking — so finance can:
+            #   • Charge the customer the *extra* balance if actual > ordered
+            #   • Surface a `refund_amount` if actual < ordered
+            # If actual qty exactly matches ordered, nothing financial
+            # changes and we just stamp the goods-ready flag.
+            actual_subtotal = sum(float(it.get("actual_total") or 0) for it in new_items)
+            booked_subtotal = float(order.get("subtotal") or 0)
+            ratio = (actual_subtotal / booked_subtotal) if booked_subtotal > 0 else 1.0
+            packaging = round(float(order.get("packaging_charge") or 0) * ratio, 2)
+            logistics = round(float(order.get("logistics_only_charge") or order.get("logistics_charge") or 0) * ratio, 2)
+            tax = round((actual_subtotal + packaging + logistics) * 0.05, 2)  # 5 % GST
+            discount = float(order.get("discount") or 0)
+            actual_total = round(actual_subtotal + packaging + logistics + tax - discount, 2)
+            # Customer has already paid `order.total` (100 % upfront).
+            paid_amount = float(order.get("total") or 0)
+            delta = round(actual_total - paid_amount, 2)
+            balance_amount = max(delta, 0.0)
+            refund_amount = max(-delta, 0.0)
+
+            update_doc.update({
+                "actual_subtotal": round(actual_subtotal, 2),
+                "actual_packaging_charge": packaging,
+                "actual_logistics_charge": logistics,
+                "actual_tax": tax,
+                "actual_total": actual_total,
+                "balance_amount": balance_amount,
+                "refund_amount": refund_amount,
+                "status": "goods_ready",
+                "goods_ready_at": datetime.now(timezone.utc).isoformat(),
+                "goods_ready_by": caller_seller_id or caller_role,
+            })
+            # Only flip payment_status when there's an actual balance owed
+            # by the customer — refunds/no-change stay as 'paid' since
+            # logistics + payouts can still proceed.
+            if balance_amount > 0.005:
+                update_doc["payment_status"] = "balance_pending"
+                # 48h auto-cancel window on the extra balance
+                update_doc["balance_due_at"] = (
+                    datetime.now(timezone.utc)
+                    + timedelta(hours=int(os.environ.get("BALANCE_PAYMENT_TIMEOUT_HOURS", "48")))
+                ).isoformat()
+
+    await db.orders.update_one({"id": order_id}, {"$set": update_doc})
+
+    # Notify the customer (best-effort) only when the whole order is ready.
+    if all_ready:
+        if is_prov:
+            try:
+                fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+                from email_router import send_balance_payment_due_email
+                await send_balance_payment_due_email(fresh)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"balance-due email skipped: {e}")
+        # Internal mail chain (fires for both provisional and non-provisional)
+        try:
+            from internal_events import fire_internal_event, OrderEvent
+            fresh = fresh if 'fresh' in locals() else await db.orders.find_one({"id": order_id}, {"_id": 0})
+            await fire_internal_event(OrderEvent.GOODS_READY, fresh, extra={
+                "actual_subtotal": fresh.get("actual_subtotal"),
+                "balance_amount": fresh.get("balance_amount"),
+                "marked_by": caller_role,
+                "is_provisional": is_prov,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"internal goods_ready event failed: {e}")
+
+        # Resync vendor payouts to use the freshly-stamped `actual_quantity`.
+        # The original payout was materialized at payment-capture time using
+        # the *ordered* qty; without this resync, vendors get paid on the
+        # wrong basis. Paid payouts are skipped — only PENDING rows update.
+        try:
+            from payouts_router import resync_payouts_for_actual_qty
+            fresh2 = await db.orders.find_one({"id": order_id}, {"_id": 0})
+            resync_summary = await resync_payouts_for_actual_qty(fresh2)
+            if resync_summary.get("updated", 0) > 0:
+                logger.info(
+                    f"[mark-ready] vendor-payout resync · order={order_id} "
+                    f"updated={resync_summary.get('updated')} skipped_paid={resync_summary.get('skipped_paid', 0)}"
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[mark-ready] vendor-payout resync failed: {e}")
+
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {"success": True, "all_ready": all_ready, "order": _attach_pipeline(fresh)}
+
+
+# ────────────────────────────────────────────────────────────────────
+#  VENDOR — Upload Tax Invoice (Prepare Dispatch stage)
+# ────────────────────────────────────────────────────────────────────
+@router.post("/{order_id}/vendor-upload-invoice")
+async def vendor_upload_invoice(order_id: str, data: dict, request: Request):
+    """Vendor uploads their tax invoice during the "Prepare Dispatch" stage.
+
+    Body:
+      {
+        "url": "https://res.cloudinary.com/...",
+        "filename": "INV-2026-001.pdf",
+        "invoice_number": "INV-2026-001",
+        "invoice_date": "2026-02-01",
+        "amount": 12500.00            // optional
+      }
+
+    On success the invoice is persisted into `order.vendor_invoices` (keyed
+    by seller_id) and a best-effort Shiprocket push is fired for the
+    vendor's own shipment. The vendor must be assigned to ≥1 item on
+    the order.
+    """
+    # Auth — vendor JWT or admin (admin can act on a vendor's behalf)
+    caller_seller_id: Optional[str] = None
+    caller_role = "unknown"
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            if payload.get("type") == "vendor":
+                seller_id = payload.get("seller_id")
+                seller = await db.sellers.find_one({"id": seller_id, "is_active": True}, {"_id": 0})
+                if seller:
+                    caller_seller_id = seller.get("id")
+                    caller_role = "vendor"
+            else:
+                admin_id = payload.get("sub")
+                if admin_id:
+                    admin = await db.admins.find_one({"id": admin_id}, {"_id": 0})
+                    if admin:
+                        caller_role = "admin"
+                        caller_seller_id = (data.get("seller_id") or "").strip() or None
+        except Exception:
+            pass
+    if caller_role == "unknown":
+        raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Stage gate — invoice belongs in prepare_dispatch (we tolerate the
+    # "dispatched" stage too so a re-upload doesn't 400).
+    stage = compute_pipeline_stage(order)
+    if stage not in ("prepare_dispatch", "dispatched"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Order is not ready for invoice upload (current stage: {PIPELINE_LABELS.get(stage, stage)})",
+        )
+
+    # Validate payload
+    inv_url = (data.get("url") or "").strip()
+    inv_no = (data.get("invoice_number") or "").strip()
+    inv_date = (data.get("invoice_date") or "").strip()
+    inv_filename = (data.get("filename") or "").strip()
+    if not inv_url or not inv_no or not inv_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Tax invoice file, invoice number and invoice date are required.",
+        )
+    try:
+        inv_amount = float(data.get("amount") or 0) or None
+    except (TypeError, ValueError):
+        inv_amount = None
+
+    # Vendor must be on the order
+    items = order.get("items") or []
+    if caller_role == "vendor":
+        vendor_items = [it for it in items if (it.get("seller_id") or "") == caller_seller_id]
+        if not vendor_items:
+            raise HTTPException(status_code=403, detail="This vendor has no items on this order")
+
+    if not caller_seller_id:
+        # Admin without explicit seller_id — pick the first seller on the order
+        for it in items:
+            sid = it.get("seller_id") or ""
+            if sid:
+                caller_seller_id = sid
+                break
+    if not caller_seller_id:
+        raise HTTPException(status_code=400, detail="Could not resolve seller_id for this invoice")
+
+    # Persist (upsert by seller_id)
+    existing = [
+        v for v in (order.get("vendor_invoices") or [])
+        if (v.get("seller_id") or "") != caller_seller_id
+    ]
+    existing.append({
+        "seller_id": caller_seller_id,
+        "url": inv_url,
+        "filename": inv_filename,
+        "invoice_number": inv_no,
+        "invoice_date": inv_date,
+        "amount": inv_amount,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    })
+    # Auto-stamp `goods_ready_at` for the sample / small-bulk flow. On these
+    # orders the vendor's *only* dispatch action is uploading the tax
+    # invoice — there's no separate "Mark Goods Ready" step. We stamp
+    # the timestamp so downstream pipelines (e-way bill scheduling, SR
+    # push, status calculators) behave identically to the large-bulk
+    # flow which captures `goods_ready_at` explicitly at confirmation.
+    auto_ready_fields: dict = {}
+    if not order.get("goods_ready_at"):
+        try:
+            from order_pipeline import compute_vendor_bucket
+            vendor_fabric_ids_set = set(
+                await db.fabrics.distinct('id', {'seller_id': caller_seller_id})
+            )
+            v_bucket = compute_vendor_bucket(order, caller_seller_id, vendor_fabric_ids_set)
+        except Exception:
+            v_bucket = "small_bulk"
+        if v_bucket in ("sample", "small_bulk"):
+            auto_ready_fields["goods_ready_at"] = datetime.now(timezone.utc).isoformat()
+            auto_ready_fields["status"] = "goods_ready"
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "vendor_invoices": existing,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            **auto_ready_fields,
+        }},
+    )
+
+    # Fire the Shiprocket push for this vendor's shipment (best-effort).
+    # We only attempt when the order isn't already pushed for this vendor.
+    sr_summary: dict = {"attempted": False}
+    try:
+        fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        already_pushed = any(
+            (s.get("seller_id") or "") == caller_seller_id and s.get("success")
+            for s in (fresh.get("shiprocket_shipments") or [])
+        )
+        if not already_pushed:
+            multi_result = await create_shiprocket_shipments_multi(
+                fresh, only_seller_ids=[caller_seller_id]
+            )
+            sr_summary = {"attempted": True, **multi_result}
+            if multi_result.get("success"):
+                merged_by_sid = {
+                    s.get("seller_id", ""): s
+                    for s in (fresh.get("shiprocket_shipments") or [])
+                }
+                for s in multi_result.get("shipments", []):
+                    merged_by_sid[s.get("seller_id", "")] = s
+                shipments = list(merged_by_sid.values())
+                first_ok = next((s for s in shipments if s.get("success")), None)
+                set_fields = {
+                    "shiprocket_shipments": shipments,
+                    "shiprocket_pushed": True,
+                    "shiprocket_pushed_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                if first_ok:
+                    set_fields["shiprocket_order_id"] = first_ok.get("order_id") or fresh.get("shiprocket_order_id")
+                    if first_ok.get("shipment_id"):
+                        set_fields["shiprocket_shipment_id"] = first_ok["shipment_id"]
+                    if first_ok.get("awb_code"):
+                        set_fields["awb_code"] = first_ok["awb_code"]
+                    if first_ok.get("courier_name"):
+                        set_fields["courier_name"] = first_ok["courier_name"]
+                await db.orders.update_one({"id": order_id}, {"$set": set_fields})
+        else:
+            sr_summary = {"attempted": False, "already_pushed": True}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vendor-upload-invoice] SR push best-effort failed: {e}")
+        sr_summary = {"attempted": True, "success": False, "error": str(e)}
+
+    fresh2 = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {
+        "success": True,
+        "order": _attach_pipeline(fresh2),
+        "shiprocket": sr_summary,
+    }
+
+
+@router.post("/{order_id}/recompute-actuals")
+async def recompute_order_actuals(order_id: str, admin=Depends(auth_helpers.get_current_admin)):
+    """Retroactive fix for orders that were marked goods-ready BEFORE the
+    actual-qty recompute logic landed (Feb 2026). Idempotent — recomputes
+    `actual_subtotal / packaging / logistics / tax / total / balance /
+    refund` from the per-item `actual_quantity` stamps and resyncs vendor
+    payouts. Only acts on orders that have at least one item where
+    `actual_quantity != quantity`. Returns the updated order.
+    """
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if not order.get("goods_ready_at"):
+        raise HTTPException(status_code=400, detail="Order is not marked goods-ready yet")
+
+    items = order.get("items") or []
+    if not items:
+        raise HTTPException(status_code=400, detail="Order has no items")
+
+    # Detect if at least one item has an actual qty that differs from
+    # ordered — if everything matches, nothing to recompute.
+    has_diff = any(
+        it.get("actual_quantity") is not None
+        and float(it.get("actual_quantity") or 0) != float(it.get("quantity") or 0)
+        for it in items
+    )
+    if not has_diff and order.get("actual_total") is not None:
+        return {"success": True, "no_change": True, "order": order}
+
+    # Stamp per-item actual_total if missing (uses actual_quantity || quantity)
+    new_items = []
+    for it in items:
+        clone = dict(it)
+        qty = float(clone.get("actual_quantity") if clone.get("actual_quantity") is not None else (clone.get("quantity") or 0))
+        rate = float(clone.get("price_per_meter") or 0)
+        clone["actual_total"] = round(qty * rate, 2)
+        new_items.append(clone)
+
+    actual_subtotal = sum(float(it.get("actual_total") or 0) for it in new_items)
+    booked_subtotal = float(order.get("subtotal") or 0)
+    ratio = (actual_subtotal / booked_subtotal) if booked_subtotal > 0 else 1.0
+    packaging = round(float(order.get("packaging_charge") or 0) * ratio, 2)
+    logistics = round(float(order.get("logistics_only_charge") or order.get("logistics_charge") or 0) * ratio, 2)
+    tax = round((actual_subtotal + packaging + logistics) * 0.05, 2)
+    discount = float(order.get("discount") or 0)
+    actual_total = round(actual_subtotal + packaging + logistics + tax - discount, 2)
+
+    update: dict = {
+        "items": new_items,
+        "actual_subtotal": round(actual_subtotal, 2),
+        "actual_packaging_charge": packaging,
+        "actual_logistics_charge": logistics,
+        "actual_tax": tax,
+        "actual_total": actual_total,
+        "actuals_recomputed_at": datetime.now(timezone.utc).isoformat(),
+        "actuals_recomputed_by": admin.get("email", ""),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if order.get("is_provisional"):
+        # Provisional: customer paid the advance. Balance = actual - advance.
+        advance_amount = float(order.get("advance_amount") or 0)
+        balance_amount = max(round(actual_total - advance_amount, 2), 0.0)
+        update["balance_amount"] = balance_amount
+        # Preserve existing payment_status if already moved past
+        # balance_pending; else set it.
+        if order.get("payment_status") not in ("paid",):
+            update["payment_status"] = "balance_pending"
+    else:
+        # Non-provisional: customer paid 100% of original `total`. Delta
+        # is now the additional balance (or refund).
+        paid_amount = float(order.get("total") or 0)
+        delta = round(actual_total - paid_amount, 2)
+        update["balance_amount"] = max(delta, 0.0)
+        update["refund_amount"] = max(-delta, 0.0)
+        # Only mark balance_pending if customer actually owes something.
+        if delta > 0.005:
+            update["payment_status"] = "balance_pending"
+
+    await db.orders.update_one({"id": order_id}, {"$set": update})
+
+    # Resync vendor payouts to the recomputed basis.
+    try:
+        from payouts_router import resync_payouts_for_actual_qty
+        fresh_for_resync = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        summary = await resync_payouts_for_actual_qty(fresh_for_resync)
+        logger.info(f"[recompute-actuals] order={order_id} payout-resync={summary}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[recompute-actuals] payout resync failed: {e}")
+
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    return {
+        "success": True,
+        "no_change": False,
+        "actual_total": actual_total,
+        "balance_amount": fresh.get("balance_amount"),
+        "refund_amount": fresh.get("refund_amount"),
+        "payment_status": fresh.get("payment_status"),
+        "order": fresh,
+    }
+
+
+
+# ─── Vendor 24h Accept / Cancel window ─────────────────────────
+async def _resolve_vendor_caller(request: Request) -> tuple[str, str]:
+    """Returns (caller_role, caller_seller_id). caller_role in
+    {"vendor","admin"}. Raises 401 if neither auth succeeds."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+    
+    token = auth_header.split(" ", 1)[1]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        
+        # Check if vendor token
+        if payload.get("type") == "vendor":
+            seller_id = payload.get("seller_id", "")
+            # Verify seller is active
+            seller = await db.sellers.find_one({"id": seller_id, "is_active": True}, {"_id": 0})
+            if seller:
+                return "vendor", seller_id
+        
+        # Check if admin token
+        admin_id = payload.get("sub")
+        if admin_id:
+            admin = await db.admins.find_one({"id": admin_id}, {"_id": 0})
+            if admin:
+                return "admin", ""
+        
+    except jwt.PyJWTError:
+        pass
+    
+    raise HTTPException(status_code=401, detail="Vendor or admin auth required")
+
+
+@router.post("/{order_id}/vendor-accept")
+async def vendor_accept_order(order_id: str, request: Request):
+    """Vendor confirms they will fulfil the order. Closes the 24h SLA
+    window. Multi-vendor orders: every vendor must accept independently;
+    the order remains `pending` until ALL vendors have accepted, then
+    flips to `accepted`."""
+    caller_role, caller_sid = await _resolve_vendor_caller(request)
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Order is cancelled")
+    if order.get("vendor_acceptance_status") in ("auto_cancelled", "cancelled"):
+        raise HTTPException(status_code=400, detail="Order was already cancelled by vendor/SLA")
+
+    # Determine the seller(s) the caller is responsible for.
+    item_sids = {(it.get("seller_id") or "").strip() for it in (order.get("items") or [])}
+    item_sids.discard("")
+    if caller_role == "vendor":
+        if caller_sid not in item_sids:
+            raise HTTPException(status_code=403, detail="You are not assigned to this order")
+        target_sids = {caller_sid}
+    else:
+        target_sids = item_sids  # admin override accepts on behalf of all
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    acceptances = dict(order.get("vendor_acceptances") or {})
+    for sid in target_sids:
+        acceptances[sid] = {"status": "accepted", "at": now_iso, "by": caller_role}
+
+    # If every vendor has accepted → close the window.
+    all_accepted = all(acceptances.get(sid, {}).get("status") == "accepted" for sid in item_sids)
+    update_doc = {"vendor_acceptances": acceptances, "updated_at": now_iso}
+    if all_accepted:
+        update_doc["vendor_acceptance_status"] = "accepted"
+        update_doc["vendor_accepted_at"] = now_iso
+    await db.orders.update_one({"id": order_id}, {"$set": update_doc})
+
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.VENDOR_ACCEPTED, fresh, extra={
+            "vendor_seller_id": caller_sid or "admin_override",
+            "all_vendors_accepted": all_accepted,
+        })
+    except Exception:
+        pass
+    return {"success": True, "all_accepted": all_accepted, "order": fresh}
+
+
+@router.post("/{order_id}/vendor-cancel")
+async def vendor_cancel_order(order_id: str, data: dict, request: Request):
+    """Vendor declines the order. Any cancellation cancels the WHOLE order
+    (single payment can't be split per-vendor)."""
+    caller_role, caller_sid = await _resolve_vendor_caller(request)
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("status") == "cancelled":
+        return {"success": True, "order": order, "already_cancelled": True}
+
+    if caller_role == "vendor":
+        item_sids = {(it.get("seller_id") or "").strip() for it in (order.get("items") or [])}
+        if caller_sid not in item_sids:
+            raise HTTPException(status_code=403, detail="You are not assigned to this order")
+
+    reason = (data.get("reason") or "Vendor declined the order").strip() or "Vendor declined the order"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "status": "cancelled",
+            "vendor_acceptance_status": "cancelled",
+            "cancellation_reason": "vendor_cancelled",
+            "vendor_cancel_reason": reason,
+            "vendor_cancelled_by": caller_sid or "admin",
+            "cancelled_at": now_iso,
+            "updated_at": now_iso,
+        }},
+    )
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+
+    # Customer-facing cancellation email
+    try:
+        from email_router import send_order_cancellation_email
+        await send_order_cancellation_email(fresh, reason=reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vendor-cancel] customer email failed: {e}")
+
+    # Internal mail chain
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.VENDOR_REJECTED, fresh, extra={
+            "vendor_seller_id": caller_sid or "admin_override",
+            "reason": reason,
+        })
+        await fire_internal_event(OrderEvent.ORDER_CANCELLED, fresh, extra={
+            "reason": reason,
+            "cancelled_by": "vendor",
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vendor-cancel] internal event failed: {e}")
+
+    return {"success": True, "order": fresh}
+
+
+@router.post("/{order_id}/balance-pay")
+async def start_balance_payment(order_id: str, request: Request):
+    """Customer-side endpoint: mint a Razorpay order for the BALANCE
+    amount of a provisional order. The frontend opens the Razorpay
+    modal with this id; verify-payment handles the success leg."""
+    from customer_router import get_current_customer as _get_current_customer
+    customer = _get_current_customer(request)
+    order = await db.orders.find_one(
+        {"id": order_id, "customer.email": customer["email"]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("payment_status") != "balance_pending":
+        raise HTTPException(
+            status_code=400,
+            detail="Balance payment is not yet due — waiting for the supplier to mark goods ready.",
+        )
+    if order.get("payment_method") == "credit":
+        raise HTTPException(status_code=400, detail="Credit orders use the credit-ops balance flow.")
+
+    balance_paise = int(round(float(order.get("balance_amount") or 0) * 100))
+    if balance_paise <= 0:
+        raise HTTPException(status_code=400, detail="No balance due — order may already be settled.")
+
+    try:
+        rzp = razorpay_client.order.create({
+            "amount": balance_paise,
+            "currency": "INR",
+            "receipt": f"{order.get('order_number') or order_id[:10]}-bal",
+            "notes": {"order_id": order_id, "payment_stage": "balance"},
+        })
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "razorpay_order_id": rzp["id"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+    return {
+        "razorpay_order_id": rzp["id"],
+        "amount": rzp["amount"],
+        "currency": rzp["currency"],
+        "key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
+        "order_id": order_id,
+        "order_number": order.get("order_number", ""),
+        "balance_amount": float(order.get("balance_amount") or 0),
+    }
+
+
+# ─── Shareable balance-pay link ─────────────────────────────────
+# Agents (and admins) can mint a one-off URL that lets the customer pay
+# the balance WITHOUT logging in. The token is stored on the order, so
+# revoking it = deleting the token.
+import hashlib  # noqa: E402
+
+
+def _make_balance_token(order_id: str) -> str:
+    secret = os.environ.get("BALANCE_LINK_SECRET", "lf_balance_secret")
+    raw = f"{order_id}:{secret}:{datetime.now(timezone.utc).date().isoformat()}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+@router.post("/{order_id}/balance-share-link")
+async def mint_balance_share_link(order_id: str, request: Request):
+    """Agent/Admin only. Generates a public balance-pay URL the agent can
+    forward to the customer (WhatsApp, email, anywhere)."""
+    # Accept either admin or agent by manually parsing the token
+    is_admin = False
+    is_agent = False
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1]
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            # Check if admin
+            admin_id = payload.get("sub")
+            if admin_id:
+                admin = await db.admins.find_one({"id": admin_id}, {"_id": 0})
+                if admin:
+                    is_admin = True
+            # Check if agent
+            if not is_admin and payload.get("type") == "agent":
+                is_agent = True
+        except jwt.PyJWTError:
+            pass
+    if not (is_admin or is_agent):
+        raise HTTPException(status_code=401, detail="Agent or admin auth required")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("payment_status") != "balance_pending":
+        raise HTTPException(status_code=400, detail="Balance link only available for orders awaiting balance payment")
+
+    token = order.get("balance_share_token") or _make_balance_token(order_id)
+    await db.orders.update_one({"id": order_id}, {"$set": {
+        "balance_share_token": token,
+        "balance_share_token_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    base = os.environ.get("SITE_URL", "https://locofast.com").rstrip("/")
+    return {
+        "token": token,
+        "url": f"{base}/pay-balance/{order_id}/{token}",
+        "order_number": order.get("order_number"),
+        "balance_amount": float(order.get("balance_amount") or 0),
+    }
+
+
+@router.get("/balance-share/{order_id}/{token}")
+async def resolve_balance_share_link(order_id: str, token: str):
+    """Public: customer (or anyone with the link) sees order summary."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order or order.get("balance_share_token") != token:
+        raise HTTPException(status_code=404, detail="Invalid or expired link")
+    if order.get("payment_status") == "paid":
+        return {"status": "already_paid", "order_number": order.get("order_number")}
+    return {
+        "order_id": order_id,
+        "order_number": order.get("order_number"),
+        "customer_name": (order.get("customer") or {}).get("name", ""),
+        "balance_amount": float(order.get("balance_amount") or 0),
+        "advance_amount": float(order.get("advance_amount") or 0),
+        "total": float(order.get("actual_total") or order.get("total") or 0),
+        "items_count": len(order.get("items") or []),
+        "items": [
+            {
+                "fabric_name": it.get("fabric_name", ""),
+                "fabric_code": it.get("fabric_code", ""),
+                "quantity": it.get("actual_quantity") or it.get("quantity"),
+                "price_per_meter": it.get("price_per_meter", 0),
+            }
+            for it in (order.get("items") or [])
+        ],
+        "payment_status": order.get("payment_status"),
+    }
+
+
+@router.post("/balance-share/{order_id}/{token}/pay")
+async def start_balance_payment_via_share(order_id: str, token: str):
+    """Public: mint a Razorpay order for the balance using the share token
+    (no customer login required). Same as /balance-pay but token-gated."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order or order.get("balance_share_token") != token:
+        raise HTTPException(status_code=404, detail="Invalid or expired link")
+    if order.get("payment_status") != "balance_pending":
+        raise HTTPException(status_code=400, detail="Balance is not currently due")
+    if order.get("payment_method") == "credit":
+        raise HTTPException(status_code=400, detail="Credit orders use the credit-ops balance flow.")
+    balance_paise = int(round(float(order.get("balance_amount") or 0) * 100))
+    if balance_paise <= 0:
+        raise HTTPException(status_code=400, detail="No balance due")
+    try:
+        rzp = razorpay_client.order.create({
+            "amount": balance_paise,
+            "currency": "INR",
+            "receipt": f"{order.get('order_number') or order_id[:10]}-bal-share",
+            "notes": {"order_id": order_id, "payment_stage": "balance", "via": "share_link"},
+        })
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Razorpay error: {e}")
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {"razorpay_order_id": rzp["id"], "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {
+        "razorpay_order_id": rzp["id"],
+        "amount": rzp["amount"],
+        "currency": rzp["currency"],
+        "key_id": os.environ.get("RAZORPAY_KEY_ID", ""),
+        "order_id": order_id,
+        "order_number": order.get("order_number", ""),
+        "balance_amount": float(order.get("balance_amount") or 0),
+    }
+
+
+@router.post("/{order_id}/mark-balance-paid")
+async def admin_mark_balance_paid(
+    order_id: str,
+    payload: dict = Body(default={}),
+    admin=Depends(auth_helpers.get_current_admin),
+):
+    """Finance-only manual marker — same effect as a successful Razorpay
+    balance payment. Triggers inventory deduction + payout materialization
+    + Shiprocket push.
+
+    Optional body fields (recorded for audit):
+      • payment_method: neft | rtgs | imps | upi | cheque | cash | razorpay
+      • utr: bank UTR / reference number
+      • notes: free-form note from the finance team
+    """
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("payment_status") != "balance_pending":
+        raise HTTPException(status_code=400, detail="Balance is not pending — nothing to mark.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    method = (payload.get("payment_method") or "").strip().lower() or None
+    utr = (payload.get("utr") or "").strip() or None
+    notes = (payload.get("notes") or "").strip() or None
+
+    set_doc = {
+        "payment_status": "paid",
+        "balance_paid_at": now,
+        "paid_at": now,
+        "balance_paid_manually": True,
+        "balance_paid_by": admin.get("email", "admin"),
+        "balance_paid_method": method,
+        "balance_paid_utr": utr,
+        "balance_paid_notes": notes,
+        "updated_at": now,
+    }
+    # Preserve forward lifecycle status — don't roll back from
+    # goods_ready/shipped/delivered when finance marks balance paid.
+    if order.get("status") not in ("goods_ready", "shipped", "delivered"):
+        set_doc["status"] = "confirmed"
+    await db.orders.update_one({"id": order_id}, {"$set": set_doc})
+
+    # Inventory + payouts + Shiprocket (same trio as the auto-flow).
+    fresh = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    try:
+        for item in fresh["items"]:
+            qty = float(item.get("actual_quantity") or item.get("quantity") or 0)
+            await db.fabrics.update_one(
+                {"id": item["fabric_id"], "quantity_available": {"$gte": qty}},
+                {"$inc": {"quantity_available": -qty}},
+            )
+    except Exception as e:
+        logger.warning(f"Inventory deduct failed: {e}")
+
+    try:
+        from payouts_router import materialize_payouts_for_order
+        await materialize_payouts_for_order(fresh)
+    except Exception as e:
+        logger.warning(f"Payout materialize failed: {e}")
+
+    try:
+        sr = await create_shiprocket_shipment(fresh)
+        if sr.get("success"):
+            await db.orders.update_one(
+                {"id": order_id},
+                {"$set": {
+                    "shiprocket_order_id": str(sr.get("order_id") or ""),
+                    "shiprocket_shipment_id": sr.get("shipment_id"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+            try:
+                from internal_events import fire_internal_event as _fire2, OrderEvent as _OE2
+                await _fire2(_OE2.ORDER_DISPATCHED, fresh, extra={
+                    "shiprocket_order_id": str(sr.get("order_id") or ""),
+                    "marked_via": "admin_balance_paid",
+                })
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Shiprocket push failed: {e}")
+
+    # Internal mail chain for confirmation
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.ORDER_CONFIRMED, fresh, extra={
+            "balance_marked_by": admin.get("email", "admin"),
+            "method": "manual_balance_paid",
+        })
+        await fire_internal_event(OrderEvent.PAYMENT_CAPTURED, fresh)
+    except Exception as e:
+        logger.warning(f"internal confirmed event failed: {e}")
+
+    return {"success": True, "order": await db.orders.find_one({"id": order_id}, {"_id": 0})}
+
+
+@router.post("/admin/auto-cancel-stale")
+async def trigger_autocancel_sweep(admin=Depends(auth_helpers.get_current_admin)):
+    """Manually run the stale-order sweep. Useful for admins who want to
+    flush expired carts without waiting for the next hourly poll. Returns
+    the same shape as the background sweep."""
+    from order_autocancel import cancel_stale_orders
+    return await cancel_stale_orders(db)
+
 
 @router.put("/{order_id}/cancel")
 async def cancel_order(order_id: str, data: dict):
@@ -1656,6 +3596,8 @@ async def cancel_order(order_id: str, data: dict):
         {"$set": {
             "status": "cancelled",
             "cancellation_reason": reason,
+            "cancellation_notes": (data.get('notes') or '').strip(),
+            "cancelled_by": "admin",
             "cancelled_at": now,
             "updated_at": now
         }}
@@ -1667,8 +3609,32 @@ async def cancel_order(order_id: str, data: dict):
         'customer_request': 'Customer Request',
         'other': 'Other'
     }
-    
-    return {"success": True, "message": f"Order cancelled: {reason_labels.get(reason, reason)}"}
+    label = reason_labels.get(reason, reason)
+    notes = (data.get('notes') or '').strip()
+    human_reason = f"{label}: {notes}" if notes else label
+
+    # Notify customer + Locofast internal stakeholders (best-effort)
+    fresh = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0}
+    )
+    try:
+        from email_router import send_order_cancellation_email
+        await send_order_cancellation_email(fresh, reason=human_reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[admin-cancel] customer email failed: {e}")
+    try:
+        from internal_events import fire_internal_event, OrderEvent
+        await fire_internal_event(OrderEvent.ORDER_CANCELLED, fresh, extra={
+            "reason_code": reason,
+            "reason": human_reason,
+            "cancelled_by": "admin",
+            "notes": notes,
+        })
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[admin-cancel] internal event failed: {e}")
+
+    return {"success": True, "message": f"Order cancelled: {label}"}
 
 # ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
@@ -2147,6 +4113,43 @@ def number_to_words(num: float) -> str:
         return f"{rupees_words} {rupee_unit} and {_words_under_100(paise)} {paise_unit} Only"
     return f"{rupees_words} {rupee_unit} Only"
 
+async def _hydrate_customer_trade_name(order: dict) -> None:
+    """In-place: ensure `order['customer']['company']` is the customer's
+    GST-registered trade name and `order['customer']['gst_number']` is
+    their canonical GSTIN. The order snapshot stores whatever the
+    customer typed at checkout (often blank); the live `customers`
+    document — auto-filled from the GST registry — holds the truth.
+    Note the field-name mismatch: the live doc uses `gstin`, the order
+    snapshot uses `gst_number`."""
+    if db is None:
+        return
+    cust = order.get('customer') or {}
+    email = (cust.get('email') or '').strip().lower()
+    if not email:
+        return
+    try:
+        live = await db.customers.find_one(
+            {'email': email},
+            {'_id': 0, 'company': 1, 'gstin': 1, 'gst_number': 1, 'gst_verified': 1, 'name': 1, 'phone': 1}
+        )
+    except Exception:  # noqa: BLE001
+        return
+    if not live:
+        return
+    live_company = (live.get('company') or '').strip()
+    snap_company = (cust.get('company') or '').strip()
+    if live_company and (not snap_company or live.get('gst_verified')):
+        # Prefer the canonical (GST-verified) trade name over the
+        # snapshot — the snapshot may pre-date verification.
+        cust['company'] = live_company
+    # GSTIN — `customers.gstin` is the canonical store; fall back to
+    # legacy `gst_number` if it ever existed.
+    live_gstin = (live.get('gstin') or live.get('gst_number') or '').strip()
+    if live_gstin and not (cust.get('gst_number') or '').strip():
+        cust['gst_number'] = live_gstin
+    order['customer'] = cust
+
+
 def generate_invoice_pdf(order: dict) -> io.BytesIO:
     """Generate a GST-compliant invoice PDF in Locofast brand style"""
     buffer = io.BytesIO()
@@ -2164,48 +4167,87 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
     elements = []
     styles = getSampleStyleSheet()
     
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=20, alignment=TA_CENTER, spaceAfter=2*mm, textColor=colors.HexColor(BRAND_BLUE), fontName='Helvetica-Bold')
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=20, alignment=TA_LEFT, spaceAfter=0*mm, textColor=colors.HexColor(BRAND_BLUE), fontName='Helvetica-Bold')
     heading_style = ParagraphStyle('Heading', parent=styles['Heading2'], fontSize=11, spaceBefore=3*mm, spaceAfter=2*mm, textColor=colors.HexColor(BRAND_BLUE), fontName='Helvetica-Bold')
     normal_style = ParagraphStyle('CustomNormal', parent=styles['Normal'], fontSize=9, leading=12)
     small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8, leading=11)
     bold_style = ParagraphStyle('Bold', parent=styles['Normal'], fontSize=9, leading=12, fontName='Helvetica-Bold')
-    
-    # Header
-    elements.append(Paragraph("LOCOFAST", title_style))
-    elements.append(Paragraph("B2B Fabric Sourcing Platform", ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=9, alignment=TA_CENTER, textColor=colors.HexColor('#64748b'))))
-    elements.append(Spacer(1, 4*mm))
+
+    # Resolve invoice date + number early so the header meta-block can use them.
+    customer = order.get('customer', {})
+    invoice_date_raw = order.get('paid_at') or order.get('created_at', '')
+    invoice_date = ''
+    if invoice_date_raw:
+        try:
+            invoice_date = invoice_date_raw[:10]
+        except Exception:
+            invoice_date = datetime.now().strftime('%Y-%m-%d')
+    inv_number = order.get('order_number', 'N/A')
+    # Pretty-print the payment method on the invoice header so internal
+    # codes (`sample_credit`, `lc_90_days`, `razorpay`) read as proper
+    # business labels. Falls back to a Title-cased version of the raw
+    # value for anything not in the map.
+    _pm_raw = (order.get('payment_method') or 'razorpay').lower()
+    _PM_LABELS = {
+        'razorpay': 'Online (Razorpay)',
+        'credit': 'Credit Line',
+        'sample_credit': 'Sample Credits',
+        'lc_90_days': 'LC 90 Days',
+        'neft': 'NEFT',
+        'rtgs': 'RTGS',
+        'imps': 'IMPS',
+        'upi': 'UPI',
+        'cheque': 'Cheque',
+        'cash': 'Cash',
+    }
+    pay_method = _PM_LABELS.get(_pm_raw, _pm_raw.replace('_', ' ').title())
+    pay_status = (order.get('payment_status', 'N/A')).upper()
+
+    # Header — logo + tagline LEFT, invoice meta block RIGHT with PAID badge
+    paid_badge = (
+        '<font color="#15803d" size="8"><b>● PAID</b></font>'
+        if pay_status == 'PAID' else
+        f'<font color="#b45309" size="8"><b>● {pay_status}</b></font>'
+    )
+    logo_drawing = _get_logo_drawing(target_height_mm=14)
+    if logo_drawing is not None:
+        # Brand mark replaces the legacy "LOCOFAST" wordmark on the
+        # top-left of every invoice. The tagline "Tech • Textile •
+        # Sourcing" is already part of the logo asset itself, so no
+        # secondary tagline is added below.
+        left_cell = logo_drawing
+    else:
+        # Fallback for environments without svglib/PIL — keep the wordmark.
+        left_brand = f'<font color="{BRAND_BLUE}" size="20"><b>LOCOFAST</b></font>'
+        left_cell = Paragraph(left_brand, ParagraphStyle('lb', parent=styles['Normal'], fontSize=10, leading=14))
+    right_meta = (
+        f'<font color="#64748b" size="8">INVOICE DATE</font><br/>'
+        f'<font size="10"><b>{invoice_date}</b></font><br/>'
+        f'<font color="#64748b" size="8">INVOICE NO</font><br/>'
+        f'<font size="10"><b>{inv_number}</b></font><br/>'
+        f'<font color="#64748b" size="8">PAYMENT</font><br/>'
+        f'<font size="10"><b>{pay_method}</b></font> &nbsp; {paid_badge}'
+    )
+    header_tbl = Table(
+        [[left_cell,
+          Paragraph(right_meta, ParagraphStyle('rm', parent=styles['Normal'], fontSize=9, leading=13, alignment=TA_RIGHT))]],
+        colWidths=[110*mm, 70*mm]
+    )
+    header_tbl.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(header_tbl)
+    elements.append(Spacer(1, 5*mm))
     
     # Tax Invoice Banner
     elements.append(Paragraph("TAX INVOICE", ParagraphStyle('InvoiceTitle', parent=styles['Heading1'], fontSize=13, alignment=TA_CENTER, textColor=colors.white, backColor=colors.HexColor(BRAND_BLUE), borderPadding=5, spaceBefore=2*mm, spaceAfter=5*mm, fontName='Helvetica-Bold')))
     
-    # Invoice Details
-    customer = order.get('customer', {})
-    invoice_date = order.get('paid_at') or order.get('created_at', '')
-    if invoice_date:
-        try:
-            invoice_date = invoice_date[:10]
-        except:
-            invoice_date = datetime.now().strftime('%Y-%m-%d')
-    
-    inv_number = order.get('order_number', 'N/A')
-    
-    invoice_details = [
-        ['Invoice No:', inv_number, 'Invoice Date:', invoice_date],
-        ['Payment Method:', (order.get('payment_method', 'razorpay')).title(), 'Payment Status:', order.get('payment_status', 'N/A').upper()],
-    ]
-    
-    invoice_table = Table(invoice_details, colWidths=[28*mm, 52*mm, 30*mm, 50*mm])
-    invoice_table.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-        ('TOPPADDING', (0, 0), (-1, -1), 4),
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.HexColor(BRAND_BLUE)),
-        ('TEXTCOLOR', (2, 0), (2, -1), colors.HexColor(BRAND_BLUE)),
-    ]))
-    elements.append(invoice_table)
-    elements.append(Spacer(1, 5*mm))
+    # Invoice details now appear in the top-right meta block of the
+    # header. We resolve POS state here for the items / tax breakdown.
     
     # Resolve PLACE OF SUPPLY (drives IGST vs CGST+SGST and the POS line).
     # Per CGST Section 10, POS for goods = shipping state, not the buyer's
@@ -2240,10 +4282,22 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         f'<b>State Code:</b> {bill_state_code} ({bill_state_name})<br/>' if bill_state_code else ''
     )
 
+    # Bill To — print the TRADE NAME (company, populated from GST trade
+    # name) as the primary line on the invoice; fall back to contact name
+    # when there's no company on file (rare — pre-GST verification orders).
+    # The customer's contact name is added as "Attn:" so the document
+    # still names a real person.
+    bill_company = (customer.get('company') or '').strip()
+    bill_contact = (customer.get('name') or '').strip()
+    bill_primary = bill_company or bill_contact or 'N/A'
+    bill_attn_line = (
+        f"Attn: {bill_contact}<br/>"
+        if bill_company and bill_contact and bill_contact.lower() != bill_company.lower()
+        else ''
+    )
     buyer_info = f"""<b>Bill To:</b><br/>
-    {customer.get('name', 'N/A')}<br/>
-    {customer.get('company', '') + '<br/>' if customer.get('company') else ''}
-    {gst_line}{customer.get('address', 'N/A')}<br/>
+    {bill_primary}<br/>
+    {bill_attn_line}{gst_line}{customer.get('address', 'N/A')}<br/>
     {customer.get('city', '')}, {customer.get('state', '')}<br/>
     PIN: {customer.get('pincode', 'N/A')}<br/>
     {bill_state_line}<b>Phone:</b> {customer.get('phone', 'N/A')}<br/>
@@ -2263,10 +4317,19 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
             f"<b>State Code:</b> {buyer_state_code} ({buyer_state_name})<br/>"
             if buyer_state_code else ''
         )
-        ship_company = ship_to.get('company', '')
+        # Ship To — same convention as Bill To: company (trade name)
+        # leads, contact name appears as "Attn:" line.
+        ship_company = (ship_to.get('company') or '').strip()
+        ship_contact = (ship_to.get('name') or customer.get('name') or '').strip()
+        ship_primary = ship_company or ship_contact or 'N/A'
+        ship_attn_line = (
+            f"Attn: {ship_contact}<br/>"
+            if ship_company and ship_contact and ship_contact.lower() != ship_company.lower()
+            else ''
+        )
         ship_info = f"""<b>Ship To:</b><br/>
-        {ship_to.get('name') or customer.get('name', 'N/A')}<br/>
-        {(ship_company + '<br/>') if ship_company else ''}{ship_gst_line}{ship_addr}<br/>
+        {ship_primary}<br/>
+        {ship_attn_line}{ship_gst_line}{ship_addr}<br/>
         {ship_to.get('city') or order.get('ship_to_city', '')}, {ship_to.get('state') or order.get('ship_to_state', '')}<br/>
         PIN: {ship_to.get('pincode') or order.get('ship_to_pincode', '')}<br/>
         {ship_state_line}"""
@@ -2311,7 +4374,7 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
     # Items Table
     elements.append(Paragraph("Order Items", heading_style))
     
-    items_data = [['#', 'Description', 'HSN Code', 'Qty (m)', 'Rate (₹/m)', 'Lead Time', 'Amount (₹)']]
+    items_data = [['#', 'Description', 'HSN', 'Qty', 'Rate (₹)', 'Delivery', 'Amount (₹)']]
     
     items = order.get('items', [])
     has_bulk_items = False
@@ -2321,14 +4384,19 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         rate = item.get('price_per_meter', 0)
         amount = qty * rate
         order_type = item.get('order_type', '').lower()
+        unit = item.get('unit') or 'm'
         
-        description = f"{item.get('fabric_name', 'Fabric')}"
+        # Description with SKU + Type sublines (matches the desired layout)
+        desc_main = f"<b>{item.get('fabric_name', 'Fabric')}</b>"
+        meta_bits = []
         if item.get('fabric_code'):
-            description += f"\nCode: {item.get('fabric_code')}"
+            meta_bits.append(f"SKU: {item.get('fabric_code')}")
         if item.get('color_name'):
-            description += f"\nColor: {item.get('color_name')}"
+            meta_bits.append(f"Color: {item.get('color_name')}")
         if order_type:
-            description += f"\nType: {order_type.title()}"
+            meta_bits.append(f"Type: {order_type.title()}")
+        sub = f"<br/><font size='7' color='#64748b'>{' · '.join(meta_bits)}</font>" if meta_bits else ""
+        description = Paragraph(desc_main + sub, small_style)
         
         # HSN code: use item-specific if set, fallback to a category-aware
         # default. 540799 ONLY applies to synthetic-filament woven fabrics —
@@ -2362,10 +4430,10 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
         
         items_data.append([
             str(idx),
-            Paragraph(description, small_style),
+            description,
             hsn,
-            str(qty),
-            f"Rs {rate:,.2f}",
+            f"{qty}{unit}",
+            f"Rs {rate:,.2f}/{unit}",
             lead_time,
             f"Rs {amount:,.2f}"
         ])
@@ -2419,15 +4487,17 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
     totals_data = []
 
     if is_v2:
-        # Goods subtotal first, then charges, then taxable value, then GST.
-        totals_data.append(['Goods Subtotal:', f"Rs {subtotal:,.2f}"])
+        # New presentation: Order Value → Packaging → Logistics → Gross
+        # Value → GST → Total Invoice Value. Packaging/logistics are part
+        # of the taxable supply per Schedule II of the CGST Act.
+        totals_data.append(['Order Value:', f"Rs {subtotal:,.2f}"])
         if packaging > 0:
-            totals_data.append(['Packaging Charge:', f"Rs {packaging:,.2f}"])
+            totals_data.append(['Packaging:', f"Rs {packaging:,.2f}"])
         eff_log = logistics_only if (logistics_only > 0) else logistics
         if eff_log > 0:
-            totals_data.append(['Logistics Charge:', f"Rs {eff_log:,.2f}"])
+            totals_data.append(['Logistics:', f"Rs {eff_log:,.2f}"])
         taxable_value = order.get('taxable_value') or round(subtotal + packaging + eff_log, 2)
-        totals_data.append(['Taxable Value:', f"Rs {taxable_value:,.2f}"])
+        totals_data.append(['Gross Value:', f"Rs {taxable_value:,.2f}"])
         if is_interstate:
             totals_data.append(['IGST (5%):', f"Rs {tax:,.2f}"])
         else:
@@ -2436,16 +4506,11 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
             totals_data.append(['CGST (2.5%):', f"Rs {cgst:,.2f}"])
             totals_data.append(['SGST (2.5%):', f"Rs {sgst:,.2f}"])
     else:
-        # Legacy presentation — preserves exactly what these old orders
-        # were charged at checkout (packaging/logistics were NOT taxed).
-        totals_data.append(['Subtotal:', f"Rs {subtotal:,.2f}"])
-        if is_interstate:
-            totals_data.append(['IGST (5%):', f"Rs {tax:,.2f}"])
-        else:
-            cgst = tax / 2
-            sgst = tax / 2
-            totals_data.append(['CGST (2.5%):', f"Rs {cgst:,.2f}"])
-            totals_data.append(['SGST (2.5%):', f"Rs {sgst:,.2f}"])
+        # Legacy orders — same visual sequence so the invoice format is
+        # consistent across vintages, but the math note remains that
+        # packaging/logistics were NOT part of the taxable value on
+        # these historical invoices.
+        totals_data.append(['Order Value:', f"Rs {subtotal:,.2f}"])
         if packaging > 0 and logistics_only > 0:
             totals_data.append(['Packaging:', f"Rs {packaging:,.2f}"])
             totals_data.append(['Logistics:', f"Rs {logistics_only:,.2f}"])
@@ -2453,33 +4518,96 @@ def generate_invoice_pdf(order: dict) -> io.BytesIO:
             totals_data.append(['Logistics:', f"Rs {logistics:,.2f}"])
         else:
             totals_data.append(['Logistics:', 'FREE (Included)'])
+        # Gross value here = subtotal + charges (charges weren't taxed
+        # in legacy, so this row is for readability only).
+        legacy_gross = round(subtotal + packaging + (logistics_only if logistics_only > 0 else logistics), 2)
+        totals_data.append(['Gross Value:', f"Rs {legacy_gross:,.2f}"])
+        if is_interstate:
+            totals_data.append(['IGST (5%):', f"Rs {tax:,.2f}"])
+        else:
+            cgst = tax / 2
+            sgst = tax / 2
+            totals_data.append(['CGST (2.5%):', f"Rs {cgst:,.2f}"])
+            totals_data.append(['SGST (2.5%):', f"Rs {sgst:,.2f}"])
 
     if discount > 0:
         coupon = order.get('coupon', {})
         coupon_code = coupon.get('code', 'DISCOUNT') if coupon else 'DISCOUNT'
         totals_data.append([f'Coupon ({coupon_code}):', f"-Rs {discount:,.2f}"])
 
-    totals_data.append(['TOTAL:', f"Rs {total:,.2f}"])
+    totals_data.append(['Total Invoice Value:', f"Rs {total:,.2f}"])
+    # If the order was settled from the brand's pre-purchased sample
+    # credit wallet, add a "Settled via" row so the buyer's accounts
+    # team immediately knows no cash was charged on this invoice. The
+    # GST + total still print at their full value (statutory display);
+    # this row just clarifies the source of funds.
+    if _pm_raw == 'sample_credit':
+        totals_data.append(['Settled via:', 'Sample Credits'])
     
-    totals_table = Table(totals_data, colWidths=[130*mm, 46*mm])
+    totals_table = Table(totals_data, colWidths=[44*mm, 36*mm])
     totals_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
         ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
         ('FONTSIZE', (0, 0), (-1, -1), 9),
+        # All rows in brand blue — matches the desired mockup. Total row
+        # stays bolder so the eye lands on it.
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor(BRAND_BLUE)),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('TEXTCOLOR', (0, -1), (-1, -1), colors.HexColor(BRAND_BLUE)),
+        ('FONTSIZE', (0, -1), (-1, -1), 10),
         ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor(BRAND_BLUE)),
         ('TOPPADDING', (0, 0), (-1, -1), 4),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
-    elements.append(totals_table)
-    elements.append(Spacer(1, 3*mm))
+
+    # Authorised signatory (left) + totals stack (right), like the mockup.
+    # Stamp + signature image is embedded above the "Authorised Signatory"
+    # line so every tax invoice ships with an authentic seal.
+    _sig_path = os.path.join(os.path.dirname(__file__), 'assets', 'signature.png')
+    sig_block_cells = [[Paragraph(
+        '<font size="9"><b>For LOCOFAST ONLINE SERVICES PRIVATE LIMITED</b></font>',
+        ParagraphStyle('SigHead', parent=styles['Normal'], fontSize=9, leading=12, alignment=TA_LEFT)
+    )]]
+    if os.path.exists(_sig_path):
+        # Scale the stamp to a print-friendly footprint (~32mm wide).
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(_sig_path) as _im:
+                _sw, _sh = _im.size
+            _aspect = _sw / _sh if _sh else 2.0
+        except Exception:  # noqa: BLE001
+            _aspect = 2.0
+        stamp_w = 32 * mm
+        stamp = Image(_sig_path, width=stamp_w, height=stamp_w / _aspect)
+        stamp.hAlign = 'LEFT'
+        sig_block_cells.append([stamp])
+    sig_block_cells.append([Paragraph(
+        '<font size="9"><b>Authorised Signatory</b></font>',
+        ParagraphStyle('SigFoot', parent=styles['Normal'], fontSize=9, leading=12, alignment=TA_LEFT)
+    )])
+    signatory = Table(sig_block_cells, colWidths=[100*mm])
+    signatory.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    sig_and_totals = Table([[signatory, totals_table]], colWidths=[100*mm, 80*mm])
+    sig_and_totals.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(sig_and_totals)
+    elements.append(Spacer(1, 4*mm))
     
-    # Amount in Words (paise-aware)
+    # Amount in Words — boxed for emphasis
     amount_words = number_to_words(total)
     elements.append(Paragraph(
         f"<b>Amount in Words:</b> {amount_words}",
-        ParagraphStyle('AmountWords', parent=styles['Normal'], fontSize=9, backColor=colors.HexColor(LIGHT_BG), borderPadding=5)
+        ParagraphStyle('AmountWords', parent=styles['Normal'], fontSize=9, backColor=colors.HexColor(LIGHT_BG), borderColor=colors.HexColor('#dbeafe'), borderWidth=0.5, borderPadding=6, leading=12)
     ))
     elements.append(Spacer(1, 5*mm))
     
@@ -2534,7 +4662,28 @@ async def get_invoice(order_id: str):
     # Only allow invoice for paid orders
     if order.get('payment_status') != 'paid':
         raise HTTPException(status_code=400, detail="Invoice available only for paid orders")
-    
+
+    # No invoice for the parent of a split (multi-vendor) order. Each
+    # sub-order (one per vendor) carries its own sequential invoice
+    # number and is downloadable independently. The parent is a
+    # master/grouping record only.
+    if order.get('is_parent_order') and (order.get('child_order_ids') or (order.get('vendor_count') or 0) > 1):
+        child_numbers = order.get('child_order_numbers') or []
+        msg = "Invoice is not generated for the master order. Download invoices from each sub-order"
+        if child_numbers:
+            msg = f"{msg}: {', '.join(child_numbers)}."
+        else:
+            msg = f"{msg}."
+        raise HTTPException(status_code=400, detail=msg)
+
+    # Resolve the customer's current GST trade name. The order snapshot's
+    # `customer.company` can be empty on legacy / pre-GST-verification
+    # orders — in those cases we look up the canonical customer record
+    # and patch the trade name into the snapshot so the tax invoice's
+    # "Bill To" prints the registered business name, not just the
+    # contact name.
+    await _hydrate_customer_trade_name(order)
+
     # Generate PDF
     try:
         pdf_buffer = generate_invoice_pdf(order)
@@ -2553,6 +4702,53 @@ async def get_invoice(order_id: str):
     except Exception as e:
         logger.error(f"Failed to generate invoice: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate invoice: {str(e)}")
+
+
+@router.get("/{order_id}/packing-slip")
+async def download_packing_slip(order_id: str, request: Request):
+    """Vendor / Admin: download a PDF packing slip listing every roll
+    individually. Vendors see only their own items; admins see all.
+    Available once at least one item has been marked goods-ready."""
+    caller_role, caller_sid = await _resolve_vendor_caller(request)
+    order = await db.orders.find_one(
+        {"$or": [{"id": order_id}, {"order_number": order_id}]},
+        {"_id": 0},
+    )
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Validate caller has at least one item on this order
+    if caller_role == "vendor":
+        item_sids = {(it.get("seller_id") or "") for it in (order.get("items") or [])}
+        if caller_sid not in item_sids:
+            raise HTTPException(status_code=403, detail="You have no items on this order")
+
+    # Need *something* to render — either rolls or actual quantity. We
+    # allow generation even before goods-ready so vendors can pre-print,
+    # but warn the caller via response header.
+    has_ready_data = any(
+        (it.get("dispatch_rolls") or it.get("actual_quantity") is not None or it.get("quantity"))
+        for it in (order.get("items") or [])
+    )
+    if not has_ready_data:
+        raise HTTPException(status_code=400, detail="No quantity data on this order yet")
+
+    from packing_slip import generate_packing_slip_pdf
+    try:
+        pdf = generate_packing_slip_pdf(order, seller_id=(caller_sid or None) if caller_role == "vendor" else None)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Packing slip generation failed for {order_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate packing slip")
+
+    filename = f"PackingSlip_{order.get('order_number', order_id)}.pdf"
+    return StreamingResponse(
+        pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Type": "application/pdf",
+        },
+    )
 
 
 # ==================== PROFORMA INVOICE (Bangladesh/Export) ====================
@@ -2586,7 +4782,11 @@ def generate_pi_pdf(order: dict) -> io.BytesIO:
     small_style = ParagraphStyle('PISmall', parent=styles['Normal'], fontSize=7, leading=9)
     header_style = ParagraphStyle('PIHeader', parent=styles['Normal'], fontSize=9, leading=12, fontName='Helvetica-Bold', textColor=colors.HexColor('#1e3a5f'))
 
-    # Header
+    # Header — Locofast logo (top-left) + centered PROFORMA INVOICE title.
+    pi_logo = _get_logo_drawing(target_height_mm=11)
+    if pi_logo is not None:
+        elements.append(pi_logo)
+        elements.append(Spacer(1, 2*mm))
     elements.append(Paragraph("PROFORMA INVOICE", title_style))
     elements.append(Spacer(1, 2*mm))
 
@@ -2615,12 +4815,19 @@ def generate_pi_pdf(order: dict) -> io.BytesIO:
     elements.append(company_table)
     elements.append(Spacer(1, 4*mm))
 
-    # Bill To / Ship To
+    # Bill To / Ship To — trade name (company) leads, contact as "Attn:".
     customer = order.get('customer', {})
+    pi_company = (customer.get('company') or '').strip()
+    pi_contact = (customer.get('name') or '').strip()
+    pi_bill_primary = pi_company or pi_contact
+    pi_bill_attn = f"Attn: {pi_contact}<br/>" if pi_company and pi_contact and pi_contact.lower() != pi_company.lower() else ""
+    pi_ship_contact = (customer.get('shipping_name') or customer.get('name') or '').strip()
+    pi_ship_primary = pi_company or pi_ship_contact
+    pi_ship_attn = f"Attn: {pi_ship_contact}<br/>" if pi_company and pi_ship_contact and pi_ship_contact.lower() != pi_company.lower() else ""
     bill_ship = [
         [Paragraph("<b>Bill To</b>", header_style), Paragraph("<b>Ship To</b>", header_style)],
-        [Paragraph(f"{customer.get('name', '')}<br/>{customer.get('company', '')}<br/>{customer.get('address', '')}<br/>{customer.get('city', '')}, {customer.get('state', '')}<br/>{customer.get('email', '')}", small_style),
-         Paragraph(f"{customer.get('shipping_name', customer.get('name', ''))}<br/>{customer.get('shipping_address', customer.get('address', ''))}<br/>{customer.get('shipping_city', customer.get('city', ''))}, {customer.get('shipping_state', customer.get('state', ''))}", small_style)],
+        [Paragraph(f"{pi_bill_primary}<br/>{pi_bill_attn}{customer.get('address', '')}<br/>{customer.get('city', '')}, {customer.get('state', '')}<br/>{customer.get('email', '')}", small_style),
+         Paragraph(f"{pi_ship_primary}<br/>{pi_ship_attn}{customer.get('shipping_address', customer.get('address', ''))}<br/>{customer.get('shipping_city', customer.get('city', ''))}, {customer.get('shipping_state', customer.get('state', ''))}", small_style)],
     ]
     bill_table = Table(bill_ship, colWidths=[85*mm, 85*mm])
     bill_table.setStyle(TableStyle([
@@ -2873,6 +5080,8 @@ async def get_proforma_invoice(order_id: str):
         raise HTTPException(status_code=404, detail="Order not found")
     if order.get('dispatch_country') != 'bangladesh':
         raise HTTPException(status_code=400, detail="Proforma Invoice only available for export orders")
+
+    await _hydrate_customer_trade_name(order)
 
     pdf_buffer = generate_pi_pdf(order)
     pi_num = order.get('pi_number', order_id).replace('/', '-')

@@ -11,10 +11,17 @@ api.interceptors.request.use((config) => {
   // Check for vendor token first (for /vendor/* and /cloudinary/* routes when vendor is logged in)
   const vendorToken = localStorage.getItem("vendor_token");
   const agentToken = localStorage.getItem("lf_agent_token");
-  if (config.url?.startsWith('/vendor') && !config.url?.includes('/vendor/login')) {
-    if (vendorToken) {
-      config.headers.Authorization = `Bearer ${vendorToken}`;
-    }
+  
+  // Routes that should use vendor token when vendor is logged in
+  const vendorRoutes = [
+    '/vendor',
+    '/orders/*/mark-goods-ready'  // Provisional order flow
+  ];
+  const isVendorRoute = config.url?.startsWith('/vendor') && !config.url?.includes('/vendor/login');
+  const isMarkGoodsReady = config.url?.includes('/mark-goods-ready');
+  
+  if ((isVendorRoute || isMarkGoodsReady) && vendorToken) {
+    config.headers.Authorization = `Bearer ${vendorToken}`;
   } else if (config.url?.includes('/cloudinary') && vendorToken && !localStorage.getItem("locofast_token")) {
     // Use vendor token for cloudinary uploads when only vendor is logged in
     config.headers.Authorization = `Bearer ${vendorToken}`;
@@ -37,7 +44,14 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const status = error.response?.status;
+    // FastAPI HTTPBearer returns 403 "Not authenticated" when no Authorization
+    // header is sent (e.g. admin session was cleared in another tab). Treat
+    // these the same as 401 — clear stale creds and bounce to admin login
+    // so the user gets useful feedback instead of a generic toast.
+    const looksUnauth = status === 401
+      || (status === 403 && /not authenticated|invalid authentication/i.test(error.response?.data?.detail || ""));
+    if (looksUnauth) {
       // Only redirect to login if the failed request required auth
       // Don't redirect for public endpoints that happen to fail
       const requestUrl = error.config?.url || '';
@@ -56,17 +70,18 @@ api.interceptors.response.use(
         '/orders',
         '/cloudinary'
       ];
-      
+
       // Check if this was an auth-required endpoint
-      const isAuthRequired = authRequiredEndpoints.some(endpoint => 
+      const isAuthRequired = authRequiredEndpoints.some(endpoint =>
         requestUrl.includes(endpoint) && !requestUrl.includes('/blog/')
       );
-      
+
       if (isAuthRequired) {
         localStorage.removeItem("locofast_token");
         localStorage.removeItem("locofast_admin");
         if (window.location.pathname.startsWith("/admin") && window.location.pathname !== "/admin/login") {
-          window.location.href = "/admin/login";
+          // Preserve the original detail so the login page can show "Session expired"
+          window.location.href = "/admin/login?reason=expired";
         }
       }
     }
@@ -145,6 +160,22 @@ export const placeOrderFromQuote = (token, quoteId, payload) =>
   api.post(`/customer/queries/quotes/${quoteId}/place-order`, payload, { headers: { Authorization: `Bearer ${token}` } });
 
 
+// Customer Wishlists
+const _h = (token) => ({ headers: { Authorization: `Bearer ${token}` } });
+export const listWishlists = (token) => api.get("/wishlists", _h(token));
+export const createWishlist = (token, name) => api.post("/wishlists", { name }, _h(token));
+export const getWishlist = (token, id) => api.get(`/wishlists/${id}`, _h(token));
+export const updateWishlist = (token, id, data) => api.patch(`/wishlists/${id}`, data, _h(token));
+export const deleteWishlist = (token, id) => api.delete(`/wishlists/${id}`, _h(token));
+export const addToWishlist = (token, id, fabricId) =>
+  api.post(`/wishlists/${id}/items`, { fabric_id: fabricId }, _h(token));
+export const removeFromWishlist = (token, id, fabricId) =>
+  api.delete(`/wishlists/${id}/items/${fabricId}`, _h(token));
+export const shareWishlist = (token, id, regenerate = false) =>
+  api.post(`/wishlists/${id}/share`, { regenerate }, _h(token));
+export const getSharedWishlist = (shareToken) => api.get(`/wishlists/share/${shareToken}`);
+
+
 // Articles (Color Variant Grouping)
 export const getArticles = (params) => api.get("/articles", { params });
 export const getArticle = (id) => api.get(`/articles/${id}`);
@@ -155,7 +186,7 @@ export const deleteArticle = (id) => api.delete(`/articles/${id}`);
 
 // Enquiries
 export const createEnquiry = (data) => api.post("/enquiries", data);
-export const getEnquiries = () => api.get("/enquiries");
+export const getEnquiries = (params = {}) => api.get("/enquiries", { params });
 export const updateEnquiryStatus = (id, status) => api.put(`/enquiries/${id}/status?status=${status}`);
 export const deleteEnquiry = (id) => api.delete(`/enquiries/${id}`);
 
@@ -379,9 +410,14 @@ export const getOrder = (id) => api.get(`/orders/${id}`);
 export const getOrderByRazorpayId = (razorpayOrderId) => api.get(`/orders/by-razorpay/${razorpayOrderId}`);
 export const listOrders = (params) => api.get("/orders", { params });
 export const updateOrderStatus = (id, status) => api.put(`/orders/${id}/status?status=${status}`);
-export const cancelOrder = (id, reason) => api.put(`/orders/${id}/cancel`, { reason });
-export const pushOrderToShiprocket = (id, force = false) =>
-  api.post(`/orders/admin/${id}/push-to-shiprocket${force ? "?force=true" : ""}`);
+export const updateOrderPaymentStatus = (id, payload) => api.put(`/orders/${id}/payment-status`, payload);
+export const getOrderSellerCommissions = (id) => api.get(`/orders/${id}/seller-commissions`);
+export const cancelOrder = (id, reason, notes = "") => api.put(`/orders/${id}/cancel`, { reason, notes });
+export const pushOrderToShiprocket = (id, force = false, sellerIds = null) => {
+  const url = `/orders/admin/${id}/push-to-shiprocket${force ? "?force=true" : ""}`;
+  const body = sellerIds ? { seller_ids: sellerIds } : undefined;
+  return api.post(url, body);
+};
 export const getOrderStats = () => api.get("/orders/stats/summary");
 export const listCreditWallets = () => api.get("/orders/credit/wallets");
 export const bulkUploadCreditWallets = (wallets, mode = "replace") => api.post("/orders/credit/wallets/bulk-upload", { wallets, mode });
@@ -389,9 +425,7 @@ export const upsertCreditWallet = (data) => api.post("/orders/credit/wallets/ups
 export const lookupCreditWalletByGst = (gstNumber) =>
   api.get(`/orders/credit/wallets/lookup?gst_number=${encodeURIComponent(gstNumber)}`);
 
-// Admin order edit + audit trail
-export const adminEditOrder = (orderId, payload) =>
-  api.patch(`/orders/${orderId}/edit`, payload);
+// Admin order audit trail (read-only)
 export const listOrderEdits = (orderId) =>
   api.get(`/orders/${orderId}/edits`);
 export const getCreditApplications = () => api.get("/credit/applications");
@@ -427,6 +461,15 @@ export const createVendorFabric = (data) => api.post("/vendor/fabrics", data);
 export const updateVendorFabric = (id, data) => api.put(`/vendor/fabrics/${id}`, data);
 export const deleteVendorFabric = (id) => api.delete(`/vendor/fabrics/${id}`);
 export const getVendorOrders = () => api.get("/vendor/orders");
+export const vendorMarkGoodsReady = (orderId, items, vendor_invoice = null) =>
+  api.post(`/orders/${orderId}/mark-goods-ready`, vendor_invoice ? { items, vendor_invoice } : { items });
+export const adminMarkBalancePaid = (orderId, payload = {}) =>
+  api.post(`/orders/${orderId}/mark-balance-paid`, payload);
+export const vendorAcceptOrder = (orderId) => api.post(`/orders/${orderId}/vendor-accept`);
+export const vendorCancelOrder = (orderId, reason) =>
+  api.post(`/orders/${orderId}/vendor-cancel`, { reason });
+export const mintBalanceShareLink = (orderId) =>
+  api.post(`/orders/${orderId}/balance-share-link`);
 export const getVendorStats = () => api.get("/vendor/stats");
 export const getVendorCategories = () => api.get("/vendor/categories");
 export const getVendorEnquiries = () => api.get("/vendor/enquiries");

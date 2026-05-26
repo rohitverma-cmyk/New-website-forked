@@ -1612,8 +1612,14 @@ async def brand_create_order(data: BrandOrderCreate, user=Depends(get_current_br
                 m = _re.match(r"\s*(\d+)", moq_raw)
                 if m:
                     moq = int(m.group(1))
-            if it.quantity < moq:
-                raise HTTPException(status_code=400, detail=f"{f.get('name')}: qty {it.quantity} below MOQ {moq}")
+            # Enterprise (brand) channel floor: brands placing orders from
+            # their enterprise dashboard can book as low as 30 m per line
+            # even if the vendor-set MOQ is higher. Vendor MOQs apply on the
+            # public customer flow only.
+            ENTERPRISE_BULK_MIN = 30
+            effective_moq = min(moq, ENTERPRISE_BULK_MIN) if moq > 0 else ENTERPRISE_BULK_MIN
+            if it.quantity < effective_moq:
+                raise HTTPException(status_code=400, detail=f"{f.get('name')}: qty {it.quantity} below minimum {effective_moq}m")
             # Defence-in-depth: stock cap. If the fabric has a recorded
             # quantity_available > 0, refuse any bulk line that exceeds it.
             stock_q = int(f.get("quantity_available") or 0)
@@ -1819,34 +1825,155 @@ ORDER_DELIVERY_CC = [e.strip() for e in os.environ.get(
 ).split(",") if e.strip()]
 
 
-def _order_items_html(order):
+def _order_items_html(order, seller_id: str = ""):
+    """Render the order items table.
+
+    If `seller_id` is provided, only that seller's items are shown
+    (vendor-facing email — must not reveal other vendors' SKUs or
+    pricing). The Amount column is also dropped for vendors since the
+    customer-facing line total is platform commercial info.
+    """
+    items = order.get("items", []) or []
+    if seller_id:
+        items = [it for it in items if (it.get("seller_id") or "") == seller_id]
     rows = []
-    for it in order.get("items", []):
+    for it in items:
         fabric_ref = it.get("fabric_slug") or it.get("fabric_id", "")
         fabric_url = f"{SITE_URL}/fabrics/{fabric_ref}" if fabric_ref else ""
         name_cell = (
             f"<a href='{fabric_url}' style='color:#2563EB;text-decoration:underline;font-weight:600;'>{it.get('fabric_name', '')}</a>"
             if fabric_url else (it.get("fabric_name", "") or "")
         )
-        rows.append(
-            f"<tr><td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{name_cell}</td>"
-            f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{it.get('fabric_code', '')}</td>"
-            f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;text-align:right;'>{it.get('quantity', 0)}</td>"
-            f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;text-align:right;'>₹{it.get('line_total', 0):,.2f}</td></tr>"
+        if seller_id:
+            rows.append(
+                f"<tr><td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{name_cell}</td>"
+                f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{it.get('fabric_code', '')}</td>"
+                f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;text-align:right;'>{it.get('quantity', 0)}</td></tr>"
+            )
+        else:
+            rows.append(
+                f"<tr><td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{name_cell}</td>"
+                f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;'>{it.get('fabric_code', '')}</td>"
+                f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;text-align:right;'>{it.get('quantity', 0)}</td>"
+                f"<td style='padding:8px 12px;border-bottom:1px solid #eef2f7;text-align:right;'>₹{it.get('line_total', 0):,.2f}</td></tr>"
+            )
+    if seller_id:
+        head = (
+            "<th style='padding:8px 12px;'>Fabric</th><th style='padding:8px 12px;'>Code</th>"
+            "<th style='padding:8px 12px;text-align:right;'>Qty</th>"
+        )
+    else:
+        head = (
+            "<th style='padding:8px 12px;'>Fabric</th><th style='padding:8px 12px;'>Code</th>"
+            "<th style='padding:8px 12px;text-align:right;'>Qty</th><th style='padding:8px 12px;text-align:right;'>Amount</th>"
         )
     return (
         "<table style='width:100%;border-collapse:collapse;font-size:13px;margin:16px 0;border:1px solid #eef2f7;border-radius:6px;overflow:hidden;'>"
         "<thead style='background:#f9fafb;text-align:left;'><tr>"
-        "<th style='padding:8px 12px;'>Fabric</th><th style='padding:8px 12px;'>Code</th>"
-        "<th style='padding:8px 12px;text-align:right;'>Qty</th><th style='padding:8px 12px;text-align:right;'>Amount</th>"
+        f"{head}"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
 
 
-def _order_email_html(order, audience_line, cta_html=""):
+def _order_email_html(order, audience_line, cta_html="", for_seller: bool = False, seller_id: str = ""):
+    """Render the brand-order notification email.
+
+    Customer-facing audiences (placer, brand admins, ops) see the full
+    order context including buyer identity, contact details, ship-to
+    address, and per-line amounts.
+
+    Vendor audiences (`for_seller=True`) get a PII-scrubbed view:
+      • No buyer name, email, phone, or company.
+      • No street address — only city/state/pincode (routing zone).
+      • Only items belonging to this vendor (`seller_id`), with no
+        per-line price or order totals (platform commercial info).
+    """
     c = order.get("customer", {})
-    addr_parts = [c.get("address", ""), c.get("city", ""), c.get("state", ""), c.get("pincode", "")]
-    addr = ", ".join(p for p in addr_parts if p)
+    if for_seller:
+        # Seller view: only ship-to zone is allowed (city/state/pincode).
+        # Locofast is the seller of record — buyer identity is masked.
+        zone_parts = [c.get("city", ""), c.get("state", ""), c.get("pincode", "")]
+        addr = ", ".join(p for p in zone_parts if p)
+    else:
+        addr_parts = [c.get("address", ""), c.get("city", ""), c.get("state", ""), c.get("pincode", "")]
+        addr = ", ".join(p for p in addr_parts if p)
+    # GST tax-invoice CTA — surfaced on the placer + brand-admin email
+    # for any PAID order (samples included). The /api/orders/{id}/invoice
+    # endpoint already generates a GST-compliant PDF for samples and
+    # bulk alike; this just makes the link discoverable in inbox.
+    invoice_cta = ""
+    if (order.get("payment_status") or "").lower() == "paid":
+        from email_router import SITE_URL as _SITE_URL
+        invoice_cta = (
+            '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:6px;padding:18px;margin-top:14px;text-align:center;">'
+            f'<a href="{_SITE_URL}/api/orders/{order.get("id", "")}/invoice" '
+            'style="display:inline-block;background:#2563EB;color:#fff;text-decoration:none;padding:11px 26px;border-radius:6px;font-weight:600;font-size:13px;">'
+            'Download Tax Invoice (GST)</a>'
+            '<p style="margin:8px 0 0;font-size:11px;color:#64748b;">A GST-compliant invoice has been generated for this order.</p>'
+            '</div>'
+        )
+    # Buyer identity & contact block — only for customer-facing audiences.
+    # Vendors must NEVER see customer name, email, phone, brand company,
+    # or street address (B2B marketplace policy).
+    if for_seller:
+        intro_line = "A new order has been placed via Locofast."
+        contact_block = (
+            f"<div style='background:#f8fafc;border:1px solid #eef2f7;border-radius:6px;padding:12px 14px;font-size:13px;color:#475569;margin:12px 0;'>"
+            f"{f'<div><strong>Ship-To Zone:</strong> {addr}</div>' if addr else ''}"
+            f"<div style='font-size:12px;color:#64748b;margin-top:4px;'>Full consignee details (name / contact / GSTIN) are on the Shiprocket pickup label. Address customer queries to Locofast Ops only.</div>"
+            f"</div>"
+        )
+        totals_block = ""  # vendors don't see customer-facing totals
+        terms_block = ""   # vendors don't see customer terms
+        payment_note = ""  # vendors don't see how the buyer paid
+    else:
+        intro_line = (
+            f"<strong>{c.get('company', '')}</strong> placed a "
+            f"{'sample' if order.get('order_type') == 'sample' else 'bulk'} order on Locofast."
+        )
+        contact_block = (
+            f"<div style='background:#f8fafc;border:1px solid #eef2f7;border-radius:6px;padding:12px 14px;font-size:13px;color:#475569;margin:12px 0;'>"
+            f"<div><strong>Placed by:</strong> {c.get('name', '')} ({c.get('email', '')})</div>"
+            f"<div><strong>Phone:</strong> {c.get('phone', '—')}</div>"
+            f"{f'<div><strong>Ship to:</strong> {addr}</div>' if addr else ''}"
+            f"</div>"
+        )
+        # Pre-compute optional rows so the totals f-string stays readable.
+        _pack_amt = order.get("packaging_charge") or 0
+        _logi_amt = order.get("logistics_only_charge") or order.get("logistics_charge") or 0
+        _disc_amt = order.get("discount") or 0
+        _pack_row = (f'<tr><td>Packaging</td><td style="text-align:right;">₹{_pack_amt:,.2f}</td></tr>' if _pack_amt > 0 else "")
+        _logi_row = (f'<tr><td>Logistics</td><td style="text-align:right;">₹{_logi_amt:,.2f}</td></tr>' if _logi_amt > 0 else "")
+        _disc_row = (f'<tr><td>Discount</td><td style="text-align:right;color:#dc2626;">-₹{_disc_amt:,.2f}</td></tr>' if _disc_amt > 0 else "")
+        totals_block = (
+            f'<table style="width:100%;font-size:13px;color:#475569;">'
+            f'<tr><td>Subtotal</td><td style="text-align:right;">₹{order.get("subtotal", 0):,.2f}</td></tr>'
+            f'{_pack_row}'
+            f'{_logi_row}'
+            f'<tr><td>Tax (5%)</td><td style="text-align:right;">₹{order.get("tax", 0):,.2f}</td></tr>'
+            f'{_disc_row}'
+            f'<tr><td style="padding-top:10px;font-weight:700;color:#0f172a;">Total</td><td style="padding-top:10px;text-align:right;font-weight:700;color:#059669;">₹{order.get("total", 0):,.2f}</td></tr>'
+            f'</table>'
+        )
+        terms_block = (
+            '<div style="background:#ecfdf5;border:1px solid #d1fae5;border-radius:8px;padding:14px 16px;margin-top:14px;font-size:12.5px;color:#047857;line-height:1.65;">'
+            '<strong style="color:#065f46;display:block;margin-bottom:8px;">Order Confirmation Terms</strong>'
+            '<ol style="margin:0;padding-left:18px;">'
+            '<li style="margin-bottom:6px;">Your order has been shared with our vendor partner, who will begin packaging and dispatch shortly.</li>'
+            '<li style="margin-bottom:6px;">Shipment will be dispatched within <strong>2–3 business days</strong> (Sat/Sun &amp; public holidays excluded).</li>'
+            '<li style="margin-bottom:6px;">All tracking details &amp; dispatch updates will be shared via SMS/Email.</li>'
+            '<li style="margin-bottom:6px;">In the rare event of stock unavailability, your order will be cancelled and a <strong>full refund</strong> will be initiated promptly.</li>'
+            '<li>Queries? WhatsApp <a href="https://wa.me/918920392418" style="color:#047857;font-weight:600;">+91-8920392418</a> or email <a href="mailto:mail@locofast.com" style="color:#047857;font-weight:600;">mail@locofast.com</a>.</li>'
+            '</ol>'
+            '</div>'
+        )
+        payment_note = f'<p style="font-size:12px;color:#94a3b8;margin:18px 0 0 0;">Payment method: {order.get("payment_method", "")}.</p>'
+
+    # Invoice CTA is also customer-facing; vendors must not download
+    # the buyer's GST invoice (their own payout invoice is separate).
+    if for_seller:
+        invoice_cta = ""
+
     return f"""
       <div style="font-family:-apple-system,Segoe UI,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#0f172a;">
         <div style="background:#059669;color:#fff;padding:18px 22px;border-radius:10px 10px 0 0;">
@@ -1854,26 +1981,13 @@ def _order_email_html(order, audience_line, cta_html=""):
           <p style="margin:4px 0 0 0;font-size:12px;opacity:0.9;">{audience_line}</p>
         </div>
         <div style="padding:22px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px;background:#fff;">
-          <p style="font-size:14px;color:#334155;margin:0 0 8px 0;">
-            <strong>{c.get("company", "")}</strong> placed a {"sample" if order.get("order_type") == "sample" else "bulk"} order on Locofast.
-          </p>
-          <div style="background:#f8fafc;border:1px solid #eef2f7;border-radius:6px;padding:12px 14px;font-size:13px;color:#475569;margin:12px 0;">
-            <div><strong>Placed by:</strong> {c.get("name", "")} ({c.get("email", "")})</div>
-            <div><strong>Phone:</strong> {c.get("phone", "—")}</div>
-            {f"<div><strong>Ship to:</strong> {addr}</div>" if addr else ""}
-          </div>
-          {_order_items_html(order)}
-          <table style="width:100%;font-size:13px;color:#475569;">
-            <tr><td>Subtotal</td><td style="text-align:right;">₹{order.get("subtotal", 0):,.2f}</td></tr>
-            <tr><td>Tax (5%)</td><td style="text-align:right;">₹{order.get("tax", 0):,.2f}</td></tr>
-            <tr><td>Logistics</td><td style="text-align:right;">₹{order.get("logistics_charge", 0):,.2f}</td></tr>
-            <tr><td style="padding-top:10px;font-weight:700;color:#0f172a;">Total</td><td style="padding-top:10px;text-align:right;font-weight:700;color:#059669;">₹{order.get("total", 0):,.2f}</td></tr>
-          </table>
-          <p style="font-size:12px;color:#94a3b8;margin:18px 0 0 0;">Payment method: {order.get("payment_method", "")}. Any questions? Reply to this email or write to {SUPPORT_EMAIL}.</p>
-          <div style="background:#fff7ed;border-left:3px solid #fb923c;border-radius:6px;padding:10px 14px;margin-top:14px;font-size:12px;color:#9a3412;line-height:1.55;">
-            <strong>Dispatch commitments</strong><br>
-            {"• Samples dispatched in 24–48 hours" if order.get("order_type") == "sample" else "• Bulk: 24–48 hours for packaging &amp; dispatch (in-stock items)<br>• Manufactured-to-order items typically dispatch within ~30 days of confirmation"}
-          </div>
+          <p style="font-size:14px;color:#334155;margin:0 0 8px 0;">{intro_line}</p>
+          {contact_block}
+          {_order_items_html(order, seller_id=seller_id if for_seller else "")}
+          {totals_block}
+          {payment_note}
+          {terms_block}
+          {invoice_cta}
           {cta_html}
         </div>
       </div>
@@ -1935,18 +2049,31 @@ async def _notify_order_recipients(order):
             html = _order_email_html(order, f"New order by {order.get('customer', {}).get('name', 'a team member')}.")
             await _send_and_log(f"brand_order_{o_type}_admins", admin_emails, f"{subject_prefix} — New team order", html)
 
-        # 3) Sellers of each item (deduped)
+        # 3) Sellers of each item — fan out PER SELLER so each vendor
+        # only sees their own items, never customer PII (name / email /
+        # phone / address) or other vendors' SKUs and pricing.
         seller_ids = list({(it.get("seller_id") or "") for it in order.get("items", []) if it.get("seller_id")})
         if seller_ids:
-            seller_emails = []
-            async for s in db.sellers.find({"id": {"$in": seller_ids}}, {"_id": 0, "email": 1, "contact_email": 1}):
-                e = s.get("email") or s.get("contact_email")
-                if e:
-                    seller_emails.append(e)
-            if seller_emails:
-                html = _order_email_html(order, "A new order has been placed for your SKU(s). Please prepare dispatch.")
-                await _send_and_log(f"brand_order_{o_type}_sellers", seller_emails, f"{subject_prefix} — Action required", html,
-                                    meta={"seller_ids": seller_ids})
+            for sid in seller_ids:
+                s = await db.sellers.find_one({"id": sid}, {"_id": 0, "email": 1, "contact_email": 1})
+                if not s:
+                    continue
+                s_email = s.get("email") or s.get("contact_email")
+                if not s_email:
+                    continue
+                html = _order_email_html(
+                    order,
+                    "A new order has been placed for your SKU(s). Please prepare dispatch.",
+                    for_seller=True,
+                    seller_id=sid,
+                )
+                await _send_and_log(
+                    f"brand_order_{o_type}_sellers",
+                    [s_email],
+                    f"{subject_prefix} — Action required",
+                    html,
+                    meta={"seller_id": sid},
+                )
 
         # 4) Internal Locofast ops + delivery coordinators (Ashish etc.)
         html = _order_email_html(order, "Internal notification — route for fulfilment.")

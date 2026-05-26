@@ -188,3 +188,11 @@ credentials.json
 *.pem
 *.key
 .credentials
+frontend/node_modules/.cache/default-development/23.pack
+frontend/node_modules/.cache/default-development/43.pack
+frontend/node_modules/.cache/default-development/60.pack
+frontend/node_modules/.cache/default-development/61.pack
+frontend/node_modules/.cache/default-development/84.pack
+frontend/node_modules/.cache/default-development/87.pack
+frontend/node_modules/.cache/default-development/73.pack
+frontend/node_modules/.cache/default-development/57.pack

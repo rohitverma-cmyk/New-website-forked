@@ -92,14 +92,19 @@ const BrandFabricDetail = () => {
   const samplePrice = Number(fabric?.sample_price || 100);
   const unit = fabric?.fabric_type === "knitted" && fabric?.category_id !== "cat-denim" ? "kg" : "m";
 
+  // Enterprise (brand) channel floor: bulk orders can go as low as 30 m
+  // even if the vendor's public MOQ is higher. Vendor MOQ still surfaces
+  // as a UI hint, but the actual booking floor is min(vendor_moq, 30).
+  const ENTERPRISE_BULK_MIN = 30;
   const moqValue = (() => {
     const m = fabric?.moq;
-    if (typeof m === "number") return m;
-    if (typeof m === "string") {
+    let vendorMoq = 1;
+    if (typeof m === "number") vendorMoq = m;
+    else if (typeof m === "string") {
       const match = m.match(/^\s*(\d+)/);
-      if (match) return Number(match[1]);
+      if (match) vendorMoq = Number(match[1]);
     }
-    return 1;
+    return vendorMoq > 0 ? Math.min(vendorMoq, ENTERPRISE_BULK_MIN) : ENTERPRISE_BULK_MIN;
   })();
 
   const lineTotal = orderType === "sample" ? samplePrice * qty : rate * qty;

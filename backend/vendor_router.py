@@ -55,6 +55,7 @@ class VendorResponse(BaseModel):
     contact_phone: str
     city: str = ""
     state: str = ""
+    pickup_addresses: List[dict] = []
 
 class FabricCreate(BaseModel):
     name: str
@@ -99,6 +100,9 @@ class FabricCreate(BaseModel):
     pricing_tiers: List[dict] = []
     has_multiple_colors: bool = False
     color_variants: List[dict] = []
+    # Pickup-address tagging — links this SKU to ONE of the seller's
+    # saved pickup_addresses. "" = use seller's default pickup address.
+    pickup_address_id: str = ""
 
 class FabricUpdate(BaseModel):
     name: Optional[str] = None
@@ -142,6 +146,7 @@ class FabricUpdate(BaseModel):
     pricing_tiers: Optional[List[dict]] = None
     has_multiple_colors: Optional[bool] = None
     color_variants: Optional[List[dict]] = None
+    pickup_address_id: Optional[str] = None
 
 # ==================== AUTH HELPERS ====================
 
@@ -180,23 +185,42 @@ async def get_current_vendor(credentials: HTTPAuthorizationCredentials = Depends
 
 @router.post("/login")
 async def vendor_login(data: VendorLogin):
-    """Vendor login with email and password"""
+    """Unified vendor login. If the email isn't a seller, falls back to
+    the Supplier Manager table so SMs can sign in from the same screen."""
     seller = await db.sellers.find_one({'contact_email': data.email, 'is_active': True})
-    
+
     if not seller:
+        # Fall back to Supplier Manager auth — same login URL, different role.
+        from supplier_manager_router import try_supplier_manager_login
+        sm_response = await try_supplier_manager_login(data.email, data.password)
+        if sm_response:
+            return sm_response
         raise HTTPException(status_code=401, detail='Invalid email or password')
-    
+
     # Check for password (can be stored as 'password_hash' or 'password')
     password_hash = seller.get('password_hash') or seller.get('password', '')
     if not password_hash:
+        # Vendor record exists but has no password set — still try the SM table
+        # in case the same email is registered there too (rare but supported).
+        from supplier_manager_router import try_supplier_manager_login
+        sm_response = await try_supplier_manager_login(data.email, data.password)
+        if sm_response:
+            return sm_response
         raise HTTPException(status_code=401, detail='Vendor account not set up. Please contact admin.')
-    
+
     if not bcrypt.checkpw(data.password.encode('utf-8'), password_hash.encode('utf-8')):
+        # Vendor password didn't match — last-chance fallback to SM table
+        # (covers the case where a single email is a seller + an SM with different passwords).
+        from supplier_manager_router import try_supplier_manager_login
+        sm_response = await try_supplier_manager_login(data.email, data.password)
+        if sm_response:
+            return sm_response
         raise HTTPException(status_code=401, detail='Invalid email or password')
-    
+
     token = create_vendor_token(seller['id'], data.email)
-    
+
     return {
+        'role': 'vendor',
         'token': token,
         'vendor': VendorResponse(
             id=seller['id'],
@@ -256,6 +280,12 @@ async def create_vendor_fabric(data: FabricCreate, vendor=Depends(get_current_ve
     # Hard-required: dispatch_timeline must match the preset list for stock_type
     data.dispatch_timeline = validate_dispatch_timeline(data.dispatch_timeline, data.stock_type)
 
+    # Validate pickup_address_id (must be one of the vendor's saved pickup addresses)
+    if data.pickup_address_id:
+        valid_ids = {a.get('id') for a in (vendor.get('pickup_addresses') or [])}
+        if data.pickup_address_id not in valid_ids:
+            raise HTTPException(status_code=400, detail='Selected pickup address does not belong to this vendor')
+
     fabric_id = str(uuid.uuid4())
     
     # Get category name
@@ -312,6 +342,7 @@ async def create_vendor_fabric(data: FabricCreate, vendor=Depends(get_current_ve
         'width_type': data.width_type,
         'has_multiple_colors': data.has_multiple_colors,
         'color_variants': data.color_variants,
+        'pickup_address_id': data.pickup_address_id,
         'created_at': datetime.now(timezone.utc).isoformat()
     }
     
@@ -341,7 +372,13 @@ async def update_vendor_fabric(fabric_id: str, data: FabricUpdate, vendor=Depend
 
     if 'composition' in update_data:
         update_data['composition'] = _canon_comp_or_raw(update_data['composition'])
-    
+
+    # Validate pickup_address_id if changing
+    if 'pickup_address_id' in update_data and update_data['pickup_address_id']:
+        valid_ids = {a.get('id') for a in (vendor.get('pickup_addresses') or [])}
+        if update_data['pickup_address_id'] not in valid_ids:
+            raise HTTPException(status_code=400, detail='Selected pickup address does not belong to this vendor')
+
     await db.fabrics.update_one({'id': fabric_id}, {'$set': update_data})
     
     updated = await db.fabrics.find_one({'id': fabric_id}, {'_id': 0})
@@ -404,42 +441,206 @@ async def get_vendor_orders(
     orders = await db.orders.find(base_q, {'_id': 0}).sort('created_at', -1).to_list(500)
 
     # Filter items to only show vendor's fabrics OR vendor's seller_id (rfq path)
+    # Customer PII redaction rules (privacy + lawful necessity):
+    #   - Stages BEFORE prepare_dispatch:
+    #         expose only city/state/pincode (no name, no address, no GST).
+    #   - Stage == prepare_dispatch (and beyond, once dispatched/delivered):
+    #         the supplier needs the legal consignee identity to draft the
+    #         tax invoice (Bill-To Locofast / Ship-To Customer). Expose
+    #         name, company, address, city/state/pincode, GSTIN.
+    #         PHONE & EMAIL stay redacted in all stages — vendor never
+    #         contacts the customer directly.
+    from order_pipeline import (
+        compute_pipeline_stage,
+        compute_vendor_stage,
+        compute_vendor_bucket,
+        PIPELINE_LABELS,
+        VENDOR_STAGE_LABELS,
+        VENDOR_BUCKET_LABELS,
+    )
+    DISPATCH_STAGES = {"prepare_dispatch", "dispatched", "delivered"}
+    vendor_fabric_id_set = set(vendor_fabric_ids)
     for order in orders:
         order['items'] = [
             item for item in order.get('items', [])
-            if item.get('fabric_id') in vendor_fabric_ids or item.get('seller_id') == seller_id
+            if item.get('fabric_id') in vendor_fabric_id_set or item.get('seller_id') == seller_id
         ]
+        stage = compute_pipeline_stage(order)
+        cust = order.get('customer') or {}
+        if cust:
+            base = {
+                'city': cust.get('city', ''),
+                'state': cust.get('state', ''),
+                'pincode': cust.get('pincode', ''),
+            }
+            if stage in DISPATCH_STAGES:
+                base.update({
+                    'name': cust.get('name', ''),
+                    'company': cust.get('company', ''),
+                    'address': cust.get('address', ''),
+                    'gst_number': cust.get('gst_number', ''),
+                })
+            order['customer'] = base
         # Always expose source label so vendor UI can render the chip
         if not order.get('source'):
             order['source'] = 'inventory'
+        # Read-time pipeline bucket — drives the new 6-tab vendor UI
+        try:
+            order['pipeline_stage'] = stage
+            order['pipeline_label'] = PIPELINE_LABELS.get(stage, stage)
+            v_stage = compute_vendor_stage(order, seller_id, vendor_fabric_id_set)
+            v_bucket = compute_vendor_bucket(order, seller_id, vendor_fabric_id_set)
+            order['vendor_stage'] = v_stage
+            order['vendor_stage_label'] = VENDOR_STAGE_LABELS.get(v_stage, v_stage)
+            order['vendor_bucket'] = v_bucket
+            order['vendor_bucket_label'] = VENDOR_BUCKET_LABELS.get(v_bucket, v_bucket)
+        except Exception:
+            pass
 
     return orders
 
 @router.get("/stats")
 async def get_vendor_stats(vendor=Depends(get_current_vendor)):
-    """Get vendor statistics"""
-    total_fabrics = await db.fabrics.count_documents({'seller_id': vendor['id']})
-    approved_fabrics = await db.fabrics.count_documents({'seller_id': vendor['id'], 'status': 'approved'})
-    pending_fabrics = await db.fabrics.count_documents({'seller_id': vendor['id'], 'status': 'pending'})
-    rejected_fabrics = await db.fabrics.count_documents({'seller_id': vendor['id'], 'status': 'rejected'})
-    
-    # Get vendor's fabric IDs
+    """Vendor dashboard stats — order-pipeline first.
+
+    Returns:
+      - Inventory counts (legacy, still used by tooltips)
+      - Orders-focused metrics: pending approval, dispatch pending,
+        delivered, total business value (GMV) generated through Locofast
+      - Top 5 selling products (by metres shipped) restricted to the
+        vendor's own items
+    """
+    from order_pipeline import compute_vendor_stage, compute_vendor_bucket
+
     vendor_fabric_ids = await db.fabrics.distinct('id', {'seller_id': vendor['id']})
-    
-    # Count orders with vendor's fabrics
-    total_orders = await db.orders.count_documents({'items.fabric_id': {'$in': vendor_fabric_ids}})
-    
-    # Count enquiries
+    seller_id = vendor['id']
+    vendor_fabric_id_set = set(vendor_fabric_ids)
+
+    total_fabrics = await db.fabrics.count_documents({'seller_id': seller_id})
+    approved_fabrics = await db.fabrics.count_documents({'seller_id': seller_id, 'status': 'approved'})
+    pending_fabrics = await db.fabrics.count_documents({'seller_id': seller_id, 'status': 'pending'})
+    rejected_fabrics = await db.fabrics.count_documents({'seller_id': seller_id, 'status': 'rejected'})
+
+    # Pull every order touching this vendor (same filter as /vendor/orders)
+    base_q = {
+        '$or': [
+            {'items.fabric_id': {'$in': vendor_fabric_ids}},
+            {'items.seller_id': seller_id},
+        ],
+        'is_parent_order': {'$ne': True},
+    }
+    orders = await db.orders.find(
+        base_q,
+        {'_id': 0, 'status': 1, 'payment_status': 1, 'items': 1,
+         'goods_ready_at': 1, 'is_provisional': 1, 'vendor_invoices': 1,
+         'eway_bill_no': 1, 'shiprocket_shipments': 1,
+         'shiprocket_order_id': 1, 'shiprocket_waybill_no': 1,
+         'actual_total': 1, 'total': 1}
+    ).to_list(5000)
+
+    pending_approval_count = 0           # Bucket 3 step 1 — Order Confirmation Needed
+    pending_approval_value = 0.0
+    awaiting_balance_count = 0           # Bucket 3 step 2 — Awaiting Customer Full Payment
+    awaiting_balance_value = 0.0
+    dispatch_pending_count = 0           # All buckets step "Update Dispatch Details" + "Dispatch Awaited"
+    dispatch_pending_value = 0.0
+    delivered_count = 0
+    total_business_value = 0.0  # GMV across paid/delivered orders
+
+    # Aggregate top-selling products by metres (vendor's items only)
+    fabric_qty: dict[str, dict] = {}
+
+    for o in orders:
+        # Filter items to this vendor only — value calcs reflect what
+        # the vendor actually supplies on the order.
+        my_items = [
+            it for it in (o.get('items') or [])
+            if it.get('fabric_id') in vendor_fabric_id_set or it.get('seller_id') == seller_id
+        ]
+        if not my_items:
+            continue
+        vendor_value = sum(
+            float(it.get('quantity') or 0) * float(it.get('price_per_meter') or 0)
+            for it in my_items
+        )
+
+        v_stage = compute_vendor_stage(o, seller_id, vendor_fabric_id_set)
+        if v_stage == 'order_confirmation_needed':
+            pending_approval_count += 1
+            pending_approval_value += vendor_value
+        elif v_stage == 'awaiting_customer_full_payment':
+            awaiting_balance_count += 1
+            awaiting_balance_value += vendor_value
+        elif v_stage in ('update_dispatch_details', 'dispatch_awaited'):
+            dispatch_pending_count += 1
+            dispatch_pending_value += vendor_value
+        elif v_stage == 'delivered':
+            delivered_count += 1
+
+        # GMV: any order where the customer has paid (advance counts —
+        # the order has commercial substance) and isn't cancelled.
+        if (o.get('status') or '').lower() != 'cancelled':
+            ps = (o.get('payment_status') or '').lower()
+            if ps in ('paid', 'advance_paid', 'balance_pending'):
+                total_business_value += vendor_value
+
+        # Top-products: any non-cancelled order that's progressed past
+        # the confirmation stage (excludes orders still awaiting vendor
+        # confirmation, which haven't been "sold" yet).
+        if v_stage in ('update_dispatch_details', 'dispatch_awaited', 'dispatched', 'delivered'):
+            for it in my_items:
+                fid = it.get('fabric_id') or ''
+                if not fid:
+                    continue
+                bucket = fabric_qty.setdefault(fid, {
+                    'fabric_id': fid,
+                    'fabric_name': it.get('fabric_name') or '',
+                    'fabric_code': it.get('fabric_code') or '',
+                    'category_name': it.get('category_name') or '',
+                    'image_url': it.get('image_url') or '',
+                    'quantity_sold': 0.0,
+                    'orders_count': 0,
+                })
+                bucket['quantity_sold'] += float(it.get('quantity') or 0)
+                bucket['orders_count'] += 1
+
+    top_products = sorted(
+        fabric_qty.values(),
+        key=lambda r: r['quantity_sold'],
+        reverse=True
+    )[:5]
+
+    total_orders = sum(
+        1 for o in orders
+        if any(
+            it.get('fabric_id') in vendor_fabric_id_set or it.get('seller_id') == seller_id
+            for it in (o.get('items') or [])
+        )
+    )
+
     total_enquiries = await db.enquiries.count_documents({'fabric_id': {'$in': vendor_fabric_ids}})
-    
+
     return {
+        # Inventory
         'total_fabrics': total_fabrics,
         'approved_fabrics': approved_fabrics,
         'pending_fabrics': pending_fabrics,
         'rejected_fabrics': rejected_fabrics,
+        # Orders pipeline (vendor-screen labels)
+        'orders_pending_approval': pending_approval_count,
+        'orders_pending_approval_value': round(pending_approval_value, 2),
+        'orders_awaiting_balance': awaiting_balance_count,
+        'orders_awaiting_balance_value': round(awaiting_balance_value, 2),
+        'orders_dispatch_pending': dispatch_pending_count,
+        'orders_dispatch_pending_value': round(dispatch_pending_value, 2),
+        'orders_delivered': delivered_count,
+        'total_business_value': round(total_business_value, 2),
+        # Top sellers
+        'top_products': top_products,
+        # Legacy
         'total_orders': total_orders,
         'total_enquiries': total_enquiries,
-        'vendor_code': vendor.get('seller_code', '')
+        'vendor_code': vendor.get('seller_code', ''),
     }
 
 @router.get("/categories")

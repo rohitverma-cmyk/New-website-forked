@@ -100,6 +100,7 @@ class FabricCreate(BaseModel):
     has_multiple_colors: bool = False
     color_variants: List[dict] = []
     certifications: List[str] = []  # keys like "bci", "grs", "oeko_tex"
+    pickup_address_id: Optional[str] = ""
 
 
 class FabricUpdate(BaseModel):
@@ -147,6 +148,7 @@ class FabricUpdate(BaseModel):
     has_multiple_colors: Optional[bool] = None
     color_variants: Optional[List[dict]] = None
     certifications: Optional[List[str]] = None
+    pickup_address_id: Optional[str] = None
 
 
 class Fabric(BaseModel):

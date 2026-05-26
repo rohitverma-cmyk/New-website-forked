@@ -116,6 +116,73 @@ def _estimate_weight_kg(items: list) -> float:
     return max(10.0, round(total_m * 0.2, 2))
 
 
+async def _build_supporting_docs(order: dict, seller_id: str) -> list:
+    """Assemble the `supporting_docs` array Shiprocket Cargo requires
+    for step-2 (`order_shipment_association`). Per business decision:
+
+      1. Vendor's own tax invoice (from `vendor_invoices` keyed by
+         seller_id, populated when the supplier hits "Mark Goods Ready"
+         and uploads their invoice).
+      2. The packing slip PDF for this supplier — rendered via
+         `packing_slip.generate_packing_slip_pdf(order, seller_id)` and
+         uploaded to Cloudinary (folder `locofast/shiprocket-docs/`).
+         Cached on the order doc under `packing_slip_urls[seller_id]`
+         so re-pushes don't re-upload.
+
+    Returns a list of public URLs (max 5 — Shiprocket's limit).
+    Never raises — if anything fails we log + return whatever we have,
+    because returning an empty list lets the upstream see exactly which
+    side of the integration is missing the doc.
+    """
+    docs: list = []
+
+    # 1. Vendor invoice (uploaded by supplier at "mark goods ready")
+    for vi in (order.get("vendor_invoices") or []):
+        if (vi.get("seller_id") or "") == seller_id and vi.get("url"):
+            docs.append(vi["url"])
+            break
+
+    # 2. Packing slip — generated + cached on first push
+    try:
+        from auth_helpers import db as _db  # late import to avoid cycle
+        cached = (order.get("packing_slip_urls") or {}).get(seller_id)
+        if cached:
+            docs.append(cached)
+        else:
+            # Render fresh PDF and upload to Cloudinary
+            from packing_slip import generate_packing_slip_pdf
+            import cloudinary.uploader
+            pdf_buf = generate_packing_slip_pdf(order, seller_id)
+            order_num = (order.get("order_number") or order.get("id", ""))[:40].replace("/", "-")
+            public_id = f"packing-slip-{order_num}-{seller_id[:8]}"
+            try:
+                result = await asyncio.to_thread(
+                    cloudinary.uploader.upload,
+                    pdf_buf.getvalue(),
+                    folder="locofast/shiprocket-docs",
+                    public_id=public_id,
+                    resource_type="raw",
+                    format="pdf",
+                    overwrite=True,
+                    access_mode="public",
+                )
+                slip_url = result.get("secure_url")
+                if slip_url:
+                    docs.append(slip_url)
+                    # Cache so next push doesn't re-upload
+                    await _db.orders.update_one(
+                        {"id": order["id"]},
+                        {"$set": {f"packing_slip_urls.{seller_id}": slip_url}},
+                    )
+                    logger.info(f"[cargo-docs] packing slip uploaded to {slip_url}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[cargo-docs] packing slip cloudinary upload failed: {e}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[cargo-docs] packing slip generation failed: {e}")
+
+    return docs[:5]
+
+
 async def create_cargo_shipment(order: dict, db) -> dict:
     """Two-step Cargo create flow. Returns a dict mirroring the courier
     flow's shape: { vertical, shipment_id, order_id, waybill_no, label_url,
@@ -242,18 +309,42 @@ async def create_cargo_shipment(order: dict, db) -> dict:
     headers = await _headers()
 
     # ── Step 1: order creation ──
+    create_url = f"{BASE_URL}/api/external/order_creation/"
+    logger.info(
+        f"[cargo-create] order={order.get('order_number')} POST {create_url} "
+        f"src={src['pincode']} dst={dst['pincode']} invoice_value={invoice_value} "
+        f"weight_kg={weight} no_of_packages={no_of_packages}"
+    )
+    # Verbose payload trace — gated by SHIPROCKET_VERBOSE_LOG=true so we
+    # can flip it on in prod without redeploying when there's a bug.
+    if os.environ.get("SHIPROCKET_VERBOSE_LOG", "false").lower() == "true":
+        import json as _json
+        logger.info(f"[cargo-create] payload={_json.dumps(create_payload)[:2000]}")
     async with httpx.AsyncClient(timeout=60) as c:
-        r1 = await c.post(f"{BASE_URL}/api/external/order_creation/", headers=headers, json=create_payload)
+        r1 = await c.post(create_url, headers=headers, json=create_payload)
+    logger.info(f"[cargo-create] response status={r1.status_code} body={r1.text[:1500]}")
     if r1.status_code not in (200, 201):
         raise RuntimeError(f"Cargo order_creation failed [{r1.status_code}]: {r1.text[:500]}")
     create_resp = r1.json()
     if not create_resp.get("success"):
         raise RuntimeError(f"Cargo order_creation returned success=false: {create_resp}")
 
-    cargo_order_id = create_resp["order_id"]
-    mode_id = create_resp["mode_id"]
-    delivery_partner_id = create_resp["delivery_partner_id"]
+    cargo_order_id = create_resp.get("order_id")
+    mode_id = create_resp.get("mode_id")
+    delivery_partner_id = create_resp.get("delivery_partner_id")
     delivery_partner_name = create_resp.get("delivery_partner_name", "")
+    if not cargo_order_id or not mode_id or not delivery_partner_id:
+        # Surface the exact response so we never silently ship a half-baked id.
+        raise RuntimeError(
+            f"Cargo order_creation response missing keys "
+            f"(order_id={cargo_order_id!r}, mode_id={mode_id!r}, delivery_partner_id={delivery_partner_id!r}). "
+            f"Full response: {create_resp}"
+        )
+
+    # Assemble supporting_docs: vendor tax invoice + packing slip PDF
+    # for this specific seller. Cargo step-2 will 400 with
+    # "Supporting docs are mandatory." if this is empty.
+    supporting_docs = await _build_supporting_docs(order, seller_id)
 
     # ── Step 2: shipment association (books the pickup) ──
     pickup_dt = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
@@ -270,18 +361,72 @@ async def create_cargo_shipment(order: dict, db) -> dict:
         "invoice_value": invoice_value,
         "invoice_number": (order.get("order_number") or order.get("id", ""))[:60],
         "invoice_date": (order.get("created_at") or datetime.now(timezone.utc).isoformat())[:10],
-        "supporting_docs": [order.get("invoice_pdf_url")] if order.get("invoice_pdf_url") else [],
+        "supporting_docs": supporting_docs,
         "source": "API",
     }
+    if not supporting_docs:
+        logger.warning(
+            f"[cargo-associate] order={order.get('order_number')} no supporting_docs assembled — "
+            f"vendor_invoice missing for seller={seller_id} and packing slip upload failed. "
+            f"Cargo will reject with 'Supporting docs are mandatory.'"
+        )
 
+    associate_url = f"{BASE_URL}/api/order_shipment_association/"
+    logger.info(
+        f"[cargo-associate] order={order.get('order_number')} POST {associate_url} "
+        f"cargo_order_id={cargo_order_id} mode_id={mode_id} delivery_partner_id={delivery_partner_id} "
+        f"pickup_dt={pickup_dt} eway_bill_no={eway_bill_no}"
+    )
+    if os.environ.get("SHIPROCKET_VERBOSE_LOG", "false").lower() == "true":
+        import json as _json
+        logger.info(f"[cargo-associate] payload={_json.dumps(associate_payload, default=str)[:2000]}")
     async with httpx.AsyncClient(timeout=60) as c:
         r2 = await c.post(
-            f"{BASE_URL}/api/order_shipment_association/",
+            associate_url,
             headers=headers,
             json=associate_payload,
         )
+    logger.info(f"[cargo-associate] response status={r2.status_code} body={r2.text[:1500]}")
     if r2.status_code not in (200, 201):
-        raise RuntimeError(f"Cargo shipment_association failed [{r2.status_code}]: {r2.text[:500]}")
+        # Soft-fail policy: when association fails purely because of the
+        # `supporting_docs` host-whitelist restriction, we DON'T raise.
+        # Step-1 succeeded → the cargo order exists in Shiprocket's queue
+        # at `cargo_order_id`, and the user can finish the booking manually
+        # in the Shiprocket Cargo panel by uploading the docs there and
+        # clicking "Associate". This is the workaround until Shiprocket
+        # whitelists our CDN host.
+        body_text = r2.text or ""
+        host_block = (
+            r2.status_code == 400
+            and "supporting_docs" in body_text.lower()
+        )
+        if host_block:
+            logger.warning(
+                f"[cargo-associate] order={order.get('order_number')} → step-2 SOFT-FAIL: "
+                f"host whitelist rejection · cargo_order_id={cargo_order_id} kept. "
+                f"Admin must finish the booking in the Shiprocket Cargo panel."
+            )
+            return {
+                "vertical": "cargo",
+                "shipment_id": None,
+                "order_id": cargo_order_id,
+                "awaiting_manual_association": True,
+                "manual_action_reason": (
+                    "Shiprocket Cargo rejected the supporting_docs URL host. "
+                    "Open the Shiprocket Cargo panel, find this order id, upload "
+                    "the vendor invoice + packing slip, and click Associate / Book Pickup."
+                ),
+                "delivery_partner_name": delivery_partner_name,
+                "transporter_id": create_resp.get("transportar_id"),
+                "mode": create_resp.get("mode"),
+                "raw_create": create_resp,
+                "raw_associate_error": body_text[:1500],
+                "supporting_docs_attempted": supporting_docs,
+            }
+        raise RuntimeError(
+            f"Cargo shipment_association failed [{r2.status_code}]: {body_text[:500]} "
+            f"(cargo_order_id={cargo_order_id})"
+        )
     assoc_resp = r2.json()
 
     return {
@@ -305,4 +450,27 @@ async def get_cargo_shipment(shipment_id: int) -> dict:
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(f"{BASE_URL}/api/external/get_shipment/{shipment_id}/", headers=headers)
     r.raise_for_status()
+    return r.json()
+
+
+
+async def get_cargo_order_status(cargo_order_id: int) -> dict:
+    """Fetch the current status of a Cargo order from Shiprocket.
+
+    Used by the admin "Refresh Status" button to pull the latest
+    `current_status`, AWB, LRN, label_url etc. without waiting for
+    Shiprocket's webhook (which sometimes lags or never fires when
+    the order is still in "awaiting manual association" state).
+
+    Returns Shiprocket's raw JSON; the caller maps the fields it cares
+    about onto our `orders` doc.
+    """
+    headers = await _headers()
+    url = f"{BASE_URL}/api/external/get_order/{cargo_order_id}/"
+    logger.info(f"[cargo-status] GET {url}")
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(url, headers=headers)
+    logger.info(f"[cargo-status] response status={r.status_code} body={r.text[:1000]}")
+    if r.status_code != 200:
+        raise RuntimeError(f"Cargo get_order failed [{r.status_code}]: {r.text[:300]}")
     return r.json()
