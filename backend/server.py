@@ -636,6 +636,11 @@ import agent_catalogue_router
 agent_catalogue_router.set_db(db)
 app.include_router(agent_catalogue_router.router)
 
+# Admin DB export — one-shot full-DB snapshot endpoint
+import db_export_router
+db_export_router.set_db(db)
+app.include_router(db_export_router.router, prefix="/api")
+
 import brand_router
 brand_router.set_db(db)
 app.include_router(brand_router.router, prefix="/api")
