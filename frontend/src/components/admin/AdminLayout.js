@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee, ShieldCheck, Star } from "lucide-react";
+import { LayoutDashboard, Layers, FolderOpen, Building2, Package, MessageSquare, LogOut, ArrowLeft, Palette, Search, FileText, ShoppingCart, Tag, ClipboardList, Wallet, Users, Percent, Briefcase, IndianRupee, ShieldCheck, Star, Database } from "lucide-react";
 import NotificationBell from "../NotificationBell";
 import { useAuth } from "../../context/AuthContext";
 
@@ -51,9 +51,13 @@ const AdminLayout = ({ children }) => {
   ];
 
   const navItems = isAccountsRole ? accountsNav : fullNav;
-  // Append "Admin Users" only for the super-admin email
+  // Append super-admin-only items (Admin Users + Database Backup)
   const finalNav = isSuperAdmin && !isAccountsRole
-    ? [...navItems, { path: "/admin/users", label: "Admin Users", icon: ShieldCheck }]
+    ? [
+        ...navItems,
+        { path: "/admin/users", label: "Admin Users", icon: ShieldCheck },
+        { path: "/admin/database-backup", label: "Database Backup", icon: Database },
+      ]
     : navItems;
 
   const handleLogout = () => {
